@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"strings"
 	"sync"
@@ -20,7 +21,6 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
-	"inet.af/netaddr"
 	"tailscale.com/disco"
 	"tailscale.com/net/packet"
 	"tailscale.com/net/tsaddr"
@@ -82,7 +82,7 @@ type Wrapper struct {
 	// you might need to add a pad32.Four field here.
 	lastActivityAtomic mono.Time // time of last send or receive
 
-	destIPActivity atomic.Value // of map[netaddr.IP]func()
+	destIPActivity atomic.Value // of map[netip.Addr]func()
 	destMACAtomic  atomic.Value // of [6]byte
 	discoKey       atomic.Value // of key.DiscoPublic
 
@@ -158,7 +158,7 @@ type Wrapper struct {
 
 	// PeerAPIPort, if non-nil, returns the peerapi port that's
 	// running for the given IP address.
-	PeerAPIPort func(netaddr.IP) (port uint16, ok bool)
+	PeerAPIPort func(netip.Addr) (port uint16, ok bool)
 
 	// disableFilter disables all filtering when set. This should only be used in tests.
 	disableFilter bool
@@ -222,7 +222,7 @@ func wrap(logf logger.Logf, tdev tun.Device, isTAP bool) *Wrapper {
 // destination (the map keys).
 //
 // The map ownership passes to the Wrapper. It must be non-nil.
-func (t *Wrapper) SetDestIPActivityFuncs(m map[netaddr.IP]func()) {
+func (t *Wrapper) SetDestIPActivityFuncs(m map[netip.Addr]func()) {
 	t.destIPActivity.Store(m)
 }
 
@@ -429,8 +429,8 @@ func (t *Wrapper) sendOutbound(r tunReadResult) {
 }
 
 var (
-	magicDNSIPPort   = netaddr.IPPortFrom(tsaddr.TailscaleServiceIP(), 0) // 100.100.100.100:0
-	magicDNSIPPortv6 = netaddr.IPPortFrom(tsaddr.TailscaleServiceIPv6(), 0)
+	magicDNSIPPort   = netip.AddrPortFrom(tsaddr.TailscaleServiceIP(), 0) // 100.100.100.100:0
+	magicDNSIPPortv6 = netip.AddrPortFrom(tsaddr.TailscaleServiceIPv6(), 0)
 )
 
 func (t *Wrapper) filterOut(p *packet.Parsed) filter.Response {
@@ -524,9 +524,10 @@ func (t *Wrapper) Read(buf []byte, offset int) (int, error) {
 
 	var n int
 	if res.packet != nil {
-		n = copy(buf[offset:], res.packet.NetworkHeader().View())
-		n += copy(buf[offset+n:], res.packet.TransportHeader().View())
-		n += copy(buf[offset+n:], res.packet.Data().AsRange().AsView())
+
+		n = copy(buf[offset:], res.packet.NetworkHeader().Slice())
+		n += copy(buf[offset+n:], res.packet.TransportHeader().Slice())
+		n += copy(buf[offset+n:], res.packet.Data().AsRange().ToSlice())
 
 		res.packet.DecRef()
 	} else {
@@ -543,8 +544,8 @@ func (t *Wrapper) Read(buf []byte, offset int) (int, error) {
 	defer parsedPacketPool.Put(p)
 	p.Decode(buf[offset : offset+n])
 
-	if m, ok := t.destIPActivity.Load().(map[netaddr.IP]func()); ok {
-		if fn := m[p.Dst.IP()]; fn != nil {
+	if m, ok := t.destIPActivity.Load().(map[netip.Addr]func()); ok {
+		if fn := m[p.Dst.Addr()]; fn != nil {
 			fn()
 		}
 	}
@@ -619,7 +620,7 @@ func (t *Wrapper) filterIn(buf []byte) filter.Response {
 		p.IPProto == ipproto.TCP &&
 		p.TCPFlags&packet.TCPSyn != 0 &&
 		t.PeerAPIPort != nil {
-		if port, ok := t.PeerAPIPort(p.Dst.IP()); ok && port == p.Dst.Port() {
+		if port, ok := t.PeerAPIPort(p.Dst.Addr()); ok && port == p.Dst.Port() {
 			outcome = filter.Accept
 		}
 	}
@@ -633,8 +634,8 @@ func (t *Wrapper) filterIn(buf []byte) filter.Response {
 		// can show them a rejection history with reasons.
 		if p.IPVersion == 4 && p.IPProto == ipproto.TCP && p.TCPFlags&packet.TCPSyn != 0 && !t.disableTSMPRejected {
 			rj := packet.TailscaleRejectedHeader{
-				IPSrc:  p.Dst.IP(),
-				IPDst:  p.Src.IP(),
+				IPSrc:  p.Dst.Addr(),
+				IPDst:  p.Src.Addr(),
 				Src:    p.Src,
 				Dst:    p.Dst,
 				Proto:  p.IPProto,
@@ -715,9 +716,9 @@ func (t *Wrapper) SetFilter(filt *filter.Filter) {
 func (t *Wrapper) InjectInboundPacketBuffer(pkt *stack.PacketBuffer) error {
 	buf := make([]byte, PacketStartOffset+pkt.Size())
 
-	n := copy(buf[PacketStartOffset:], pkt.NetworkHeader().View())
-	n += copy(buf[PacketStartOffset+n:], pkt.TransportHeader().View())
-	n += copy(buf[PacketStartOffset+n:], pkt.Data().AsRange().AsView())
+	n := copy(buf[PacketStartOffset:], pkt.NetworkHeader().Slice())
+	n += copy(buf[PacketStartOffset+n:], pkt.TransportHeader().Slice())
+	n += copy(buf[PacketStartOffset+n:], pkt.Data().AsRange().ToSlice())
 	if n != pkt.Size() {
 		panic("unexpected packet size after copy")
 	}
@@ -774,7 +775,7 @@ func (t *Wrapper) injectOutboundPong(pp *packet.Parsed, req packet.TSMPPingReque
 		Data: req.Data,
 	}
 	if t.PeerAPIPort != nil {
-		pong.PeerAPIPort, _ = t.PeerAPIPort(pp.Dst.IP())
+		pong.PeerAPIPort, _ = t.PeerAPIPort(pp.Dst.Addr())
 	}
 	switch pp.IPVersion {
 	case 4:

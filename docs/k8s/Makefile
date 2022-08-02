@@ -2,9 +2,9 @@
 # Use of this source code is governed by a BSD-style
 # license that can be found in the LICENSE file.
 
-ROUTES ?= ""
+TS_ROUTES ?= ""
 SA_NAME ?= tailscale
-KUBE_SECRET ?= tailscale
+TS_KUBE_SECRET ?= tailscale
 
 rbac:
 	@sed -e "s;{{TS_KUBE_SECRET}};$(TS_KUBE_SECRET);g" role.yaml | kubectl apply -f -

@@ -25,6 +25,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/netip"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -36,7 +37,6 @@ import (
 	"go4.org/mem"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
-	"inet.af/netaddr"
 	"tailscale.com/client/tailscale"
 	"tailscale.com/disco"
 	"tailscale.com/envknob"
@@ -162,8 +162,8 @@ type Server struct {
 	// src.
 	sentTo map[key.NodePublic]map[key.NodePublic]int64 // src => dst => dst's latest sclient.connNum
 
-	// maps from netaddr.IPPort to a client's public key
-	keyOfAddr map[netaddr.IPPort]key.NodePublic
+	// maps from netip.AddrPort to a client's public key
+	keyOfAddr map[netip.AddrPort]key.NodePublic
 }
 
 // clientSet represents 1 or more *sclients.
@@ -314,7 +314,7 @@ func NewServer(privateKey key.NodePrivate, logf logger.Logf) *Server {
 		watchers:             map[*sclient]bool{},
 		sentTo:               map[key.NodePublic]map[key.NodePublic]int64{},
 		avgQueueDuration:     new(uint64),
-		keyOfAddr:            map[netaddr.IPPort]key.NodePublic{},
+		keyOfAddr:            map[netip.AddrPort]key.NodePublic{},
 	}
 	s.initMetacert()
 	s.packetsRecvDisco = s.packetsRecvByKind.Get("disco")
@@ -410,7 +410,7 @@ func (s *Server) IsClientConnectedForTest(k key.NodePublic) bool {
 // on its own.
 //
 // Accept closes nc.
-func (s *Server) Accept(nc Conn, brw *bufio.ReadWriter, remoteAddr string) {
+func (s *Server) Accept(ctx context.Context, nc Conn, brw *bufio.ReadWriter, remoteAddr string) {
 	closed := make(chan struct{})
 
 	s.mu.Lock()
@@ -428,7 +428,7 @@ func (s *Server) Accept(nc Conn, brw *bufio.ReadWriter, remoteAddr string) {
 		s.mu.Unlock()
 	}()
 
-	if err := s.accept(nc, brw, remoteAddr, connNum); err != nil && !s.isClosed() {
+	if err := s.accept(ctx, nc, brw, remoteAddr, connNum); err != nil && !s.isClosed() {
 		s.logf("derp: %s: %v", remoteAddr, err)
 	}
 }
@@ -641,7 +641,7 @@ func (s *Server) addWatcher(c *sclient) {
 	go c.requestMeshUpdate()
 }
 
-func (s *Server) accept(nc Conn, brw *bufio.ReadWriter, remoteAddr string, connNum int64) error {
+func (s *Server) accept(ctx context.Context, nc Conn, brw *bufio.ReadWriter, remoteAddr string, connNum int64) error {
 	br := brw.Reader
 	nc.SetDeadline(time.Now().Add(10 * time.Second))
 	bw := &lazyBufioWriter{w: nc, lbw: brw.Writer}
@@ -660,10 +660,10 @@ func (s *Server) accept(nc Conn, brw *bufio.ReadWriter, remoteAddr string, connN
 	// At this point we trust the client so we don't time out.
 	nc.SetDeadline(time.Time{})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	remoteIPPort, _ := netaddr.ParseIPPort(remoteAddr)
+	remoteIPPort, _ := netip.ParseAddrPort(remoteAddr)
 
 	c := &sclient{
 		connNum:        connNum,
@@ -1246,7 +1246,7 @@ type sclient struct {
 	logf           logger.Logf
 	done           <-chan struct{}     // closed when connection closes
 	remoteAddr     string              // usually ip:port from net.Conn.RemoteAddr().String()
-	remoteIPPort   netaddr.IPPort      // zero if remoteAddr is not ip:port.
+	remoteIPPort   netip.AddrPort      // zero if remoteAddr is not ip:port.
 	sendQueue      chan pkt            // packets queued to this client; never closed
 	discoSendQueue chan pkt            // important packets queued to this client; never closed
 	sendPongCh     chan [8]byte        // pong replies to send to the client; never closed
@@ -1759,8 +1759,8 @@ type BytesSentRecv struct {
 
 // parseSSOutput parses the output from the specific call to ss in ServeDebugTraffic.
 // Separated out for ease of testing.
-func parseSSOutput(raw string) map[netaddr.IPPort]BytesSentRecv {
-	newState := map[netaddr.IPPort]BytesSentRecv{}
+func parseSSOutput(raw string) map[netip.AddrPort]BytesSentRecv {
+	newState := map[netip.AddrPort]BytesSentRecv{}
 	// parse every 2 lines and get src and dst ips, and kv pairs
 	lines := strings.Split(raw, "\n")
 	for i := 0; i < len(lines); i += 2 {
@@ -1768,7 +1768,7 @@ func parseSSOutput(raw string) map[netaddr.IPPort]BytesSentRecv {
 		if len(ipInfo) < 5 {
 			continue
 		}
-		src, err := netaddr.ParseIPPort(ipInfo[4])
+		src, err := netip.ParseAddrPort(ipInfo[4])
 		if err != nil {
 			continue
 		}
@@ -1793,7 +1793,7 @@ func parseSSOutput(raw string) map[netaddr.IPPort]BytesSentRecv {
 }
 
 func (s *Server) ServeDebugTraffic(w http.ResponseWriter, r *http.Request) {
-	prevState := map[netaddr.IPPort]BytesSentRecv{}
+	prevState := map[netip.AddrPort]BytesSentRecv{}
 	enc := json.NewEncoder(w)
 	for r.Context().Err() == nil {
 		output, err := exec.Command("ss", "-i", "-H", "-t").Output()

@@ -13,6 +13,7 @@ import (
 	"io"
 	"math"
 	"math/rand"
+	"net/netip"
 	"reflect"
 	"runtime"
 	"testing"
@@ -21,12 +22,13 @@ import (
 	"unsafe"
 
 	"go4.org/mem"
-	"inet.af/netaddr"
+	"tailscale.com/net/netaddr"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/dnstype"
 	"tailscale.com/types/ipproto"
 	"tailscale.com/types/key"
 	"tailscale.com/types/structs"
+	"tailscale.com/util/deephash/testtype"
 	"tailscale.com/util/dnsname"
 	"tailscale.com/version"
 	"tailscale.com/wgengine/filter"
@@ -190,7 +192,7 @@ func getVal() []any {
 	return []any{
 		&wgcfg.Config{
 			Name:      "foo",
-			Addresses: []netaddr.IPPrefix{netaddr.IPPrefixFrom(netaddr.IPFrom16([16]byte{3: 3}), 5)},
+			Addresses: []netip.Prefix{netip.PrefixFrom(netaddr.IPFrom16([16]byte{3: 3}), 5)},
 			Peers: []wgcfg.Peer{
 				{
 					PublicKey: key.NodePublic{},
@@ -198,25 +200,25 @@ func getVal() []any {
 			},
 		},
 		&router.Config{
-			Routes: []netaddr.IPPrefix{
-				netaddr.MustParseIPPrefix("1.2.3.0/24"),
-				netaddr.MustParseIPPrefix("1234::/64"),
+			Routes: []netip.Prefix{
+				netip.MustParsePrefix("1.2.3.0/24"),
+				netip.MustParsePrefix("1234::/64"),
 			},
 		},
-		map[dnsname.FQDN][]netaddr.IP{
-			dnsname.FQDN("a."): {netaddr.MustParseIP("1.2.3.4"), netaddr.MustParseIP("4.3.2.1")},
-			dnsname.FQDN("b."): {netaddr.MustParseIP("8.8.8.8"), netaddr.MustParseIP("9.9.9.9")},
-			dnsname.FQDN("c."): {netaddr.MustParseIP("6.6.6.6"), netaddr.MustParseIP("7.7.7.7")},
-			dnsname.FQDN("d."): {netaddr.MustParseIP("6.7.6.6"), netaddr.MustParseIP("7.7.7.8")},
-			dnsname.FQDN("e."): {netaddr.MustParseIP("6.8.6.6"), netaddr.MustParseIP("7.7.7.9")},
-			dnsname.FQDN("f."): {netaddr.MustParseIP("6.9.6.6"), netaddr.MustParseIP("7.7.7.0")},
+		map[dnsname.FQDN][]netip.Addr{
+			dnsname.FQDN("a."): {netip.MustParseAddr("1.2.3.4"), netip.MustParseAddr("4.3.2.1")},
+			dnsname.FQDN("b."): {netip.MustParseAddr("8.8.8.8"), netip.MustParseAddr("9.9.9.9")},
+			dnsname.FQDN("c."): {netip.MustParseAddr("6.6.6.6"), netip.MustParseAddr("7.7.7.7")},
+			dnsname.FQDN("d."): {netip.MustParseAddr("6.7.6.6"), netip.MustParseAddr("7.7.7.8")},
+			dnsname.FQDN("e."): {netip.MustParseAddr("6.8.6.6"), netip.MustParseAddr("7.7.7.9")},
+			dnsname.FQDN("f."): {netip.MustParseAddr("6.9.6.6"), netip.MustParseAddr("7.7.7.0")},
 		},
-		map[dnsname.FQDN][]netaddr.IPPort{
-			dnsname.FQDN("a."): {netaddr.MustParseIPPort("1.2.3.4:11"), netaddr.MustParseIPPort("4.3.2.1:22")},
-			dnsname.FQDN("b."): {netaddr.MustParseIPPort("8.8.8.8:11"), netaddr.MustParseIPPort("9.9.9.9:22")},
-			dnsname.FQDN("c."): {netaddr.MustParseIPPort("8.8.8.8:12"), netaddr.MustParseIPPort("9.9.9.9:23")},
-			dnsname.FQDN("d."): {netaddr.MustParseIPPort("8.8.8.8:13"), netaddr.MustParseIPPort("9.9.9.9:24")},
-			dnsname.FQDN("e."): {netaddr.MustParseIPPort("8.8.8.8:14"), netaddr.MustParseIPPort("9.9.9.9:25")},
+		map[dnsname.FQDN][]netip.AddrPort{
+			dnsname.FQDN("a."): {netip.MustParseAddrPort("1.2.3.4:11"), netip.MustParseAddrPort("4.3.2.1:22")},
+			dnsname.FQDN("b."): {netip.MustParseAddrPort("8.8.8.8:11"), netip.MustParseAddrPort("9.9.9.9:22")},
+			dnsname.FQDN("c."): {netip.MustParseAddrPort("8.8.8.8:12"), netip.MustParseAddrPort("9.9.9.9:23")},
+			dnsname.FQDN("d."): {netip.MustParseAddrPort("8.8.8.8:13"), netip.MustParseAddrPort("9.9.9.9:24")},
+			dnsname.FQDN("e."): {netip.MustParseAddrPort("8.8.8.8:14"), netip.MustParseAddrPort("9.9.9.9:25")},
 		},
 		map[key.DiscoPublic]bool{
 			key.DiscoPublicFromRaw32(mem.B([]byte{1: 1, 31: 0})): true,
@@ -392,6 +394,253 @@ func TestCanMemHash(t *testing.T) {
 	}
 }
 
+func TestGetTypeHasher(t *testing.T) {
+	switch runtime.GOARCH {
+	case "amd64", "arm64", "arm", "386", "riscv64":
+	default:
+		// Test outputs below are specifically for little-endian machines.
+		// Just skip everything else for now. Feel free to add more above if
+		// you have the hardware to test and it's little-endian.
+		t.Skipf("skipping on %v", runtime.GOARCH)
+	}
+	type typedString string
+	var (
+		someInt        = int('A')
+		someComplex128 = complex128(1 + 2i)
+		someIP         = netip.MustParseAddr("1.2.3.4")
+	)
+	tests := []struct {
+		name  string
+		val   any
+		want  bool // set true automatically if out != ""
+		out   string
+		out32 string // overwrites out if 32-bit
+	}{
+		{
+			name: "int",
+			val:  int(1),
+			out:  "\x01\x00\x00\x00\x00\x00\x00\x00",
+		},
+		{
+			name: "int_negative",
+			val:  int(-1),
+			out:  "\xff\xff\xff\xff\xff\xff\xff\xff",
+		},
+		{
+			name: "int8",
+			val:  int8(1),
+			out:  "\x01",
+		},
+		{
+			name: "float64",
+			val:  float64(1.0),
+			out:  "\x00\x00\x00\x00\x00\x00\xf0?",
+		},
+		{
+			name: "float32",
+			val:  float32(1.0),
+			out:  "\x00\x00\x80?",
+		},
+		{
+			name: "string",
+			val:  "foo",
+			out:  "\x03\x00\x00\x00\x00\x00\x00\x00foo",
+		},
+		{
+			name: "typedString",
+			val:  typedString("foo"),
+			out:  "\x03\x00\x00\x00\x00\x00\x00\x00foo",
+		},
+		{
+			name: "string_slice",
+			val:  []string{"foo", "bar"},
+			out:  "\x02\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00foo\x03\x00\x00\x00\x00\x00\x00\x00bar",
+		},
+		{
+			name:  "int_slice",
+			val:   []int{1, 0, -1},
+			out:   "\x03\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff",
+			out32: "\x03\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff",
+		},
+		{
+			name: "struct",
+			val: struct {
+				a, b int
+				c    uint16
+			}{1, -1, 2},
+			out: "\x01\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\x02\x00",
+		},
+		{
+			name: "nil_int_ptr",
+			val:  (*int)(nil),
+			out:  "\x00",
+		},
+		{
+			name:  "int_ptr",
+			val:   &someInt,
+			out:   "\x01A\x00\x00\x00\x00\x00\x00\x00",
+			out32: "\x01A\x00\x00\x00",
+		},
+		{
+			name: "nil_uint32_ptr",
+			val:  (*uint32)(nil),
+			out:  "\x00",
+		},
+		{
+			name: "complex128_ptr",
+			val:  &someComplex128,
+			out:  "\x01\x00\x00\x00\x00\x00\x00\xf0?\x00\x00\x00\x00\x00\x00\x00@",
+		},
+		{
+			name:  "packet_filter",
+			val:   filterRules,
+			out:   "\x04\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00*\v\x00\x00\x00\x00\x00\x00\x0010.1.3.4/32\v\x00\x00\x00\x00\x00\x00\x0010.0.0.0/24\x03\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\n\x00\x00\x00\x00\x00\x00\x001.2.3.4/32\x01 \x00\x00\x00\x00\x00\x00\x00\x01\x00\x02\x00\x04\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\n\x00\x00\x00\x00\x00\x00\x001.2.3.4/32\x01\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00foo\x01\x00\x00\x00\x00\x00\x00\x00\v\x00\x00\x00\x00\x00\x00\x00foooooooooo\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\f\x00\x00\x00\x00\x00\x00\x00baaaaaarrrrr\x00\x01\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\v\x00\x00\x00\x00\x00\x00\x00foooooooooo\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\f\x00\x00\x00\x00\x00\x00\x00baaaaaarrrrr\x00\x01\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\v\x00\x00\x00\x00\x00\x00\x00foooooooooo\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\f\x00\x00\x00\x00\x00\x00\x00baaaaaarrrrr\x00\x01\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+			out32: "\x04\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00*\v\x00\x00\x00\x00\x00\x00\x0010.1.3.4/32\v\x00\x00\x00\x00\x00\x00\x0010.0.0.0/24\x03\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x02\x00\x00\x00\x03\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\n\x00\x00\x00\x00\x00\x00\x001.2.3.4/32\x01 \x00\x00\x00\x01\x00\x02\x00\x04\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x02\x00\x00\x00\x03\x00\x00\x00\x04\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\n\x00\x00\x00\x00\x00\x00\x001.2.3.4/32\x01\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00foo\x01\x00\x00\x00\x00\x00\x00\x00\v\x00\x00\x00\x00\x00\x00\x00foooooooooo\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\f\x00\x00\x00\x00\x00\x00\x00baaaaaarrrrr\x00\x01\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\v\x00\x00\x00\x00\x00\x00\x00foooooooooo\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\f\x00\x00\x00\x00\x00\x00\x00baaaaaarrrrr\x00\x01\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\v\x00\x00\x00\x00\x00\x00\x00foooooooooo\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\f\x00\x00\x00\x00\x00\x00\x00baaaaaarrrrr\x00\x01\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+		},
+		{
+			name: "netip.Addr",
+			val:  netip.MustParseAddr("fe80::123%foo"),
+			out:  "\r\x00\x00\x00\x00\x00\x00\x00fe80::123%foo",
+		},
+		{
+			name: "ptr-netip.Addr",
+			val:  &someIP,
+			out:  "\x01\a\x00\x00\x00\x00\x00\x00\x001.2.3.4",
+		},
+		{
+			name: "ptr-nil-netip.Addr",
+			val:  (*netip.Addr)(nil),
+			out:  "\x00",
+		},
+		{
+			name: "time",
+			val:  time.Unix(0, 0).In(time.UTC),
+			out:  "\x141970-01-01T00:00:00Z",
+		},
+		{
+			name: "time_ptr", // addressable, as opposed to "time" test above
+			val:  ptrTo(time.Unix(0, 0).In(time.UTC)),
+			out:  "\x01\x141970-01-01T00:00:00Z",
+		},
+		{
+			name: "time_ptr_via_unexported",
+			val:  testtype.NewUnexportedAddressableTime(time.Unix(0, 0).In(time.UTC)),
+			out:  "\x01\x141970-01-01T00:00:00Z",
+		},
+		{
+			name: "time_ptr_via_unexported_value",
+			val:  *testtype.NewUnexportedAddressableTime(time.Unix(0, 0).In(time.UTC)),
+			want: false, // neither addressable nor interface-able
+		},
+		{
+			name: "time_custom_zone",
+			val:  time.Unix(1655311822, 0).In(time.FixedZone("FOO", -60*60)),
+			out:  "\x192022-06-15T15:50:22-01:00",
+		},
+		{
+			name: "time_nil",
+			val:  (*time.Time)(nil),
+			out:  "\x00",
+		},
+		{
+			name: "array_memhash",
+			val:  [4]byte{1, 2, 3, 4},
+			out:  "\x01\x02\x03\x04",
+		},
+		{
+			name: "array_ptr_memhash",
+			val:  ptrTo([4]byte{1, 2, 3, 4}),
+			out:  "\x01\x01\x02\x03\x04",
+		},
+		{
+			name: "ptr_to_struct_partially_memhashable",
+			val: &struct {
+				A int16
+				B int16
+				C *int
+			}{5, 6, nil},
+			out: "\x01\x05\x00\x06\x00\x00",
+		},
+		{
+			name: "struct_partially_memhashable_but_cant_addr",
+			val: struct {
+				A int16
+				B int16
+				C *int
+			}{5, 6, nil},
+			out: "\x05\x00\x06\x00\x00",
+		},
+		{
+			name: "array_elements",
+			val:  [4]byte{1, 2, 3, 4},
+			out:  "\x01\x02\x03\x04",
+		},
+		{
+			name: "bool",
+			val:  true,
+			out:  "\x01",
+		},
+		{
+			name: "IntIntByteInt",
+			val:  IntIntByteInt{1, 2, 3, 4},
+			out:  "\x01\x00\x00\x00\x02\x00\x00\x00\x03\x04\x00\x00\x00",
+		},
+		{
+			name: "IntIntByteInt-canddr",
+			val:  &IntIntByteInt{1, 2, 3, 4},
+			out:  "\x01\x01\x00\x00\x00\x02\x00\x00\x00\x03\x04\x00\x00\x00",
+		},
+		{
+			name: "array-IntIntByteInt",
+			val: [2]IntIntByteInt{
+				{1, 2, 3, 4},
+				{5, 6, 7, 8},
+			},
+			out: "\x01\x00\x00\x00\x02\x00\x00\x00\x03\x04\x00\x00\x00\x05\x00\x00\x00\x06\x00\x00\x00\a\b\x00\x00\x00",
+		},
+		{
+			name: "array-IntIntByteInt-canaddr",
+			val: &[2]IntIntByteInt{
+				{1, 2, 3, 4},
+				{5, 6, 7, 8},
+			},
+			out: "\x01\x01\x00\x00\x00\x02\x00\x00\x00\x03\x04\x00\x00\x00\x05\x00\x00\x00\x06\x00\x00\x00\a\b\x00\x00\x00",
+		},
+		{
+			name: "tailcfg.Node",
+			val:  &tailcfg.Node{},
+			out:  "\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x140001-01-01T00:00:00Z\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x140001-01-01T00:00:00Z\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rv := reflect.ValueOf(tt.val)
+			fn := getTypeInfo(rv.Type()).hasher()
+			var buf bytes.Buffer
+			h := &hasher{
+				bw: bufio.NewWriter(&buf),
+			}
+			got := fn(h, rv)
+			const ptrSize = 32 << uintptr(^uintptr(0)>>63)
+			if tt.out32 != "" && ptrSize == 32 {
+				tt.out = tt.out32
+			}
+			if tt.out != "" {
+				tt.want = true
+			}
+			if got != tt.want {
+				t.Fatalf("func returned %v; want %v", got, tt.want)
+			}
+			if err := h.bw.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			if got := buf.String(); got != tt.out {
+				t.Fatalf("got %q; want %q", got, tt.out)
+			}
+		})
+	}
+}
+
 var sink = Hash("foo")
 
 func BenchmarkHash(b *testing.B) {
@@ -418,7 +667,7 @@ var filterRules = []tailcfg.FilterRule{
 		}},
 		IPProto: []int{1, 2, 3, 4},
 		CapGrant: []tailcfg.CapGrant{{
-			Dsts: []netaddr.IPPrefix{netaddr.MustParseIPPrefix("1.2.3.4/32")},
+			Dsts: []netip.Prefix{netip.MustParsePrefix("1.2.3.4/32")},
 			Caps: []string{"foo"},
 		}},
 	},
@@ -448,8 +697,9 @@ var filterRules = []tailcfg.FilterRule{
 func BenchmarkHashPacketFilter(b *testing.B) {
 	b.ReportAllocs()
 
+	hash := HasherForType[[]tailcfg.FilterRule]()
 	for i := 0; i < b.N; i++ {
-		sink = Hash(filterRules)
+		sink = hash(filterRules)
 	}
 }
 
@@ -581,6 +831,26 @@ func TestArrayAllocs(t *testing.T) {
 	if got > want {
 		t.Errorf("allocs = %v; want %v", got, want)
 	}
+}
+
+// Test for http://go/corp/6311 issue.
+func TestHashThroughView(t *testing.T) {
+	type sshPolicyOut struct {
+		Rules []tailcfg.SSHRuleView
+	}
+	type mapResponseOut struct {
+		SSHPolicy *sshPolicyOut
+	}
+	// Just test we don't panic:
+	_ = Hash(&mapResponseOut{
+		SSHPolicy: &sshPolicyOut{
+			Rules: []tailcfg.SSHRuleView{
+				(&tailcfg.SSHRule{
+					RuleExpires: ptrTo(time.Unix(123, 0)),
+				}).View(),
+			},
+		},
+	})
 }
 
 func BenchmarkHashArray(b *testing.B) {

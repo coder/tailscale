@@ -7,12 +7,12 @@ package tailcfg
 import (
 	"encoding"
 	"encoding/json"
+	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"inet.af/netaddr"
 	"tailscale.com/tstest"
 	"tailscale.com/types/key"
 	"tailscale.com/version"
@@ -32,16 +32,16 @@ func TestHostinfoEqual(t *testing.T) {
 		"ShieldsUp", "ShareeNode",
 		"GoArch",
 		"RoutableIPs", "RequestTags",
-		"Services", "NetInfo", "SSH_HostKeys",
+		"Services", "NetInfo", "SSH_HostKeys", "Cloud",
 	}
 	if have := fieldsOf(reflect.TypeOf(Hostinfo{})); !reflect.DeepEqual(have, hiHandles) {
 		t.Errorf("Hostinfo.Equal check might be out of sync\nfields: %q\nhandled: %q\n",
 			have, hiHandles)
 	}
 
-	nets := func(strs ...string) (ns []netaddr.IPPrefix) {
+	nets := func(strs ...string) (ns []netip.Prefix) {
 		for _, s := range strs {
-			n, err := netaddr.ParseIPPrefix(s)
+			n, err := netip.ParsePrefix(s)
 			if err != nil {
 				panic(err)
 			}
@@ -224,12 +224,12 @@ func TestHostinfoHowEqual(t *testing.T) {
 			a: &Hostinfo{
 				IPNVersion:  "1",
 				ShieldsUp:   false,
-				RoutableIPs: []netaddr.IPPrefix{netaddr.MustParseIPPrefix("1.2.3.0/24")},
+				RoutableIPs: []netip.Prefix{netip.MustParsePrefix("1.2.3.0/24")},
 			},
 			b: &Hostinfo{
 				IPNVersion:  "2",
 				ShieldsUp:   true,
-				RoutableIPs: []netaddr.IPPrefix{netaddr.MustParseIPPrefix("1.2.3.0/25")},
+				RoutableIPs: []netip.Prefix{netip.MustParsePrefix("1.2.3.0/25")},
 			},
 			want: []string{"IPNVersion", "ShieldsUp", "RoutableIPs"},
 		},
@@ -402,23 +402,23 @@ func TestNodeEqual(t *testing.T) {
 			true,
 		},
 		{
-			&Node{Addresses: []netaddr.IPPrefix{}},
+			&Node{Addresses: []netip.Prefix{}},
 			&Node{Addresses: nil},
 			false,
 		},
 		{
-			&Node{Addresses: []netaddr.IPPrefix{}},
-			&Node{Addresses: []netaddr.IPPrefix{}},
+			&Node{Addresses: []netip.Prefix{}},
+			&Node{Addresses: []netip.Prefix{}},
 			true,
 		},
 		{
-			&Node{AllowedIPs: []netaddr.IPPrefix{}},
+			&Node{AllowedIPs: []netip.Prefix{}},
 			&Node{AllowedIPs: nil},
 			false,
 		},
 		{
-			&Node{Addresses: []netaddr.IPPrefix{}},
-			&Node{Addresses: []netaddr.IPPrefix{}},
+			&Node{Addresses: []netip.Prefix{}},
+			&Node{Addresses: []netip.Prefix{}},
 			true,
 		},
 		{
@@ -500,6 +500,7 @@ func TestNetInfoFields(t *testing.T) {
 		"MappingVariesByDestIP",
 		"HairPinning",
 		"WorkingIPv6",
+		"OSHasIPv6",
 		"WorkingUDP",
 		"HavePortMap",
 		"UPnP",
@@ -564,8 +565,8 @@ func TestCloneNode(t *testing.T) {
 	}{
 		{"nil_fields", &Node{}},
 		{"zero_fields", &Node{
-			Addresses:  make([]netaddr.IPPrefix, 0),
-			AllowedIPs: make([]netaddr.IPPrefix, 0),
+			Addresses:  make([]netip.Prefix, 0),
+			AllowedIPs: make([]netip.Prefix, 0),
 			Endpoints:  make([]string, 0),
 		}},
 	}

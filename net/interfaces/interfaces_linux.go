@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"runtime"
@@ -21,7 +22,7 @@ import (
 	"github.com/mdlayher/netlink"
 	"go4.org/mem"
 	"golang.org/x/sys/unix"
-	"inet.af/netaddr"
+	"tailscale.com/net/netaddr"
 	"tailscale.com/syncs"
 	"tailscale.com/util/lineread"
 )
@@ -45,7 +46,7 @@ Iface   Destination     Gateway         Flags   RefCnt  Use     Metric  Mask    
 ens18   00000000        0100000A        0003    0       0       0       00000000        0       0       0
 ens18   0000000A        00000000        0001    0       0       0       0000FFFF        0       0       0
 */
-func likelyHomeRouterIPLinux() (ret netaddr.IP, ok bool) {
+func likelyHomeRouterIPLinux() (ret netip.Addr, ok bool) {
 	if procNetRouteErr.Get() {
 		// If we failed to read /proc/net/route previously, don't keep trying.
 		// But if we're on Android, go into the Android path.
@@ -98,12 +99,12 @@ func likelyHomeRouterIPLinux() (ret netaddr.IP, ok bool) {
 		}
 		log.Printf("interfaces: failed to read /proc/net/route: %v", err)
 	}
-	return ret, !ret.IsZero()
+	return ret, ret.IsValid()
 }
 
 // Android apps don't have permission to read /proc/net/route, at
 // least on Google devices and the Android emulator.
-func likelyHomeRouterIPAndroid() (ret netaddr.IP, ok bool) {
+func likelyHomeRouterIPAndroid() (ret netip.Addr, ok bool) {
 	cmd := exec.Command("/system/bin/ip", "route", "show", "table", "0")
 	out, err := cmd.StdoutPipe()
 	if err != nil {
@@ -125,7 +126,7 @@ func likelyHomeRouterIPAndroid() (ret netaddr.IP, ok bool) {
 			return nil
 		}
 		ipb := line[:sp]
-		if ip, err := netaddr.ParseIP(string(ipb)); err == nil && ip.Is4() {
+		if ip, err := netip.ParseAddr(string(ipb)); err == nil && ip.Is4() {
 			ret = ip
 			log.Printf("interfaces: found Android default route %v", ip)
 		}
@@ -133,7 +134,7 @@ func likelyHomeRouterIPAndroid() (ret netaddr.IP, ok bool) {
 	})
 	cmd.Process.Kill()
 	cmd.Wait()
-	return ret, !ret.IsZero()
+	return ret, ret.IsValid()
 }
 
 func defaultRoute() (d DefaultRouteDetails, err error) {

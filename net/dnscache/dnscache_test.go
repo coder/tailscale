@@ -10,11 +10,10 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/netip"
 	"reflect"
 	"testing"
 	"time"
-
-	"inet.af/netaddr"
 )
 
 var dialTest = flag.String("dial-test", "", "if non-empty, addr:port to test dial")
@@ -39,10 +38,10 @@ func TestDialer(t *testing.T) {
 
 func TestDialCall_DNSWasTrustworthy(t *testing.T) {
 	type step struct {
-		ip  netaddr.IP // IP we pretended to dial
+		ip  netip.Addr // IP we pretended to dial
 		err error      // the dial error or nil for success
 	}
-	mustIP := netaddr.MustParseIP
+	mustIP := netip.MustParseAddr
 	errFail := errors.New("some connect failure")
 	tests := []struct {
 		name  string
@@ -72,7 +71,7 @@ func TestDialCall_DNSWasTrustworthy(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d := &dialer{
-				pastConnect: map[netaddr.IP]time.Time{},
+				pastConnect: map[netip.Addr]time.Time{},
 			}
 			dc := &dialCall{
 				d: d,
@@ -90,11 +89,11 @@ func TestDialCall_DNSWasTrustworthy(t *testing.T) {
 
 func TestDialCall_uniqueIPs(t *testing.T) {
 	dc := &dialCall{}
-	mustIP := netaddr.MustParseIP
+	mustIP := netip.MustParseAddr
 	errFail := errors.New("some connect failure")
 	dc.noteDialResult(mustIP("2003::1"), errFail)
 	dc.noteDialResult(mustIP("2003::2"), errFail)
-	got := dc.uniqueIPs([]netaddr.IP{
+	got := dc.uniqueIPs([]netip.Addr{
 		mustIP("2003::1"),
 		mustIP("2003::2"),
 		mustIP("2003::2"),
@@ -103,7 +102,7 @@ func TestDialCall_uniqueIPs(t *testing.T) {
 		mustIP("2003::4"),
 		mustIP("2003::4"),
 	})
-	want := []netaddr.IP{
+	want := []netip.Addr{
 		mustIP("2003::3"),
 		mustIP("2003::4"),
 	}
@@ -115,11 +114,11 @@ func TestDialCall_uniqueIPs(t *testing.T) {
 func TestResolverAllHostStaticResult(t *testing.T) {
 	r := &Resolver{
 		SingleHost: "foo.bar",
-		SingleHostStaticResult: []netaddr.IP{
-			netaddr.MustParseIP("2001:4860:4860::8888"),
-			netaddr.MustParseIP("2001:4860:4860::8844"),
-			netaddr.MustParseIP("8.8.8.8"),
-			netaddr.MustParseIP("8.8.4.4"),
+		SingleHostStaticResult: []netip.Addr{
+			netip.MustParseAddr("2001:4860:4860::8888"),
+			netip.MustParseAddr("2001:4860:4860::8844"),
+			netip.MustParseAddr("8.8.8.8"),
+			netip.MustParseAddr("8.8.4.4"),
 		},
 	}
 	ip4, ip6, allIPs, err := r.LookupIP(context.Background(), "foo.bar")

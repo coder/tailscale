@@ -18,6 +18,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,7 +31,6 @@ import (
 	"time"
 
 	"go4.org/mem"
-	"inet.af/netaddr"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/ipn/store"
@@ -813,10 +813,10 @@ func (n *testNode) AwaitListening() {
 	}
 }
 
-func (n *testNode) AwaitIPs() []netaddr.IP {
+func (n *testNode) AwaitIPs() []netip.Addr {
 	t := n.env.t
 	t.Helper()
-	var addrs []netaddr.IP
+	var addrs []netip.Addr
 	if err := tstest.WaitFor(20*time.Second, func() error {
 		cmd := n.Tailscale("ip")
 		cmd.Stdout = nil // in case --verbose-tailscale was set
@@ -827,10 +827,10 @@ func (n *testNode) AwaitIPs() []netaddr.IP {
 		}
 		ips := string(out)
 		ipslice := strings.Fields(ips)
-		addrs = make([]netaddr.IP, len(ipslice))
+		addrs = make([]netip.Addr, len(ipslice))
 
 		for i, ip := range ipslice {
-			netIP, err := netaddr.ParseIP(ip)
+			netIP, err := netip.ParseAddr(ip)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -847,7 +847,7 @@ func (n *testNode) AwaitIPs() []netaddr.IP {
 }
 
 // AwaitIP returns the IP address of n.
-func (n *testNode) AwaitIP() netaddr.IP {
+func (n *testNode) AwaitIP() netip.Addr {
 	t := n.env.t
 	t.Helper()
 	ips := n.AwaitIPs()

@@ -10,10 +10,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"sync"
 	"testing"
 
-	"inet.af/netaddr"
+	"tailscale.com/net/netaddr"
 	"tailscale.com/syncs"
 	"tailscale.com/types/logger"
 )
@@ -101,7 +102,7 @@ func (d *TestIGD) TestUPnPPort() uint16 {
 	return uint16(d.upnpConn.LocalAddr().(*net.UDPAddr).Port)
 }
 
-func testIPAndGateway() (gw, ip netaddr.IP, ok bool) {
+func testIPAndGateway() (gw, ip netip.Addr, ok bool) {
 	return netaddr.IPv4(127, 0, 0, 1), netaddr.IPv4(1, 2, 3, 4), true
 }
 
@@ -187,7 +188,7 @@ func (d *TestIGD) servePxP() {
 	}
 }
 
-func (d *TestIGD) handlePMPQuery(pkt []byte, src netaddr.IPPort) {
+func (d *TestIGD) handlePMPQuery(pkt []byte, src netip.AddrPort) {
 	d.inc(&d.counters.numPMPRecv)
 	if len(pkt) < 2 {
 		return
@@ -205,7 +206,7 @@ func (d *TestIGD) handlePMPQuery(pkt []byte, src netaddr.IPPort) {
 	// TODO
 }
 
-func (d *TestIGD) handlePCPQuery(pkt []byte, src netaddr.IPPort) {
+func (d *TestIGD) handlePCPQuery(pkt []byte, src netip.AddrPort) {
 	d.inc(&d.counters.numPCPRecv)
 	if len(pkt) < 24 {
 		return
@@ -214,10 +215,10 @@ func (d *TestIGD) handlePCPQuery(pkt []byte, src netaddr.IPPort) {
 	pktSrcBytes := [16]byte{}
 	copy(pktSrcBytes[:], pkt[8:24])
 	pktSrc := netaddr.IPFrom16(pktSrcBytes)
-	if pktSrc != src.IP() {
+	if pktSrc != src.Addr() {
 		// TODO this error isn't fatal but should be rejected by server.
 		// Since it's a test it's difficult to get them the same though.
-		d.logf("mismatch of packet source and source IP: got %v, expected %v", pktSrc, src.IP())
+		d.logf("mismatch of packet source and source IP: got %v, expected %v", pktSrc, src.Addr())
 	}
 	switch op {
 	case pcpOpAnnounce:
@@ -226,7 +227,7 @@ func (d *TestIGD) handlePCPQuery(pkt []byte, src netaddr.IPPort) {
 			return
 		}
 		resp := buildPCPDiscoResponse(pkt)
-		if _, err := d.pxpConn.WriteTo(resp, src.UDPAddr()); err != nil {
+		if _, err := d.pxpConn.WriteTo(resp, net.UDPAddrFromAddrPort(src)); err != nil {
 			d.inc(&d.counters.numFailedWrites)
 		}
 	case pcpOpMap:
@@ -240,7 +241,7 @@ func (d *TestIGD) handlePCPQuery(pkt []byte, src netaddr.IPPort) {
 			return
 		}
 		resp := buildPCPMapResponse(pkt)
-		d.pxpConn.WriteTo(resp, src.UDPAddr())
+		d.pxpConn.WriteTo(resp, net.UDPAddrFromAddrPort(src))
 	default:
 		// unknown op code, ignore it for now.
 		d.inc(&d.counters.numPCPOtherRecv)

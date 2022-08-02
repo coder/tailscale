@@ -16,14 +16,15 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"inet.af/netaddr"
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnlocal"
@@ -40,6 +41,16 @@ func randHex(n int) string {
 	rand.Read(b)
 	return hex.EncodeToString(b)
 }
+
+var (
+	// The clientmetrics package is stateful, but we want to expose a simple
+	// imperative API to local clients, so we need to keep track of
+	// clientmetric.Metric instances that we've created for them. These need to
+	// be globals because we end up creating many Handler instances for the
+	// lifetime of a client.
+	metricsMu sync.Mutex
+	metrics   = map[string]*clientmetric.Metric{}
+)
 
 func NewHandler(b *ipnlocal.LocalBackend, logf logger.Logf, logID string) *Handler {
 	return &Handler{b: b, logf: logf, backendLogID: logID}
@@ -137,6 +148,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveDial(w, r)
 	case "/localapi/v0/id-token":
 		h.serveIDToken(w, r)
+	case "/localapi/v0/upload-client-metrics":
+		h.serveUploadClientMetrics(w, r)
 	case "/":
 		io.WriteString(w, "tailscaled\n")
 	default:
@@ -209,10 +222,10 @@ func (h *Handler) serveWhoIs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	b := h.b
-	var ipp netaddr.IPPort
+	var ipp netip.AddrPort
 	if v := r.FormValue("addr"); v != "" {
 		var err error
-		ipp, err = netaddr.ParseIPPort(v)
+		ipp, err = netip.ParseAddrPort(v)
 		if err != nil {
 			http.Error(w, "invalid 'addr' parameter", 400)
 			return
@@ -229,7 +242,7 @@ func (h *Handler) serveWhoIs(w http.ResponseWriter, r *http.Request) {
 	res := &apitype.WhoIsResponse{
 		Node:        n,
 		UserProfile: &u,
-		Caps:        b.PeerCaps(ipp.IP()),
+		Caps:        b.PeerCaps(ipp.Addr()),
 	}
 	j, err := json.MarshalIndent(res, "", "\t")
 	if err != nil {
@@ -532,7 +545,7 @@ func (h *Handler) serveFileTargets(w http.ResponseWriter, r *http.Request) {
 //
 // URL format:
 //
-//    * PUT /localapi/v0/file-put/:stableID/:escaped-filename
+//   - PUT /localapi/v0/file-put/:stableID/:escaped-filename
 func (h *Handler) serveFilePut(w http.ResponseWriter, r *http.Request) {
 	if !h.PermitWrite {
 		http.Error(w, "file access denied", http.StatusForbidden)
@@ -654,7 +667,7 @@ func (h *Handler) servePing(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing 'ip' parameter", 400)
 		return
 	}
-	ip, err := netaddr.ParseIP(ipStr)
+	ip, err := netip.ParseAddr(ipStr)
 	if err != nil {
 		http.Error(w, "invalid IP", 400)
 		return
@@ -728,6 +741,54 @@ func (h *Handler) serveDial(w http.ResponseWriter, r *http.Request) {
 		errc <- err
 	}()
 	<-errc
+}
+
+func (h *Handler) serveUploadClientMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "unsupported method", http.StatusMethodNotAllowed)
+		return
+	}
+	type clientMetricJSON struct {
+		Name string `json:"name"`
+		// One of "counter" or "gauge"
+		Type  string `json:"type"`
+		Value int    `json:"value"`
+	}
+
+	var clientMetrics []clientMetricJSON
+	if err := json.NewDecoder(r.Body).Decode(&clientMetrics); err != nil {
+		http.Error(w, "invalid JSON body", 400)
+		return
+	}
+
+	metricsMu.Lock()
+	defer metricsMu.Unlock()
+
+	for _, m := range clientMetrics {
+		if metric, ok := metrics[m.Name]; ok {
+			metric.Add(int64(m.Value))
+		} else {
+			if clientmetric.HasPublished(m.Name) {
+				http.Error(w, "Already have a metric named "+m.Name, 400)
+				return
+			}
+			var metric *clientmetric.Metric
+			switch m.Type {
+			case "counter":
+				metric = clientmetric.NewCounter(m.Name)
+			case "gauge":
+				metric = clientmetric.NewGauge(m.Name)
+			default:
+				http.Error(w, "Unknown metric type "+m.Type, 400)
+				return
+			}
+			metrics[m.Name] = metric
+			metric.Add(int64(m.Value))
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(struct{}{})
 }
 
 func defBool(a string, def bool) bool {

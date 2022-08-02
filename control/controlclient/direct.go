@@ -16,6 +16,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"reflect"
@@ -26,7 +27,6 @@ import (
 	"time"
 
 	"go4.org/mem"
-	"inet.af/netaddr"
 	"tailscale.com/control/controlknobs"
 	"tailscale.com/envknob"
 	"tailscale.com/health"
@@ -129,7 +129,7 @@ type Options struct {
 // Pinger is the LocalBackend.Ping method.
 type Pinger interface {
 	// Ping is a request to do a ping with the peer handling the given IP.
-	Ping(ctx context.Context, ip netaddr.IP, pingType tailcfg.PingType) (*ipnstate.PingResult, error)
+	Ping(ctx context.Context, ip netip.Addr, pingType tailcfg.PingType) (*ipnstate.PingResult, error)
 }
 
 type Decompressor interface {
@@ -1167,8 +1167,8 @@ func TrimWGConfig() opt.Bool {
 // It should not return false positives.
 //
 // TODO(bradfitz): Change controlclient.Options.SkipIPForwardingCheck into a
-// func([]netaddr.IPPrefix) error signature instead.
-func ipForwardingBroken(routes []netaddr.IPPrefix, state *interfaces.State) bool {
+// func([]netip.Prefix) error signature instead.
+func ipForwardingBroken(routes []netip.Prefix, state *interfaces.State) bool {
 	warn, err := netutil.CheckIPForwarding(routes, state)
 	if err != nil {
 		// Oh well, we tried. This is just for debugging.
@@ -1408,7 +1408,7 @@ func (c *Direct) DoNoiseRequest(req *http.Request) (*http.Response, error) {
 // doPingerPing sends a Ping to pr.IP using pinger, and sends an http request back to
 // pr.URL with ping response data.
 func doPingerPing(logf logger.Logf, c *http.Client, pr *tailcfg.PingRequest, pinger Pinger, pingType tailcfg.PingType) {
-	if pr.URL == "" || pr.IP.IsZero() || pinger == nil {
+	if pr.URL == "" || !pr.IP.IsValid() || pinger == nil {
 		logf("invalid ping request: missing url, ip or pinger")
 		return
 	}

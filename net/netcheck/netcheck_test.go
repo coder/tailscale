@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"reflect"
 	"sort"
 	"strconv"
@@ -16,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"inet.af/netaddr"
 	"tailscale.com/net/interfaces"
 	"tailscale.com/net/stun"
 	"tailscale.com/net/stun/stuntest"
@@ -28,14 +28,14 @@ func TestHairpinSTUN(t *testing.T) {
 	c := &Client{
 		curState: &reportState{
 			hairTX:      tx,
-			gotHairSTUN: make(chan netaddr.IPPort, 1),
+			gotHairSTUN: make(chan netip.AddrPort, 1),
 		},
 	}
 	req := stun.Request(tx)
 	if !stun.Is(req) {
 		t.Fatal("expected STUN message")
 	}
-	if !c.handleHairSTUNLocked(req, netaddr.IPPort{}) {
+	if !c.handleHairSTUNLocked(req, netip.AddrPort{}) {
 		t.Fatal("expected true")
 	}
 	select {
@@ -111,6 +111,9 @@ func TestWorksWhenUDPBlocked(t *testing.T) {
 	// That's not relevant to this test, so just accept what we're
 	// given.
 	want.IPv4CanSend = r.IPv4CanSend
+	// OS IPv6 test is irrelevant here, accept whatever the current
+	// machine has.
+	want.OSHasIPv6 = r.OSHasIPv6
 
 	if !reflect.DeepEqual(r, want) {
 		t.Errorf("mismatch\n got: %+v\nwant: %+v\n", r, want)

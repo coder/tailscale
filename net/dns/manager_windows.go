@@ -7,6 +7,7 @@ package dns
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os/exec"
 	"sort"
 	"strings"
@@ -16,8 +17,8 @@ import (
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
-	"inet.af/netaddr"
 	"tailscale.com/envknob"
+	"tailscale.com/net/netaddr"
 	"tailscale.com/types/logger"
 	"tailscale.com/util/dnsname"
 )
@@ -89,7 +90,7 @@ func delValue(key registry.Key, name string) error {
 // system's "primary" resolver.
 //
 // If no resolvers are provided, the Tailscale NRPT rules are deleted.
-func (m windowsManager) setSplitDNS(resolvers []netaddr.IP, domains []dnsname.FQDN) error {
+func (m windowsManager) setSplitDNS(resolvers []netip.Addr, domains []dnsname.FQDN) error {
 	if m.nrptDB == nil {
 		if resolvers == nil {
 			// Just a no-op in this case.
@@ -117,7 +118,7 @@ func (m windowsManager) setSplitDNS(resolvers []netaddr.IP, domains []dnsname.FQ
 // "primary" resolvers.
 // domains can be set without resolvers, which just contributes new
 // paths to the global DNS search list.
-func (m windowsManager) setPrimaryDNS(resolvers []netaddr.IP, domains []dnsname.FQDN) error {
+func (m windowsManager) setPrimaryDNS(resolvers []netip.Addr, domains []dnsname.FQDN) error {
 	var ipsv4 []string
 	var ipsv6 []string
 
@@ -297,7 +298,11 @@ func (m windowsManager) SupportsSplitDNS() bool {
 }
 
 func (m windowsManager) Close() error {
-	return m.SetDNS(OSConfig{})
+	err := m.SetDNS(OSConfig{})
+	if m.nrptDB != nil {
+		m.nrptDB.Close()
+	}
+	return err
 }
 
 // disableDynamicUpdates sets the appropriate registry values to prevent the
@@ -342,7 +347,7 @@ func (m windowsManager) GetBaseConfig() (OSConfig, error) {
 // It's used on Windows 7 to emulate split DNS by trying to figure out
 // what the "previous" primary resolver was. It might be wrong, or
 // incomplete.
-func (m windowsManager) getBasePrimaryResolver() (resolvers []netaddr.IP, err error) {
+func (m windowsManager) getBasePrimaryResolver() (resolvers []netip.Addr, err error) {
 	tsGUID, err := windows.GUIDFromString(m.guid)
 	if err != nil {
 		return nil, err
@@ -417,10 +422,10 @@ func (m windowsManager) getBasePrimaryResolver() (resolvers []netaddr.IP, err er
 	return resolvers, nil
 }
 
-var siteLocalResolvers = []netaddr.IP{
-	netaddr.MustParseIP("fec0:0:0:ffff::1"),
-	netaddr.MustParseIP("fec0:0:0:ffff::2"),
-	netaddr.MustParseIP("fec0:0:0:ffff::3"),
+var siteLocalResolvers = []netip.Addr{
+	netip.MustParseAddr("fec0:0:0:ffff::1"),
+	netip.MustParseAddr("fec0:0:0:ffff::2"),
+	netip.MustParseAddr("fec0:0:0:ffff::3"),
 }
 
 func isWindows10OrBetter() bool {

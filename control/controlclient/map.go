@@ -5,10 +5,11 @@
 package controlclient
 
 import (
+	"fmt"
 	"log"
+	"net/netip"
 	"sort"
 
-	"inet.af/netaddr"
 	"tailscale.com/envknob"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
@@ -165,12 +166,6 @@ func (ms *mapSession) netmapForResponse(resp *tailcfg.MapResponse) *netmap.Netwo
 		}
 		ms.addUserProfile(peer.User)
 	}
-	if len(resp.DNS) > 0 {
-		nm.DNS.Nameservers = resp.DNS
-	}
-	if len(resp.SearchPaths) > 0 {
-		nm.DNS.Domains = resp.SearchPaths
-	}
 	if Debug.ProxyDNS {
 		nm.DNS.Proxied = true
 	}
@@ -244,7 +239,7 @@ func undeltaPeers(mapRes *tailcfg.MapResponse, prev []*tailcfg.Node) {
 		sortNodes(newFull)
 	}
 
-	if len(mapRes.PeerSeenChange) != 0 || len(mapRes.OnlineChange) != 0 {
+	if len(mapRes.PeerSeenChange) != 0 || len(mapRes.OnlineChange) != 0 || len(mapRes.PeersChangedPatch) != 0 {
 		peerByID := make(map[tailcfg.NodeID]*tailcfg.Node, len(newFull))
 		for _, n := range newFull {
 			peerByID[n.ID] = n
@@ -263,6 +258,16 @@ func undeltaPeers(mapRes *tailcfg.MapResponse, prev []*tailcfg.Node) {
 			if n, ok := peerByID[nodeID]; ok {
 				online := online
 				n.Online = &online
+			}
+		}
+		for _, ec := range mapRes.PeersChangedPatch {
+			if n, ok := peerByID[ec.NodeID]; ok {
+				if ec.DERPRegion != 0 {
+					n.DERP = fmt.Sprintf("%s:%v", tailcfg.DerpMagicIP, ec.DERPRegion)
+				}
+				if ec.Endpoints != nil {
+					n.Endpoints = ec.Endpoints
+				}
 			}
 		}
 	}
@@ -298,13 +303,13 @@ func cloneNodes(v1 []*tailcfg.Node) []*tailcfg.Node {
 
 var debugSelfIPv6Only = envknob.Bool("TS_DEBUG_SELF_V6_ONLY")
 
-func filterSelfAddresses(in []netaddr.IPPrefix) (ret []netaddr.IPPrefix) {
+func filterSelfAddresses(in []netip.Prefix) (ret []netip.Prefix) {
 	switch {
 	default:
 		return in
 	case debugSelfIPv6Only:
 		for _, a := range in {
-			if a.IP().Is6() {
+			if a.Addr().Is6() {
 				ret = append(ret, a)
 			}
 		}

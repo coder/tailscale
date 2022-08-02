@@ -1,12 +1,12 @@
 module tailscale.com
 
-go 1.18
+go 1.19
 
 require (
-	cloud.google.com/go/compute v1.7.0
 	filippo.io/mkcert v1.4.3
 	github.com/akutz/memconn v0.1.0
 	github.com/alexbrainman/sspi v0.0.0-20210105120005-909beea2cc74
+	github.com/andybalholm/brotli v1.0.3
 	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be
 	github.com/aws/aws-sdk-go-v2 v1.11.2
 	github.com/aws/aws-sdk-go-v2/config v1.11.0
@@ -17,13 +17,16 @@ require (
 	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf
 	github.com/creack/pty v1.1.17
 	github.com/dave/jennifer v1.4.1
+	github.com/evanw/esbuild v0.14.39
 	github.com/frankban/quicktest v1.14.0
+	github.com/fxamacker/cbor/v2 v2.4.0
 	github.com/go-ole/go-ole v1.2.6
 	github.com/godbus/dbus/v5 v5.0.6
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da
 	github.com/google/go-cmp v0.5.8
 	github.com/google/uuid v1.3.0
 	github.com/goreleaser/nfpm v1.10.3
+	github.com/hdevalence/ed25519consensus v0.0.0-20220222234857-c00d1f31bab3
 	github.com/iancoleman/strcase v0.2.0
 	github.com/insomniacslk/dhcp v0.0.0-20211209223715-7d93572ebe8e
 	github.com/jsimonetti/rtnetlink v1.1.2-0.20220408201609-d380b505068b
@@ -43,7 +46,7 @@ require (
 	github.com/tailscale/goexpect v0.0.0-20210902213824-6e8c725cea41
 	github.com/tailscale/golang-x-crypto v0.0.0-20220428210705-0b941c09a5e1
 	github.com/tailscale/goupnp v1.0.1-0.20210804011211-c64d0f06ea05
-	github.com/tailscale/hujson v0.0.0-20220506202205-92b4b88a9e17
+	github.com/tailscale/hujson v0.0.0-20220630195928-54599719472f
 	github.com/tailscale/mkctr v0.0.0-20220601142259-c0b937af2e89
 	github.com/tailscale/netlink v1.1.1-0.20211101221916-cabfb018fe85
 	github.com/tcnksm/go-httpstat v0.2.0
@@ -51,6 +54,7 @@ require (
 	github.com/u-root/u-root v0.8.0
 	github.com/vishvananda/netlink v1.1.1-0.20211118161826-650dca95af54
 	go4.org/mem v0.0.0-20210711025021-927187094b94
+	go4.org/netipx v0.0.0-20220725152314-7e7bdc8411bf
 	golang.org/x/crypto v0.0.0-20220427172511-eb4f295cb31f
 	golang.org/x/net v0.0.0-20220607020251-c690dde0001d
 	golang.org/x/sync v0.0.0-20220601150217-0de741cfad7f
@@ -58,18 +62,18 @@ require (
 	golang.org/x/term v0.0.0-20210927222741-03fcf44c2211
 	golang.org/x/time v0.0.0-20211116232009-f0f3c7e86c11
 	golang.org/x/tools v0.1.11
-	golang.zx2c4.com/wireguard v0.0.0-20220317000134-95b48cdb3961
+	golang.zx2c4.com/wireguard v0.0.0-20220703234212-c31a7b1ab478
 	golang.zx2c4.com/wireguard/windows v0.4.10
-	gvisor.dev/gvisor v0.0.0-20220407223209-21871174d445
+	gvisor.dev/gvisor v0.0.0-20220801230058-850e42eb4444
 	honnef.co/go/tools v0.4.0-0.dev.0.20220404092545-59d7a2877f83
-	inet.af/netaddr v0.0.0-20220617031823-097006376321
 	inet.af/peercred v0.0.0-20210906144145-0893ea02156a
-	inet.af/wf v0.0.0-20211204062712-86aaea0a7310
+	inet.af/wf v0.0.0-20220728202103-50d96caab2f6
 	nhooyr.io/websocket v1.8.7
 )
 
 require (
 	4d63.com/gochecknoglobals v0.1.0 // indirect
+	filippo.io/edwards25519 v1.0.0-rc.1 // indirect
 	github.com/Antonboom/errname v0.1.5 // indirect
 	github.com/Antonboom/nilnil v0.1.0 // indirect
 	github.com/BurntSushi/toml v1.1.0 // indirect
@@ -256,10 +260,9 @@ require (
 	github.com/uudashr/gocognit v1.0.5 // indirect
 	github.com/vbatts/tar-split v0.11.2 // indirect
 	github.com/vishvananda/netns v0.0.0-20211101163701-50045581ed74 // indirect
+	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xanzy/ssh-agent v0.3.1 // indirect
 	github.com/yeya24/promlinter v0.1.0 // indirect
-	go4.org/intern v0.0.0-20211027215823-ae77deb06f29 // indirect
-	go4.org/unsafe/assume-no-moving-gc v0.0.0-20220617031537-928513b29760 // indirect
 	golang.org/x/exp/typeparams v0.0.0-20220328175248-053ad81199eb // indirect
 	golang.org/x/mod v0.6.0-dev.0.20220419223038-86c51ed26bb4 // indirect
 	golang.org/x/text v0.3.7 // indirect

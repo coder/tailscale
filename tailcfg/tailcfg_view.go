@@ -9,9 +9,9 @@ package tailcfg
 import (
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"time"
 
-	"inet.af/netaddr"
 	"tailscale.com/types/dnstype"
 	"tailscale.com/types/key"
 	"tailscale.com/types/opt"
@@ -19,7 +19,7 @@ import (
 	"tailscale.com/types/views"
 )
 
-//go:generate go run tailscale.com/cmd/cloner  -clonefunc=true -type=User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPRegion,DERPMap,DERPNode
+//go:generate go run tailscale.com/cmd/cloner  -clonefunc=true -type=User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPRegion,DERPMap,DERPNode,SSHRule,SSHPrincipal
 
 // View returns a readonly view of User.
 func (p *User) View() UserView {
@@ -183,14 +183,14 @@ var _NodeViewNeedsRegeneration = Node(struct {
 	KeyExpiry               time.Time
 	Machine                 key.MachinePublic
 	DiscoKey                key.DiscoPublic
-	Addresses               []netaddr.IPPrefix
-	AllowedIPs              []netaddr.IPPrefix
+	Addresses               []netip.Prefix
+	AllowedIPs              []netip.Prefix
 	Endpoints               []string
 	DERP                    string
 	Hostinfo                HostinfoView
 	Created                 time.Time
 	Tags                    []string
-	PrimaryRoutes           []netaddr.IPPrefix
+	PrimaryRoutes           []netip.Prefix
 	LastSeen                *time.Time
 	Online                  *bool
 	KeepAlive               bool
@@ -265,6 +265,7 @@ func (v HostinfoView) RequestTags() views.Slice[string]  { return views.SliceOf(
 func (v HostinfoView) Services() views.Slice[Service]    { return views.SliceOf(v.ж.Services) }
 func (v HostinfoView) NetInfo() NetInfoView              { return v.ж.NetInfo.View() }
 func (v HostinfoView) SSH_HostKeys() views.Slice[string] { return views.SliceOf(v.ж.SSH_HostKeys) }
+func (v HostinfoView) Cloud() string                     { return v.ж.Cloud }
 func (v HostinfoView) Equal(v2 HostinfoView) bool        { return v.ж.Equal(v2.ж) }
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
@@ -281,11 +282,12 @@ var _HostinfoViewNeedsRegeneration = Hostinfo(struct {
 	ShieldsUp     bool
 	ShareeNode    bool
 	GoArch        string
-	RoutableIPs   []netaddr.IPPrefix
+	RoutableIPs   []netip.Prefix
 	RequestTags   []string
 	Services      []Service
 	NetInfo       *NetInfo
 	SSH_HostKeys  []string
+	Cloud         string
 }{})
 
 // View returns a readonly view of NetInfo.
@@ -336,6 +338,7 @@ func (v *NetInfoView) UnmarshalJSON(b []byte) error {
 func (v NetInfoView) MappingVariesByDestIP() opt.Bool { return v.ж.MappingVariesByDestIP }
 func (v NetInfoView) HairPinning() opt.Bool           { return v.ж.HairPinning }
 func (v NetInfoView) WorkingIPv6() opt.Bool           { return v.ж.WorkingIPv6 }
+func (v NetInfoView) OSHasIPv6() opt.Bool             { return v.ж.OSHasIPv6 }
 func (v NetInfoView) WorkingUDP() opt.Bool            { return v.ж.WorkingUDP }
 func (v NetInfoView) HavePortMap() bool               { return v.ж.HavePortMap }
 func (v NetInfoView) UPnP() opt.Bool                  { return v.ж.UPnP }
@@ -352,6 +355,7 @@ var _NetInfoViewNeedsRegeneration = NetInfo(struct {
 	MappingVariesByDestIP opt.Bool
 	HairPinning           opt.Bool
 	WorkingIPv6           opt.Bool
+	OSHasIPv6             opt.Bool
 	WorkingUDP            opt.Bool
 	HavePortMap           bool
 	UPnP                  opt.Bool
@@ -484,7 +488,7 @@ func (v DNSConfigView) FallbackResolvers() views.SliceView[*dnstype.Resolver, dn
 }
 func (v DNSConfigView) Domains() views.Slice[string]         { return views.SliceOf(v.ж.Domains) }
 func (v DNSConfigView) Proxied() bool                        { return v.ж.Proxied }
-func (v DNSConfigView) Nameservers() views.Slice[netaddr.IP] { return views.SliceOf(v.ж.Nameservers) }
+func (v DNSConfigView) Nameservers() views.Slice[netip.Addr] { return views.SliceOf(v.ж.Nameservers) }
 func (v DNSConfigView) PerDomain() bool                      { return v.ж.PerDomain }
 func (v DNSConfigView) CertDomains() views.Slice[string]     { return views.SliceOf(v.ж.CertDomains) }
 func (v DNSConfigView) ExtraRecords() views.Slice[DNSRecord] { return views.SliceOf(v.ж.ExtraRecords) }
@@ -499,7 +503,7 @@ var _DNSConfigViewNeedsRegeneration = DNSConfig(struct {
 	FallbackResolvers   []*dnstype.Resolver
 	Domains             []string
 	Proxied             bool
-	Nameservers         []netaddr.IP
+	Nameservers         []netip.Addr
 	PerDomain           bool
 	CertDomains         []string
 	ExtraRecords        []DNSRecord
@@ -760,4 +764,138 @@ var _DERPNodeViewNeedsRegeneration = DERPNode(struct {
 	InsecureForTests bool
 	HTTPForTests     bool
 	STUNTestIP       string
+}{})
+
+// View returns a readonly view of SSHRule.
+func (p *SSHRule) View() SSHRuleView {
+	return SSHRuleView{ж: p}
+}
+
+// SSHRuleView provides a read-only view over SSHRule.
+//
+// Its methods should only be called if `Valid()` returns true.
+type SSHRuleView struct {
+	// ж is the underlying mutable value, named with a hard-to-type
+	// character that looks pointy like a pointer.
+	// It is named distinctively to make you think of how dangerous it is to escape
+	// to callers. You must not let callers be able to mutate it.
+	ж *SSHRule
+}
+
+// Valid reports whether underlying value is non-nil.
+func (v SSHRuleView) Valid() bool { return v.ж != nil }
+
+// AsStruct returns a clone of the underlying value which aliases no memory with
+// the original.
+func (v SSHRuleView) AsStruct() *SSHRule {
+	if v.ж == nil {
+		return nil
+	}
+	return v.ж.Clone()
+}
+
+func (v SSHRuleView) MarshalJSON() ([]byte, error) { return json.Marshal(v.ж) }
+
+func (v *SSHRuleView) UnmarshalJSON(b []byte) error {
+	if v.ж != nil {
+		return errors.New("already initialized")
+	}
+	if len(b) == 0 {
+		return nil
+	}
+	var x SSHRule
+	if err := json.Unmarshal(b, &x); err != nil {
+		return err
+	}
+	v.ж = &x
+	return nil
+}
+
+func (v SSHRuleView) RuleExpires() *time.Time {
+	if v.ж.RuleExpires == nil {
+		return nil
+	}
+	x := *v.ж.RuleExpires
+	return &x
+}
+
+func (v SSHRuleView) Principals() views.SliceView[*SSHPrincipal, SSHPrincipalView] {
+	return views.SliceOfViews[*SSHPrincipal, SSHPrincipalView](v.ж.Principals)
+}
+
+func (v SSHRuleView) SSHUsers() views.Map[string, string] { return views.MapOf(v.ж.SSHUsers) }
+func (v SSHRuleView) Action() *SSHAction {
+	if v.ж.Action == nil {
+		return nil
+	}
+	x := *v.ж.Action
+	return &x
+}
+
+// A compilation failure here means this code must be regenerated, with the command at the top of this file.
+var _SSHRuleViewNeedsRegeneration = SSHRule(struct {
+	RuleExpires *time.Time
+	Principals  []*SSHPrincipal
+	SSHUsers    map[string]string
+	Action      *SSHAction
+}{})
+
+// View returns a readonly view of SSHPrincipal.
+func (p *SSHPrincipal) View() SSHPrincipalView {
+	return SSHPrincipalView{ж: p}
+}
+
+// SSHPrincipalView provides a read-only view over SSHPrincipal.
+//
+// Its methods should only be called if `Valid()` returns true.
+type SSHPrincipalView struct {
+	// ж is the underlying mutable value, named with a hard-to-type
+	// character that looks pointy like a pointer.
+	// It is named distinctively to make you think of how dangerous it is to escape
+	// to callers. You must not let callers be able to mutate it.
+	ж *SSHPrincipal
+}
+
+// Valid reports whether underlying value is non-nil.
+func (v SSHPrincipalView) Valid() bool { return v.ж != nil }
+
+// AsStruct returns a clone of the underlying value which aliases no memory with
+// the original.
+func (v SSHPrincipalView) AsStruct() *SSHPrincipal {
+	if v.ж == nil {
+		return nil
+	}
+	return v.ж.Clone()
+}
+
+func (v SSHPrincipalView) MarshalJSON() ([]byte, error) { return json.Marshal(v.ж) }
+
+func (v *SSHPrincipalView) UnmarshalJSON(b []byte) error {
+	if v.ж != nil {
+		return errors.New("already initialized")
+	}
+	if len(b) == 0 {
+		return nil
+	}
+	var x SSHPrincipal
+	if err := json.Unmarshal(b, &x); err != nil {
+		return err
+	}
+	v.ж = &x
+	return nil
+}
+
+func (v SSHPrincipalView) Node() StableNodeID           { return v.ж.Node }
+func (v SSHPrincipalView) NodeIP() string               { return v.ж.NodeIP }
+func (v SSHPrincipalView) UserLogin() string            { return v.ж.UserLogin }
+func (v SSHPrincipalView) Any() bool                    { return v.ж.Any }
+func (v SSHPrincipalView) PubKeys() views.Slice[string] { return views.SliceOf(v.ж.PubKeys) }
+
+// A compilation failure here means this code must be regenerated, with the command at the top of this file.
+var _SSHPrincipalViewNeedsRegeneration = SSHPrincipal(struct {
+	Node      StableNodeID
+	NodeIP    string
+	UserLogin string
+	Any       bool
+	PubKeys   []string
 }{})

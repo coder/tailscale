@@ -177,7 +177,7 @@ func genView(buf *bytes.Buffer, it *codegen.ImportTracker, typ *types.Named, thi
 			case "byte":
 				it.Import("go4.org/mem")
 				writeTemplate("byteSliceField")
-			case "inet.af/netaddr.IPPrefix":
+			case "inet.af/netip.Prefix", "net/netip.Prefix":
 				it.Import("tailscale.com/types/views")
 				writeTemplate("ipPrefixSliceField")
 			default:
@@ -342,8 +342,7 @@ func main() {
 	it := codegen.NewImportTracker(pkg.Types)
 
 	buf := new(bytes.Buffer)
-	fmt.Fprintf(buf, `//go:generate go run tailscale.com/cmd/cloner  %s`, strings.Join(flagArgs, " "))
-	fmt.Fprintln(buf)
+	fmt.Fprintf(buf, "//go:generate go run tailscale.com/cmd/cloner  %s\n\n", strings.Join(flagArgs, " "))
 	runCloner := false
 	for _, typeName := range typeNames {
 		typ, ok := namedTypes[typeName]

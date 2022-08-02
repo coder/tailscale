@@ -6,8 +6,8 @@ package dns
 
 import (
 	"errors"
+	"net/netip"
 
-	"inet.af/netaddr"
 	"tailscale.com/util/dnsname"
 )
 
@@ -17,6 +17,7 @@ type OSConfigurator interface {
 	// If cfg is the zero value, all Tailscale-related DNS
 	// configuration is removed.
 	// SetDNS must not be called after Close.
+	// SetDNS takes ownership of cfg.
 	SetDNS(cfg OSConfig) error
 	// SupportsSplitDNS reports whether the configurator is capable of
 	// installing a resolver only for specific DNS suffixes. If false,
@@ -39,7 +40,7 @@ type OSConfigurator interface {
 // OSConfig is an OS DNS configuration.
 type OSConfig struct {
 	// Nameservers are the IP addresses of the nameservers to use.
-	Nameservers []netaddr.IP
+	Nameservers []netip.Addr
 	// SearchDomains are the domain suffixes to use when expanding
 	// single-label name queries. SearchDomains is additive to
 	// whatever non-Tailscale search domains the OS has.
