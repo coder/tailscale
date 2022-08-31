@@ -10,7 +10,7 @@ import (
 	"net/netip"
 )
 
-//go:generate go run tailscale.com/cmd/viewer --type=StructWithPtrs,StructWithoutPtrs,Map,StructWithSlices
+//go:generate go run tailscale.com/cmd/viewer --type=StructWithPtrs,StructWithoutPtrs,Map,StructWithSlices,OnlyGetClone --clone-only-type=OnlyGetClone
 
 type StructWithoutPtrs struct {
 	Int int
@@ -20,16 +20,18 @@ type StructWithoutPtrs struct {
 type Map struct {
 	Int                 map[string]int
 	SliceInt            map[string][]int
-	StructWithPtr       map[string]*StructWithPtrs
-	StructWithoutPtr    map[string]*StructWithoutPtrs
+	StructPtrWithPtr    map[string]*StructWithPtrs
+	StructPtrWithoutPtr map[string]*StructWithoutPtrs
+	StructWithoutPtr    map[string]StructWithoutPtrs
 	SlicesWithPtrs      map[string][]*StructWithPtrs
 	SlicesWithoutPtrs   map[string][]*StructWithoutPtrs
 	StructWithoutPtrKey map[StructWithoutPtrs]int `json:"-"`
 
-	// Unsupported.
+	// Unsupported views.
 	SliceIntPtr      map[string][]*int
 	PointerKey       map[*string]int        `json:"-"`
 	StructWithPtrKey map[StructWithPtrs]int `json:"-"`
+	StructWithPtr    map[string]StructWithPtrs
 }
 
 type StructWithPtrs struct {
@@ -55,4 +57,8 @@ type StructWithSlices struct {
 	Slice    []string
 	Prefixes []netip.Prefix
 	Data     []byte
+}
+
+type OnlyGetClone struct {
+	SinViewerPorFavor bool
 }

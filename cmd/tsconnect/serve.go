@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"tailscale.com/tsweb"
+	"tailscale.com/util/precompress"
 )
 
 //go:embed index.html
@@ -83,9 +84,18 @@ func generateServeIndex(distFS fs.FS) ([]byte, error) {
 		return nil, fmt.Errorf("Could not parse esbuild-metadata.json: %w", err)
 	}
 	entryPointsToHashedDistPaths := make(map[string]string)
+	mainWasmPath := ""
 	for outputPath, output := range esbuildMetadata.Outputs {
 		if output.EntryPoint != "" {
 			entryPointsToHashedDistPaths[output.EntryPoint] = path.Join("dist", outputPath)
+		}
+		if path.Ext(outputPath) == ".wasm" {
+			for input := range output.Inputs {
+				if input == "src/main.wasm" {
+					mainWasmPath = path.Join("dist", outputPath)
+					break
+				}
+			}
 		}
 	}
 
@@ -96,39 +106,25 @@ func generateServeIndex(distFS fs.FS) ([]byte, error) {
 			indexBytes = bytes.ReplaceAll(indexBytes, []byte(defaultDistPath), []byte(hashedDistPath))
 		}
 	}
+	if mainWasmPath != "" {
+		mainWasmPrefetch := fmt.Sprintf("</title>\n<link rel='preload' as='fetch' crossorigin='anonymous' href='%s'>", mainWasmPath)
+		indexBytes = bytes.ReplaceAll(indexBytes, []byte("</title>"), []byte(mainWasmPrefetch))
+	}
 
 	return indexBytes, nil
 }
 
 var entryPointsToDefaultDistPaths = map[string]string{
-	"src/index.css": "dist/index.css",
-	"src/index.ts":  "dist/index.js",
+	"src/app/index.css": "dist/index.css",
+	"src/app/index.ts":  "dist/index.js",
 }
 
 func handleServeDist(w http.ResponseWriter, r *http.Request, distFS fs.FS) {
 	path := r.URL.Path
-	var f fs.File
-	// Prefer pre-compressed versions generated during the build step.
-	if tsweb.AcceptsEncoding(r, "br") {
-		if brotliFile, err := distFS.Open(path + ".br"); err == nil {
-			f = brotliFile
-			w.Header().Set("Content-Encoding", "br")
-		}
-	}
-	if f == nil && tsweb.AcceptsEncoding(r, "gzip") {
-		if gzipFile, err := distFS.Open(path + ".gz"); err == nil {
-			f = gzipFile
-			w.Header().Set("Content-Encoding", "gzip")
-		}
-	}
-
-	if f == nil {
-		if rawFile, err := distFS.Open(path); err == nil {
-			f = rawFile
-		} else {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
+	f, err := precompress.OpenPrecompressedFile(w, r, path, distFS)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
 	}
 	defer f.Close()
 

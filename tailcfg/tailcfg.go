@@ -7,6 +7,7 @@ package tailcfg
 //go:generate go run tailscale.com/cmd/viewer --type=User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPRegion,DERPMap,DERPNode,SSHRule,SSHPrincipal --clonefunc
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"tailscale.com/types/key"
 	"tailscale.com/types/opt"
 	"tailscale.com/types/structs"
+	"tailscale.com/types/tkatype"
 	"tailscale.com/util/dnsname"
 )
 
@@ -69,7 +71,14 @@ type CapabilityVersion int
 //	31: 2022-04-15: PingRequest & PingResponse TSMP & disco support
 //	32: 2022-04-17: client knows FilterRule.CapMatch
 //	33: 2022-07-20: added MapResponse.PeersChangedPatch (DERPRegion + Endpoints)
-const CurrentCapabilityVersion CapabilityVersion = 33
+//	34: 2022-08-02: client understands CapabilityFileSharingTarget
+//	36: 2022-08-02: added PeersChangedPatch.{Key,DiscoKey,Online,LastSeen,KeyExpiry,Capabilities}
+//	37: 2022-08-09: added Debug.{SetForceBackgroundSTUN,SetRandomizeClientPort}; Debug are sticky
+//	38: 2022-08-11: added PingRequest.URLIsNoise
+//	39: 2022-08-15: clients can talk Noise over arbitrary HTTPS port
+//	40: 2022-08-22: added Node.KeySignature, PeersChangedPatch.KeySignature
+//	41: 2022-08-30: uses 100.100.100.100 for route-less ExtraRecords if global nameservers is set
+const CurrentCapabilityVersion CapabilityVersion = 41
 
 type StableID string
 
@@ -167,16 +176,17 @@ type Node struct {
 	// Sharer, if non-zero, is the user who shared this node, if different than User.
 	Sharer UserID `json:",omitempty"`
 
-	Key        key.NodePublic
-	KeyExpiry  time.Time
-	Machine    key.MachinePublic
-	DiscoKey   key.DiscoPublic
-	Addresses  []netip.Prefix // IP addresses of this Node directly
-	AllowedIPs []netip.Prefix // range of IP addresses to route to this node
-	Endpoints  []string       `json:",omitempty"` // IP+port (public via STUN, and local LANs)
-	DERP       string         `json:",omitempty"` // DERP-in-IP:port ("127.3.3.40:N") endpoint
-	Hostinfo   HostinfoView
-	Created    time.Time
+	Key          key.NodePublic
+	KeyExpiry    time.Time
+	KeySignature tkatype.MarshaledSignature `json:",omitempty"`
+	Machine      key.MachinePublic
+	DiscoKey     key.DiscoPublic
+	Addresses    []netip.Prefix // IP addresses of this Node directly
+	AllowedIPs   []netip.Prefix // range of IP addresses to route to this node
+	Endpoints    []string       `json:",omitempty"` // IP+port (public via STUN, and local LANs)
+	DERP         string         `json:",omitempty"` // DERP-in-IP:port ("127.3.3.40:N") endpoint
+	Hostinfo     HostinfoView
+	Created      time.Time
 
 	// Tags are the list of ACL tags applied to this node.
 	// Tags take the form of `tag:<value>` where value starts
@@ -455,24 +465,27 @@ type Service struct {
 // Because it contains pointers (slices), this type should not be used
 // as a value type.
 type Hostinfo struct {
-	IPNVersion    string         `json:",omitempty"` // version of this code
-	FrontendLogID string         `json:",omitempty"` // logtail ID of frontend instance
-	BackendLogID  string         `json:",omitempty"` // logtail ID of backend instance
-	OS            string         `json:",omitempty"` // operating system the client runs on (a version.OS value)
-	OSVersion     string         `json:",omitempty"` // operating system version, with optional distro prefix ("Debian 10.4", "Windows 10 Pro 10.0.19041")
-	Desktop       opt.Bool       `json:",omitempty"` // if a desktop was detected on Linux
-	Package       string         `json:",omitempty"` // Tailscale package to disambiguate ("choco", "appstore", etc; "" for unknown)
-	DeviceModel   string         `json:",omitempty"` // mobile phone model ("Pixel 3a", "iPhone12,3")
-	Hostname      string         `json:",omitempty"` // name of the host the client runs on
-	ShieldsUp     bool           `json:",omitempty"` // indicates whether the host is blocking incoming connections
-	ShareeNode    bool           `json:",omitempty"` // indicates this node exists in netmap because it's owned by a shared-to user
-	GoArch        string         `json:",omitempty"` // the host's GOARCH value (of the running binary)
-	RoutableIPs   []netip.Prefix `json:",omitempty"` // set of IP ranges this client can route
-	RequestTags   []string       `json:",omitempty"` // set of ACL tags this node wants to claim
-	Services      []Service      `json:",omitempty"` // services advertised by this machine
-	NetInfo       *NetInfo       `json:",omitempty"`
-	SSH_HostKeys  []string       `json:"sshHostKeys,omitempty"` // if advertised
-	Cloud         string         `json:",omitempty"`
+	IPNVersion      string         `json:",omitempty"` // version of this code
+	FrontendLogID   string         `json:",omitempty"` // logtail ID of frontend instance
+	BackendLogID    string         `json:",omitempty"` // logtail ID of backend instance
+	OS              string         `json:",omitempty"` // operating system the client runs on (a version.OS value)
+	OSVersion       string         `json:",omitempty"` // operating system version, with optional distro prefix ("Debian 10.4", "Windows 10 Pro 10.0.19041")
+	Desktop         opt.Bool       `json:",omitempty"` // if a desktop was detected on Linux
+	Package         string         `json:",omitempty"` // Tailscale package to disambiguate ("choco", "appstore", etc; "" for unknown)
+	DeviceModel     string         `json:",omitempty"` // mobile phone model ("Pixel 3a", "iPhone12,3")
+	Hostname        string         `json:",omitempty"` // name of the host the client runs on
+	ShieldsUp       bool           `json:",omitempty"` // indicates whether the host is blocking incoming connections
+	ShareeNode      bool           `json:",omitempty"` // indicates this node exists in netmap because it's owned by a shared-to user
+	GoArch          string         `json:",omitempty"` // the host's GOARCH value (of the running binary)
+	GoVersion       string         `json:",omitempty"` // Go version binary was built with
+	RoutableIPs     []netip.Prefix `json:",omitempty"` // set of IP ranges this client can route
+	RequestTags     []string       `json:",omitempty"` // set of ACL tags this node wants to claim
+	Services        []Service      `json:",omitempty"` // services advertised by this machine
+	NetInfo         *NetInfo       `json:",omitempty"`
+	SSH_HostKeys    []string       `json:"sshHostKeys,omitempty"` // if advertised
+	Cloud           string         `json:",omitempty"`
+	Userspace       opt.Bool       `json:",omitempty"` // if the client is running in userspace (netstack) mode
+	UserspaceRouter opt.Bool       `json:",omitempty"` // if the client's subnet router is running in userspace (netstack) mode
 
 	// NOTE: any new fields containing pointers in this type
 	//       require changes to Hostinfo.Equal.
@@ -507,6 +520,10 @@ type NetInfo struct {
 
 	// WorkingUDP is whether the host has UDP internet connectivity.
 	WorkingUDP opt.Bool
+
+	// WorkingICMPv4 is whether ICMPv4 works.
+	// Empty means not checked.
+	WorkingICMPv4 opt.Bool
 
 	// HavePortMap is whether we have an existing portmap open
 	// (UPnP, PMP, or PCP).
@@ -552,9 +569,9 @@ func (ni *NetInfo) String() string {
 	if ni == nil {
 		return "NetInfo(nil)"
 	}
-	return fmt.Sprintf("NetInfo{varies=%v hairpin=%v ipv6=%v udp=%v derp=#%v portmap=%v link=%q}",
+	return fmt.Sprintf("NetInfo{varies=%v hairpin=%v ipv6=%v udp=%v icmpv4=%v derp=#%v portmap=%v link=%q}",
 		ni.MappingVariesByDestIP, ni.HairPinning, ni.WorkingIPv6,
-		ni.WorkingUDP, ni.PreferredDERP,
+		ni.WorkingUDP, ni.WorkingICMPv4, ni.PreferredDERP,
 		ni.portMapSummary(),
 		ni.LinkType)
 }
@@ -598,6 +615,7 @@ func (ni *NetInfo) BasicallyEqual(ni2 *NetInfo) bool {
 		ni.WorkingIPv6 == ni2.WorkingIPv6 &&
 		ni.OSHasIPv6 == ni2.OSHasIPv6 &&
 		ni.WorkingUDP == ni2.WorkingUDP &&
+		ni.WorkingICMPv4 == ni2.WorkingICMPv4 &&
 		ni.HavePortMap == ni2.HavePortMap &&
 		ni.UPnP == ni2.UPnP &&
 		ni.PMP == ni2.PMP &&
@@ -761,6 +779,7 @@ type RegisterRequest struct {
 
 	NodeKey    key.NodePublic
 	OldNodeKey key.NodePublic
+	NLKey      key.NLPublic
 	Auth       struct {
 		_ structs.Incomparable
 		// One of Provider/LoginName, Oauth2Token, or AuthKey is set.
@@ -883,6 +902,11 @@ type MapRequest struct {
 	IncludeIPv6 bool `json:",omitempty"` // include IPv6 endpoints in returned Node Endpoints (for Version 4 clients)
 	Stream      bool // if true, multiple MapResponse objects are returned
 	Hostinfo    *Hostinfo
+
+	// TKA describes request parameters relating to a local instance of
+	// the tailnet key authority. This field is omitted if a local instance
+	// is not running.
+	TKA *TKAMapRequest `json:",omitempty"`
 
 	// Endpoints are the client's magicsock UDP ip:port endpoints (IPv4 or IPv6).
 	Endpoints []string
@@ -1134,13 +1158,20 @@ const (
 // PingRequest with Types and IP, will send a ping to the IP and send a POST
 // request containing a PingResponse to the URL containing results.
 type PingRequest struct {
-	// URL is the URL to send a HEAD request to.
+	// URL is the URL to reply to the PingRequest to.
 	// It will be a unique URL each time. No auth headers are necessary.
-	//
 	// If the client sees multiple PingRequests with the same URL,
 	// subsequent ones should be ignored.
-	// If Types and IP are defined, then URL is the URL to send a POST request to.
+	//
+	// The HTTP method that the node should make back to URL depends on the other
+	// fields of the PingRequest. If Types is defined, then URL is the URL to
+	// send a POST request to. Otherwise, the node should just make a HEAD
+	// request to URL.
 	URL string
+
+	// URLIsNoise, if true, means that the client should hit URL over the Noise
+	// transport instead of TLS.
+	URLIsNoise bool `json:",omitempty"`
 
 	// Log is whether to log about this ping in the success case.
 	// For failure cases, the client will log regardless.
@@ -1148,11 +1179,22 @@ type PingRequest struct {
 
 	// Types is the types of ping that are initiated. Can be any PingType, comma
 	// separated, e.g. "disco,TSMP"
-	Types string
+	//
+	// As a special case, if Types is "c2n", then this PingRequest is a
+	// client-to-node HTTP request. The HTTP request should be handled by this
+	// node's c2n handler and the HTTP response sent in a POST to URL. For c2n,
+	// the value of URLIsNoise is ignored and only the Noise transport (back to
+	// the control plane) will be used, as if URLIsNoise were true.
+	Types string `json:",omitempty"`
 
-	// IP is the ping target.
-	// It is used in TSMP pings, if IP is invalid or empty then do a HEAD request to the URL.
+	// IP is the ping target, when needed by the PingType(s) given in Types.
 	IP netip.Addr
+
+	// Payload is the ping payload.
+	//
+	// It is only used for c2n requests, in which case it's an HTTP/1.0 or
+	// HTTP/1.1-formatted HTTP request as parsable with http.ReadRequest.
+	Payload []byte `json:",omitempty"`
 }
 
 // PingResponse provides result information for a TSMP or Disco PingRequest.
@@ -1305,6 +1347,10 @@ type MapResponse struct {
 	// ControlTime, if non-zero, is the current timestamp according to the control server.
 	ControlTime *time.Time `json:",omitempty"`
 
+	// TKA, if non-nil, describes updates for the local instance of the
+	// tailnet key authority.
+	TKA *TKAMapResponse `json:",omitempty"`
+
 	// Debug is normally nil, except for when the control server
 	// is setting debug settings on a node.
 	Debug *Debug `json:",omitempty"`
@@ -1326,6 +1372,15 @@ type Debug struct {
 	// always do its background STUN queries (see magicsock's
 	// periodicReSTUN), regardless of inactivity.
 	ForceBackgroundSTUN bool `json:",omitempty"`
+
+	// SetForceBackgroundSTUN controls whether magicsock should always do its
+	// background STUN queries (see magicsock's periodicReSTUN), regardless of
+	// inactivity.
+	//
+	// As of capver 37, this field is the preferred field for control to set on
+	// the wire and ForceBackgroundSTUN is only used within the code as the
+	// current map session value. But ForceBackgroundSTUN can still be used too.
+	SetForceBackgroundSTUN opt.Bool `json:",omitempty"`
 
 	// DERPRoute controls whether the DERP reverse path
 	// optimization (see Issue 150) should be enabled or
@@ -1356,6 +1411,14 @@ type Debug struct {
 	// :0 to get a random local port, ignoring any configured
 	// fixed port.
 	RandomizeClientPort bool `json:",omitempty"`
+
+	// SetRandomizeClientPort is whether magicsock should UDP bind to :0 to get
+	// a random local port, ignoring any configured fixed port.
+	//
+	// As of capver 37, this field is the preferred field for control to set on
+	// the wire and RandomizeClientPort is only used within the code as the
+	// current map session value. But RandomizeClientPort can still be used too.
+	SetRandomizeClientPort opt.Bool `json:",omitempty"`
 
 	// OneCGNATRoute controls whether the client should prefer to make one
 	// big CGNAT /10 route rather than a /32 per peer.
@@ -1407,6 +1470,7 @@ func (n *Node) Equal(n2 *Node) bool {
 		n.Sharer == n2.Sharer &&
 		n.Key == n2.Key &&
 		n.KeyExpiry.Equal(n2.KeyExpiry) &&
+		bytes.Equal(n.KeySignature, n2.KeySignature) &&
 		n.Machine == n2.Machine &&
 		n.DiscoKey == n2.DiscoKey &&
 		eqBoolPtr(n.Online, n2.Online) &&
@@ -1491,14 +1555,23 @@ type Oauth2Token struct {
 }
 
 const (
-	// MapResponse.Node self capabilities.
+	// These are the capabilities that the self node has as listed in
+	// MapResponse.Node.Capabilities.
 
-	CapabilityFileSharing = "https://tailscale.com/cap/file-sharing"
-	CapabilityAdmin       = "https://tailscale.com/cap/is-admin"
-	CapabilitySSH         = "https://tailscale.com/cap/ssh"         // feature enabled/available
-	CapabilitySSHRuleIn   = "https://tailscale.com/cap/ssh-rule-in" // some SSH rule reach this node
+	CapabilityFileSharing        = "https://tailscale.com/cap/file-sharing"
+	CapabilityAdmin              = "https://tailscale.com/cap/is-admin"
+	CapabilitySSH                = "https://tailscale.com/cap/ssh"                   // feature enabled/available
+	CapabilitySSHRuleIn          = "https://tailscale.com/cap/ssh-rule-in"           // some SSH rule reach this node
+	CapabilityDataPlaneAuditLogs = "https://tailscale.com/cap/data-plane-audit-logs" // feature enabled
 
-	// Inter-node capabilities.
+	// These are the capabilities that the peer nodes have as listed in
+	// MapResponse.Peers[].Capabilities.
+
+	// CapabilityFileSharingTarget grants the current node the ability to send
+	// files to the peer which has this capability.
+	CapabilityFileSharingTarget = "https://tailscale.com/cap/file-sharing-target"
+
+	// Inter-node capabilities as specified in the MapResponse.PacketFilter[].CapGrants.
 
 	// CapabilityFileSharingSend grants the ability to receive files from a
 	// node that's owned by a different user.
@@ -1754,6 +1827,109 @@ type PeerChange struct {
 	// Endpoints, if non-empty, means that NodeID's UDP Endpoints
 	// have changed to these.
 	Endpoints []string `json:",omitempty"`
+
+	// Key, if non-nil, means that the NodeID's wireguard public key changed.
+	Key *key.NodePublic `json:",omitempty"`
+
+	// KeySignature, if non-nil, means that the signature of the wireguard
+	// public key has changed.
+	KeySignature tkatype.MarshaledSignature `json:",omitempty"`
+
+	// DiscoKey, if non-nil, means that the NodeID's discokey changed.
+	DiscoKey *key.DiscoPublic `json:",omitempty"`
+
+	// Online, if non-nil, means that the NodeID's online status changed.
+	Online *bool `json:",omitempty"`
+
+	// LastSeen, if non-nil, means that the NodeID's online status changed.
+	LastSeen *time.Time `json:",omitempty"`
+
+	// KeyExpiry, if non-nil, changes the NodeID's key expiry.
+	KeyExpiry *time.Time `json:",omitempty"`
+
+	// Capabilities, if non-nil, means that the NodeID's capabilities changed.
+	// It's a pointer to a slice for "omitempty", to allow differentiating
+	// a change to empty from no change.
+	Capabilities *[]string `json:",omitempty"`
+}
+
+// TKAInitBeginRequest submits a genesis AUM to seed the creation of the
+// tailnet's key authority.
+type TKAInitBeginRequest struct {
+	NodeID NodeID // NodeID of the initiating client
+
+	GenesisAUM tkatype.MarshaledAUM
+}
+
+// TKASignInfo describes information about an existing node that needs
+// to be signed into a node-key signature.
+type TKASignInfo struct {
+	NodeID     NodeID // NodeID of the node-key being signed
+	NodePublic key.NodePublic
+
+	// RotationPubkey specifies the public key which may sign
+	// a NodeKeySignature (NKS), which rotates the node key.
+	//
+	// This is necessary so the node can rotate its node-key without
+	// talking to a node which holds a trusted network-lock key.
+	// It does this by nesting the original NKS in a 'rotation' NKS,
+	// which it then signs with the key corresponding to RotationPubkey.
+	//
+	// This field expects a raw ed25519 public key.
+	RotationPubkey []byte
+}
+
+// TKAInitBeginResponse describes node information which must be signed to
+// complete initialization of the tailnets' key authority.
+type TKAInitBeginResponse struct {
+	NeedSignatures []TKASignInfo
+}
+
+// TKAInitFinishRequest finalizes initialization of the tailnet key authority
+// by submitting node-key signatures for all existing nodes.
+type TKAInitFinishRequest struct {
+	NodeID NodeID // NodeID of the initiating client
+
+	Signatures map[NodeID]tkatype.MarshaledSignature
+}
+
+// TKAInitFinishResponse describes the successful enablement of the tailnet's
+// key authority.
+type TKAInitFinishResponse struct{}
+
+// TKAMapRequest describes request parameters relating to the tailnet key
+// authority instance on this node. This information is transmitted as
+// part of the MapRequest.
+type TKAMapRequest struct {
+	// Head is the AUMHash of the latest authority update message committed
+	// by this node.
+	Head string // tka.AUMHash.String
+}
+
+// TKAMapResponse encodes information for the tailnet key authority
+// instance on the node. This information is transmitted as
+// part of the MapResponse.
+//
+// If there are no updates to be transmitted (in other words, if both
+// control and the node have the same head hash), len(Updates) == 0 and
+// WantSync is false.
+//
+// If control has updates that build off the head hash reported by the
+// node, they are simply transmitted in Updates (avoiding the more
+// expensive synchronization process).
+//
+// In all other cases, WantSync is set to true, and the node is expected
+// to reach out to control separately to synchronize.
+type TKAMapResponse struct {
+	// Updates is any AUMs that control believes the node should apply.
+	Updates []tkatype.MarshaledAUM `json:",omitempty"`
+
+	// WantSync is set by control to request the node complete AUM
+	// synchronization.
+	//
+	// TODO(tom): Implement AUM synchronization, probably as noise endpoints
+	// /machine/tka/sync/offer & /machine/tka/sync/send.
+	WantSync bool `json:",omitempty"`
 }
 
 // DerpMagicIP is a fake WireGuard endpoint IP address that means to

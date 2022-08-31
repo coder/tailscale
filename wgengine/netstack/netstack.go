@@ -117,7 +117,7 @@ type Impl struct {
 	// is a local (non-subnet) Tailscale IP address of this
 	// machine. It's always a non-nil func. It's changed on netmap
 	// updates.
-	atomicIsLocalIPFunc atomic.Value // of func(netip.Addr) bool
+	atomicIsLocalIPFunc syncs.AtomicValue[func(netip.Addr) bool]
 
 	mu sync.Mutex
 	// connsOpenBySubnetIP keeps track of number of connections open
@@ -218,11 +218,12 @@ func (ns *Impl) SetLocalBackend(lb *ipnlocal.LocalBackend) {
 func (ns *Impl) wrapProtoHandler(h func(stack.TransportEndpointID, *stack.PacketBuffer) bool) func(stack.TransportEndpointID, *stack.PacketBuffer) bool {
 	return func(tei stack.TransportEndpointID, pb *stack.PacketBuffer) bool {
 		addr := tei.LocalAddress
-		ip, ok := netaddr.FromStdIP(net.IP(addr))
+		ip, ok := netip.AddrFromSlice(net.IP(addr))
 		if !ok {
 			ns.logf("netstack: could not parse local address for incoming connection")
 			return false
 		}
+		ip = ip.Unmap()
 		if !ns.isLocalIP(ip) {
 			ns.addSubnetAddress(ip)
 		}
@@ -486,7 +487,7 @@ func (ns *Impl) inject() {
 				}
 			case 6:
 				if len(b) >= 40 { // min ipv6 header
-					if srcIP, ok := netaddr.FromStdIP(net.IP(b[8:24])); ok && magicDNSIPv6 == srcIP {
+					if srcIP, ok := netip.AddrFromSlice(net.IP(b[8:24])); ok && magicDNSIPv6 == srcIP {
 						sendToHost = true
 					}
 				}
@@ -512,7 +513,7 @@ func (ns *Impl) inject() {
 // isLocalIP reports whether ip is a Tailscale IP assigned to this
 // node directly (but not a subnet-routed IP).
 func (ns *Impl) isLocalIP(ip netip.Addr) bool {
-	return ns.atomicIsLocalIPFunc.Load().(func(netip.Addr) bool)(ip)
+	return ns.atomicIsLocalIPFunc.Load()(ip)
 }
 
 func (ns *Impl) processSSH() bool {
@@ -710,7 +711,7 @@ func netaddrIPFromNetstackIP(s tcpip.Address) netip.Addr {
 	case 16:
 		var a [16]byte
 		copy(a[:], s)
-		return netaddr.IPFrom16(a)
+		return netip.AddrFrom16(a).Unmap()
 	}
 	return netip.Addr{}
 }
@@ -847,7 +848,7 @@ func (ns *Impl) forwardTCP(client *gonet.TCPConn, clientRemoteIP netip.Addr, wq 
 	}
 	defer server.Close()
 	backendLocalAddr := server.LocalAddr().(*net.TCPAddr)
-	backendLocalIPPort, _ := netaddr.FromStdAddr(backendLocalAddr.IP, backendLocalAddr.Port, backendLocalAddr.Zone)
+	backendLocalIPPort := netaddr.Unmap(backendLocalAddr.AddrPort())
 	ns.e.RegisterIPPortIdentity(backendLocalIPPort, clientRemoteIP)
 	defer ns.e.UnregisterIPPortIdentity(backendLocalIPPort)
 	connClosed := make(chan error, 2)
@@ -977,8 +978,9 @@ func (ns *Impl) forwardUDP(client *gonet.UDPConn, wq *waiter.Queue, clientAddr, 
 		}
 	}
 	backendLocalAddr := backendConn.LocalAddr().(*net.UDPAddr)
-	backendLocalIPPort, ok := netaddr.FromStdAddr(backendListenAddr.IP, backendLocalAddr.Port, backendLocalAddr.Zone)
-	if !ok {
+
+	backendLocalIPPort := netip.AddrPortFrom(backendListenAddr.AddrPort().Addr().Unmap().WithZone(backendLocalAddr.Zone), backendLocalAddr.AddrPort().Port())
+	if !backendLocalIPPort.IsValid() {
 		ns.logf("could not get backend local IP:port from %v:%v", backendLocalAddr.IP, backendLocalAddr.Port)
 	}
 	if isLocal {
@@ -1060,5 +1062,17 @@ func stringifyTEI(tei stack.TransportEndpointID) string {
 }
 
 func ipPortOfNetstackAddr(a tcpip.Address, port uint16) (ipp netip.AddrPort, ok bool) {
-	return netaddr.FromStdAddr(net.IP(a), int(port), "") // TODO(bradfitz): can do without allocs
+	var a16 [16]byte
+	copy(a16[:], a)
+	switch len(a) {
+	case 4:
+		return netip.AddrPortFrom(
+			netip.AddrFrom4(*(*[4]byte)(a16[:4])).Unmap(),
+			port,
+		), true
+	case 16:
+		return netip.AddrPortFrom(netip.AddrFrom16(a16).Unmap(), port), true
+	default:
+		return ipp, false
+	}
 }

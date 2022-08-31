@@ -7,20 +7,43 @@ package tka
 import (
 	"bytes"
 	"crypto/ed25519"
-	"encoding/binary"
+	"encoding/base32"
 	"errors"
 	"fmt"
 
 	"github.com/fxamacker/cbor/v2"
 	"golang.org/x/crypto/blake2s"
+	"tailscale.com/types/tkatype"
 )
 
 // AUMHash represents the BLAKE2s digest of an Authority Update Message (AUM).
 type AUMHash [blake2s.Size]byte
 
-// AUMSigHash represents the BLAKE2s digest of an Authority Update
-// Message (AUM), sans any signatures.
-type AUMSigHash [blake2s.Size]byte
+var base32StdNoPad = base32.StdEncoding.WithPadding(base32.NoPadding)
+
+// String returns the AUMHash encoded as base32.
+// This is suitable for use as a filename, and for storing in text-preferred media.
+func (h AUMHash) String() string {
+	return base32StdNoPad.EncodeToString(h[:])
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (h *AUMHash) UnmarshalText(text []byte) error {
+	if l := base32StdNoPad.DecodedLen(len(text)); l != len(h) {
+		return fmt.Errorf("tka.AUMHash.UnmarshalText: text wrong length: %d, want %d", l, len(text))
+	}
+	if _, err := base32StdNoPad.Decode(h[:], text); err != nil {
+		return fmt.Errorf("tka.AUMHash.UnmarshalText: %w", err)
+	}
+	return nil
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (h AUMHash) MarshalText() ([]byte, error) {
+	b := make([]byte, base32StdNoPad.EncodedLen(len(h)))
+	base32StdNoPad.Encode(b, h[:])
+	return b, nil
+}
 
 // AUMKind describes valid AUM types.
 type AUMKind uint8
@@ -36,10 +59,6 @@ const (
 	//
 	// Only the KeyID optional field may be set.
 	AUMRemoveKey
-	// A DisableNL AUM describes the disablement of TKA.
-	//
-	// Only the DisablementSecret optional field may be set.
-	AUMDisableNL
 	// A NoOp AUM carries no information and is used in tests.
 	AUMNoOp
 	// A UpdateKey AUM updates the metadata or votes of an existing key.
@@ -61,8 +80,6 @@ func (k AUMKind) String() string {
 		return "add-key"
 	case AUMRemoveKey:
 		return "remove-key"
-	case AUMDisableNL:
-		return "disable-nl"
 	case AUMNoOp:
 		return "no-op"
 	case AUMCheckpoint:
@@ -101,33 +118,21 @@ type AUM struct {
 
 	// KeyID references a public key which is part of the key authority.
 	// This field is used for RemoveKey and UpdateKey AUMs.
-	KeyID KeyID `cbor:"4,keyasint,omitempty"`
+	KeyID tkatype.KeyID `cbor:"4,keyasint,omitempty"`
 
 	// State describes the full state of the key authority.
 	// This field is used for Checkpoint AUMs.
 	State *State `cbor:"5,keyasint,omitempty"`
 
-	// DisablementSecret is used to transmit a secret for disabling
-	// the TKA.
-	// This field is used for DisableNL AUMs.
-	DisablementSecret []byte `cbor:"6,keyasint,omitempty"`
-
 	// Votes and Meta describe properties of a key in the key authority.
 	// These fields are used for UpdateKey AUMs.
-	Votes *uint             `cbor:"7,keyasint,omitempty"`
-	Meta  map[string]string `cbor:"8,keyasint,omitempty"`
+	Votes *uint             `cbor:"6,keyasint,omitempty"`
+	Meta  map[string]string `cbor:"7,keyasint,omitempty"`
 
 	// Signatures lists the signatures over this AUM.
 	// CBOR key 23 is the last key which can be encoded as a single byte.
-	Signatures []Signature `cbor:"23,keyasint,omitempty"`
+	Signatures []tkatype.Signature `cbor:"23,keyasint,omitempty"`
 }
-
-// Upper bound on checkpoint elements, chosen arbitrarily. Intended to
-// cap out insanely large AUMs.
-const (
-	maxDisablementSecrets = 32
-	maxKeys               = 512
-)
 
 // StaticValidate returns a nil error if the AUM is well-formed.
 func (a *AUM) StaticValidate() error {
@@ -146,34 +151,9 @@ func (a *AUM) StaticValidate() error {
 	}
 
 	if a.State != nil {
-		if a.State.LastAUMHash != nil {
-			return errors.New("checkpoint state cannot specify a parent AUM")
+		if err := a.State.staticValidateCheckpoint(); err != nil {
+			return fmt.Errorf("checkpoint state: %v", err)
 		}
-		if len(a.State.DisablementSecrets) == 0 {
-			return errors.New("at least one disablement secret required")
-		}
-		if numDS := len(a.State.DisablementSecrets); numDS > maxDisablementSecrets {
-			return fmt.Errorf("too many disablement secrets (%d, max %d)", numDS, maxDisablementSecrets)
-		}
-		for i, ds := range a.State.DisablementSecrets {
-			if len(ds) != disablementLength {
-				return fmt.Errorf("disablement[%d]: invalid length (got %d, want %d)", i, len(ds), disablementLength)
-			}
-		}
-		// TODO(tom): Check for duplicate disablement secrets.
-
-		if len(a.State.Keys) == 0 {
-			return errors.New("at least one key is required")
-		}
-		if numKeys := len(a.State.Keys); numKeys > maxKeys {
-			return fmt.Errorf("too many keys (%d, max %d)", numKeys, maxKeys)
-		}
-		for i, k := range a.State.Keys {
-			if err := k.StaticValidate(); err != nil {
-				return fmt.Errorf("key[%d]: %v", i, err)
-			}
-		}
-		// TODO(tom): Check for duplicate keys.
 	}
 
 	switch a.MessageKind {
@@ -181,14 +161,14 @@ func (a *AUM) StaticValidate() error {
 		if a.Key == nil {
 			return errors.New("AddKey AUMs must contain a key")
 		}
-		if a.KeyID != nil || a.DisablementSecret != nil || a.State != nil || a.Votes != nil || a.Meta != nil {
+		if a.KeyID != nil || a.State != nil || a.Votes != nil || a.Meta != nil {
 			return errors.New("AddKey AUMs may only specify a Key")
 		}
 	case AUMRemoveKey:
 		if len(a.KeyID) == 0 {
 			return errors.New("RemoveKey AUMs must specify a key ID")
 		}
-		if a.Key != nil || a.DisablementSecret != nil || a.State != nil || a.Votes != nil || a.Meta != nil {
+		if a.Key != nil || a.State != nil || a.Votes != nil || a.Meta != nil {
 			return errors.New("RemoveKey AUMs may only specify a KeyID")
 		}
 	case AUMUpdateKey:
@@ -198,30 +178,32 @@ func (a *AUM) StaticValidate() error {
 		if a.Meta == nil && a.Votes == nil {
 			return errors.New("UpdateKey AUMs must contain an update to votes or key metadata")
 		}
-		if a.Key != nil || a.DisablementSecret != nil || a.State != nil {
+		if a.Key != nil || a.State != nil {
 			return errors.New("UpdateKey AUMs may only specify KeyID, Votes, and Meta")
 		}
 	case AUMCheckpoint:
 		if a.State == nil {
 			return errors.New("Checkpoint AUMs must specify the state")
 		}
-		if a.KeyID != nil || a.DisablementSecret != nil || a.Key != nil || a.Votes != nil || a.Meta != nil {
+		if a.KeyID != nil || a.Key != nil || a.Votes != nil || a.Meta != nil {
 			return errors.New("Checkpoint AUMs may only specify State")
 		}
-	case AUMDisableNL:
-		if len(a.DisablementSecret) == 0 {
-			return errors.New("DisableNL AUMs must specify a disablement secret")
-		}
-		if a.KeyID != nil || a.State != nil || a.Key != nil || a.Votes != nil || a.Meta != nil {
-			return errors.New("DisableNL AUMs may only a disablement secret")
-		}
+
+	case AUMNoOp:
+	default:
+		// TODO(tom): Ignore unknown AUMs for GA.
+		return fmt.Errorf("unknown AUM kind: %v", a.MessageKind)
 	}
 
 	return nil
 }
 
 // Serialize returns the given AUM in a serialized format.
-func (a *AUM) Serialize() []byte {
+//
+// We would implement encoding.BinaryMarshaler, except that would
+// unfortunately get called by the cbor marshaller resulting in infinite
+// recursion.
+func (a *AUM) Serialize() tkatype.MarshaledAUM {
 	// Why CBOR and not something like JSON?
 	//
 	// The main function of an AUM is to carry signed data. Signatures are
@@ -252,6 +234,16 @@ func (a *AUM) Serialize() []byte {
 	return out.Bytes()
 }
 
+// Unserialize decodes bytes representing a marshaled AUM.
+//
+// We would implement encoding.BinaryUnmarshaler, except that would
+// unfortunately get called by the cbor unmarshaller resulting in infinite
+// recursion.
+func (a *AUM) Unserialize(data []byte) error {
+	dec, _ := cborDecOpts.DecMode()
+	return dec.Unmarshal(data, a)
+}
+
 // Hash returns a cryptographic digest of all AUM contents.
 func (a *AUM) Hash() AUMHash {
 	return blake2s.Sum256(a.Serialize())
@@ -263,7 +255,7 @@ func (a *AUM) Hash() AUMHash {
 // This is identical to Hash() except the Signatures are not
 // serialized. Without this, the hash used for signatures
 // would be circularly dependent on the signatures.
-func (a AUM) SigHash() AUMSigHash {
+func (a AUM) SigHash() tkatype.AUMSigHash {
 	dupe := a
 	dupe.Signatures = nil
 	return blake2s.Sum256(dupe.Serialize())
@@ -283,7 +275,7 @@ func (a *AUM) sign25519(priv ed25519.PrivateKey) {
 	key := Key{Kind: Key25519, Public: priv.Public().(ed25519.PublicKey)}
 	sigHash := a.SigHash()
 
-	a.Signatures = append(a.Signatures, Signature{
+	a.Signatures = append(a.Signatures, tkatype.Signature{
 		KeyID:     key.ID(),
 		Signature: ed25519.Sign(priv, sigHash[:]),
 	})
@@ -304,18 +296,17 @@ func (a *AUM) Weight(state State) uint {
 	// signatures with the same key do not result in 2x
 	// the weight.
 	//
-	// We use the first 8 bytes as the key for this map,
-	// because KeyIDs are either a blake2s hash or
-	// the 25519 public key, both of which approximate
-	// random distribution.
-	seenKeys := make(map[uint64]struct{}, 6)
+	// Despite the wire encoding being []byte, all KeyIDs are
+	// 32 bytes. As such, we use that as the key for the map,
+	// because map keys cannot be slices.
+	seenKeys := make(map[[32]byte]struct{}, 6)
 	for _, sig := range a.Signatures {
-		if len(sig.KeyID) < 8 {
-			// Invalid, don't count it
-			continue
+		if len(sig.KeyID) != 32 {
+			panic("unexpected: keyIDs are 32 bytes")
 		}
 
-		keyID := binary.LittleEndian.Uint64(sig.KeyID)
+		var keyID [32]byte
+		copy(keyID[:], sig.KeyID)
 
 		key, err := state.GetKey(sig.KeyID)
 		if err != nil {

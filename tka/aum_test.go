@@ -8,9 +8,9 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/fxamacker/cbor/v2"
 	"github.com/google/go-cmp/cmp"
 	"golang.org/x/crypto/blake2s"
+	"tailscale.com/types/tkatype"
 )
 
 func TestSerialization(t *testing.T) {
@@ -62,38 +62,21 @@ func TestSerialization(t *testing.T) {
 			[]byte{
 				0xa5, // major type 5 (map), 5 items
 				0x01, // |- major type 0 (int), value 1 (first key, MessageKind)
-				0x05, // |- major type 0 (int), value 2 (first value, AUMUpdateKey)
+				0x04, // |- major type 0 (int), value 4 (first value, AUMUpdateKey)
 				0x02, // |- major type 0 (int), value 2 (second key, PrevAUMHash)
 				0xf6, // |- major type 7 (val), value null (second value, nil)
 				0x04, // |- major type 0 (int), value 4 (third key, KeyID)
 				0x42, // |- major type 2 (byte string), 2 items
 				0x01, //    |- major type 0 (int), value 1 (byte 1)
 				0x02, //    |- major type 0 (int), value 2 (byte 2)
-				0x07, // |- major type 0 (int), value 7 (fourth key, Votes)
+				0x06, // |- major type 0 (int), value 6 (fourth key, Votes)
 				0x02, // |- major type 0 (int), value 2 (forth value, 2)
-				0x08, // |- major type 0 (int), value 8 (fifth key, Meta)
+				0x07, // |- major type 0 (int), value 7 (fifth key, Meta)
 				0xa1, // |- major type 5 (map), 1 item (map[string]string type)
 				0x61, //    |- major type 3 (text string), value 1 (first key, one byte long)
 				0x61, //       |- byte 'a'
 				0x61, //    |- major type 3 (text string), value 1 (first value, one byte long)
 				0x62, //       |- byte 'b'
-			},
-		},
-		{
-			"DisableNL",
-			AUM{MessageKind: AUMDisableNL, PrevAUMHash: []byte{1, 2}, DisablementSecret: []byte{3, 4}},
-			[]byte{
-				0xa3, // major type 5 (map), 3 items
-				0x01, // |- major type 0 (int), value 1 (first key, MessageKind)
-				0x03, // |- major type 0 (int), value 3 (first value, AUMDisableNL)
-				0x02, // |- major type 0 (int), value 2 (second key, PrevAUMHash)
-				0x42, // |- major type 2 (byte string), 2 items (second value)
-				0x01, //    |- major type 0 (int), value 1 (byte 1)
-				0x02, //    |- major type 0 (int), value 2 (byte 2)
-				0x06, // |- major type 0 (int), value 6 (third key, DisablementSecret)
-				0x42, // |- major type 2 (byte string), 2 items (third value)
-				0x03, //    |- major type 0 (int), value 3 (byte 3)
-				0x04, //    |- major type 0 (int), value 4 (byte 4)
 			},
 		},
 		{
@@ -108,7 +91,7 @@ func TestSerialization(t *testing.T) {
 				append([]byte{
 					0xa3,       // major type 5 (map), 3 items
 					0x01,       // |- major type 0 (int), value 1 (first key, MessageKind)
-					0x06,       // |- major type 0 (int), value 6 (first value, AUMCheckpoint)
+					0x05,       // |- major type 0 (int), value 5 (first value, AUMCheckpoint)
 					0x02,       // |- major type 0 (int), value 2 (second key, PrevAUMHash)
 					0x42,       // |- major type 2 (byte string), 2 items (second value)
 					0x01,       //    |- major type 0 (int), value 1 (byte 1)
@@ -137,7 +120,7 @@ func TestSerialization(t *testing.T) {
 		},
 		{
 			"Signature",
-			AUM{MessageKind: AUMAddKey, Signatures: []Signature{{KeyID: []byte{1}}}},
+			AUM{MessageKind: AUMAddKey, Signatures: []tkatype.Signature{{KeyID: []byte{1}}}},
 			[]byte{
 				0xa3, // major type 5 (map), 3 items
 				0x01, // |- major type 0 (int), value 1 (first key, MessageKind)
@@ -158,13 +141,13 @@ func TestSerialization(t *testing.T) {
 
 	for _, tc := range tcs {
 		t.Run(tc.Name, func(t *testing.T) {
-			data := tc.AUM.Serialize()
+			data := []byte(tc.AUM.Serialize())
 			if diff := cmp.Diff(tc.Expect, data); diff != "" {
 				t.Errorf("serialization differs (-want, +got):\n%s", diff)
 			}
 
 			var decodedAUM AUM
-			if err := cbor.Unmarshal(data, &decodedAUM); err != nil {
+			if err := decodedAUM.Unserialize(data); err != nil {
 				t.Fatalf("Unmarshal failed: %v", err)
 			}
 			if diff := cmp.Diff(tc.AUM, decodedAUM); diff != "" {
@@ -198,7 +181,7 @@ func TestAUMWeight(t *testing.T) {
 		{
 			"Key unknown",
 			AUM{
-				Signatures: []Signature{{KeyID: fakeKeyID[:]}},
+				Signatures: []tkatype.Signature{{KeyID: fakeKeyID[:]}},
 			},
 			State{},
 			0,
@@ -206,7 +189,7 @@ func TestAUMWeight(t *testing.T) {
 		{
 			"Unary key",
 			AUM{
-				Signatures: []Signature{{KeyID: key.ID()}},
+				Signatures: []tkatype.Signature{{KeyID: key.ID()}},
 			},
 			State{
 				Keys: []Key{key},
@@ -216,7 +199,7 @@ func TestAUMWeight(t *testing.T) {
 		{
 			"Multiple keys",
 			AUM{
-				Signatures: []Signature{{KeyID: key.ID()}, {KeyID: key2.ID()}},
+				Signatures: []tkatype.Signature{{KeyID: key.ID()}, {KeyID: key2.ID()}},
 			},
 			State{
 				Keys: []Key{key, key2},
@@ -226,7 +209,7 @@ func TestAUMWeight(t *testing.T) {
 		{
 			"Double use",
 			AUM{
-				Signatures: []Signature{{KeyID: key.ID()}, {KeyID: key.ID()}},
+				Signatures: []tkatype.Signature{{KeyID: key.ID()}, {KeyID: key.ID()}},
 			},
 			State{
 				Keys: []Key{key},
@@ -255,7 +238,7 @@ func TestAUMHashes(t *testing.T) {
 	sigHash1 := aum.SigHash()
 	aumHash1 := aum.Hash()
 
-	aum.Signatures = []Signature{{KeyID: []byte{1, 2, 3, 4}}}
+	aum.Signatures = []tkatype.Signature{{KeyID: []byte{1, 2, 3, 4}}}
 	sigHash2 := aum.SigHash()
 	aumHash2 := aum.Hash()
 	if len(aum.Signatures) != 1 {

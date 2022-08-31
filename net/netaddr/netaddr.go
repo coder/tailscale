@@ -10,7 +10,6 @@
 package netaddr
 
 import (
-	"math"
 	"net"
 	"net/netip"
 )
@@ -20,42 +19,21 @@ func IPv4(a, b, c, d uint8) netip.Addr {
 	return netip.AddrFrom4([4]byte{a, b, c, d})
 }
 
-// IPFrom16 returns the IP address given by the bytes in addr, unmapping any
-// v6-mapped IPv4 address.
+// Unmap returns the provided AddrPort with its Addr IP component Unmap'ed.
 //
-// It is equivalent to calling IPv6Raw(addr).Unmap().
-func IPFrom16(a [16]byte) netip.Addr {
-	return netip.AddrFrom16(a).Unmap()
-}
-
-// FromStdIP returns an IP from the standard library's IP type.
-//
-// If std is invalid, ok is false.
-//
-// FromStdIP implicitly unmaps IPv6-mapped IPv4 addresses. That is, if
-// len(std) == 16 and contains an IPv4 address, only the IPv4 part is
-// returned, without the IPv6 wrapper. This is the common form returned by
-// the standard library's ParseIP: https://play.golang.org/p/qdjylUkKWxl.
-// To convert a standard library IP without the implicit unmapping, use
-// netip.AddrFromSlice.
-func FromStdIP(std net.IP) (ip netip.Addr, ok bool) {
-	ret, ok := netip.AddrFromSlice(std)
-	if !ok {
-		return ret, false
-	}
-	if ret.Is4In6() {
-		return ret.Unmap(), true
-	}
-	return ret, true
+// See https://github.com/golang/go/issues/53607#issuecomment-1203466984
+func Unmap(ap netip.AddrPort) netip.AddrPort {
+	return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
 }
 
 // FromStdIPNet returns an IPPrefix from the standard library's IPNet type.
 // If std is invalid, ok is false.
 func FromStdIPNet(std *net.IPNet) (prefix netip.Prefix, ok bool) {
-	ip, ok := FromStdIP(std.IP)
+	ip, ok := netip.AddrFromSlice(std.IP)
 	if !ok {
 		return netip.Prefix{}, false
 	}
+	ip = ip.Unmap()
 
 	if l := len(std.Mask); l != net.IPv4len && l != net.IPv6len {
 		// Invalid mask.
@@ -69,22 +47,4 @@ func FromStdIPNet(std *net.IPNet) (prefix netip.Prefix, ok bool) {
 	}
 
 	return netip.PrefixFrom(ip, ones), true
-}
-
-// FromStdAddr maps the components of a standard library TCPAddr or
-// UDPAddr into an IPPort.
-func FromStdAddr(stdIP net.IP, port int, zone string) (_ netip.AddrPort, ok bool) {
-	ip, ok := FromStdIP(stdIP)
-	if !ok || port < 0 || port > math.MaxUint16 {
-		return
-	}
-	ip = ip.Unmap()
-	if zone != "" {
-		if ip.Is4() {
-			ok = false
-			return
-		}
-		ip = ip.WithZone(zone)
-	}
-	return netip.AddrPortFrom(ip, uint16(port)), true
 }

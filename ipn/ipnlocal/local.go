@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"go4.org/netipx"
+	"golang.org/x/exp/slices"
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/control/controlclient"
 	"tailscale.com/envknob"
@@ -41,6 +42,7 @@ import (
 	"tailscale.com/portlist"
 	"tailscale.com/syncs"
 	"tailscale.com/tailcfg"
+	"tailscale.com/tka"
 	"tailscale.com/types/dnstype"
 	"tailscale.com/types/empty"
 	"tailscale.com/types/key"
@@ -125,11 +127,11 @@ type LocalBackend struct {
 	serverURL             string           // tailcontrol URL
 	newDecompressor       func() (controlclient.Decompressor, error)
 	varRoot               string // or empty if SetVarRoot never called
-	sshAtomicBool         syncs.AtomicBool
+	sshAtomicBool         atomic.Bool
 	shutdownCalled        bool // if Shutdown has been called
 
-	filterAtomic            atomic.Value // of *filter.Filter
-	containsViaIPFuncAtomic atomic.Value // of func(netip.Addr) bool
+	filterAtomic            atomic.Pointer[filter.Filter]
+	containsViaIPFuncAtomic syncs.AtomicValue[func(netip.Addr) bool]
 
 	// The mutex protects the following elements.
 	mu             sync.Mutex
@@ -145,6 +147,8 @@ type LocalBackend struct {
 	prefs          *ipn.Prefs
 	inServerMode   bool
 	machinePrivKey key.MachinePrivate
+	nlPrivKey      key.NLPrivate
+	tka            *tkaState
 	state          ipn.State
 	capFileSharing bool // whether netMap contains the file sharing capability
 	// hostinfo is mutated in-place while mu is held.
@@ -573,8 +577,8 @@ func (b *LocalBackend) PeerCaps(src netip.Addr) []string {
 	if b.netMap == nil {
 		return nil
 	}
-	filt, ok := b.filterAtomic.Load().(*filter.Filter)
-	if !ok {
+	filt := b.filterAtomic.Load()
+	if filt == nil {
 		return nil
 	}
 	for _, a := range b.netMap.Addresses {
@@ -951,6 +955,8 @@ func (b *LocalBackend) Start(opts ipn.Options) error {
 	hostinfo := hostinfo.New()
 	hostinfo.BackendLogID = b.backendLogID
 	hostinfo.FrontendLogID = opts.FrontendLogID
+	hostinfo.Userspace.Set(wgengine.IsNetstack(b.e))
+	hostinfo.UserspaceRouter.Set(wgengine.IsNetstackRouter(b.e))
 
 	if b.cc != nil {
 		// TODO(apenwarr): avoid the need to reinit controlclient.
@@ -996,6 +1002,9 @@ func (b *LocalBackend) Start(opts ipn.Options) error {
 			return fmt.Errorf("initMachineKeyLocked: %w", err)
 		}
 	}
+	if err := b.initNLKeyLocked(); err != nil {
+		return fmt.Errorf("initNLKeyLocked: %w", err)
+	}
 
 	loggedOut := b.prefs.LoggedOut
 
@@ -1032,10 +1041,7 @@ func (b *LocalBackend) Start(opts ipn.Options) error {
 		})
 	}
 
-	var discoPublic key.DiscoPublic
-	if controlclient.Debug.Disco {
-		discoPublic = b.e.DiscoPublicKey()
-	}
+	discoPublic := b.e.DiscoPublicKey()
 
 	var err error
 	if persistv == nil {
@@ -1055,6 +1061,7 @@ func (b *LocalBackend) Start(opts ipn.Options) error {
 	// but it won't take effect until the next Start().
 	cc, err := b.getNewControlClientFunc()(controlclient.Options{
 		GetMachinePrivateKey: b.createGetMachinePrivateKeyFunc(),
+		GetNLPublicKey:       b.createGetNLPublicKeyFunc(),
 		Logf:                 logger.WithPrefix(b.logf, "control: "),
 		Persist:              *persistv,
 		ServerURL:            b.serverURL,
@@ -1070,6 +1077,7 @@ func (b *LocalBackend) Start(opts ipn.Options) error {
 		PopBrowserURL:        b.tellClientToBrowseToURL,
 		Dialer:               b.Dialer(),
 		Status:               b.setClientStatus,
+		C2NHandler:           http.HandlerFunc(b.handleC2N),
 
 		// Don't warn about broken Linux IP forwarding when
 		// netstack is being used.
@@ -1175,7 +1183,15 @@ func (b *LocalBackend) updateFilterLocked(netMap *netmap.NetworkMap, prefs *ipn.
 		sshPol = *netMap.SSHPolicy
 	}
 
-	changed := deephash.Update(&b.filterHash, haveNetmap, addrs, packetFilter, localNets.Ranges(), logNets.Ranges(), shieldsUp, sshPol)
+	changed := deephash.Update(&b.filterHash, &struct {
+		HaveNetmap  bool
+		Addrs       []netip.Prefix
+		FilterMatch []filter.Match
+		LocalNets   []netipx.IPRange
+		LogNets     []netipx.IPRange
+		ShieldsUp   bool
+		SSHPolicy   tailcfg.SSHPolicy
+	}{haveNetmap, addrs, packetFilter, localNets.Ranges(), logNets.Ranges(), shieldsUp, sshPol})
 	if !changed {
 		return
 	}
@@ -1493,17 +1509,17 @@ func (b *LocalBackend) tellClientToBrowseToURL(url string) {
 var panicOnMachineKeyGeneration = envknob.Bool("TS_DEBUG_PANIC_MACHINE_KEY")
 
 func (b *LocalBackend) createGetMachinePrivateKeyFunc() func() (key.MachinePrivate, error) {
-	var cache atomic.Value
+	var cache syncs.AtomicValue[key.MachinePrivate]
 	return func() (key.MachinePrivate, error) {
 		if panicOnMachineKeyGeneration {
 			panic("machine key generated")
 		}
-		if v, ok := cache.Load().(key.MachinePrivate); ok {
+		if v, ok := cache.LoadOk(); ok {
 			return v, nil
 		}
 		b.mu.Lock()
 		defer b.mu.Unlock()
-		if v, ok := cache.Load().(key.MachinePrivate); ok {
+		if v, ok := cache.LoadOk(); ok {
 			return v, nil
 		}
 		if err := b.initMachineKeyLocked(); err != nil {
@@ -1511,6 +1527,21 @@ func (b *LocalBackend) createGetMachinePrivateKeyFunc() func() (key.MachinePriva
 		}
 		cache.Store(b.machinePrivKey)
 		return b.machinePrivKey, nil
+	}
+}
+
+func (b *LocalBackend) createGetNLPublicKeyFunc() func() (key.NLPublic, error) {
+	var cache syncs.AtomicValue[key.NLPublic]
+	return func() (key.NLPublic, error) {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if v, ok := cache.LoadOk(); ok {
+			return v, nil
+		}
+
+		pub := b.nlPrivKey.Public()
+		cache.Store(pub)
+		return pub, nil
 	}
 }
 
@@ -1569,6 +1600,45 @@ func (b *LocalBackend) initMachineKeyLocked() (err error) {
 	}
 
 	b.logf("machine key written to store")
+	return nil
+}
+
+// initNLKeyLocked is called to initialize b.nlPrivKey.
+//
+// b.prefs must already be initialized.
+// b.stateKey should be set too, but just for nicer log messages.
+// b.mu must be held.
+func (b *LocalBackend) initNLKeyLocked() (err error) {
+	if !b.nlPrivKey.IsZero() {
+		// Already set.
+		return nil
+	}
+
+	keyText, err := b.store.ReadState(ipn.NLKeyStateKey)
+	if err == nil {
+		if err := b.nlPrivKey.UnmarshalText(keyText); err != nil {
+			return fmt.Errorf("invalid key in %s key of %v: %w", ipn.NLKeyStateKey, b.store, err)
+		}
+		if b.nlPrivKey.IsZero() {
+			return fmt.Errorf("invalid zero key stored in %v key of %v", ipn.NLKeyStateKey, b.store)
+		}
+		return nil
+	}
+	if err != ipn.ErrStateNotExist {
+		return fmt.Errorf("error reading %v key of %v: %w", ipn.NLKeyStateKey, b.store, err)
+	}
+
+	// If we didn't find one already on disk, generate a new one.
+	b.logf("generating new network-lock key")
+	b.nlPrivKey = key.NewNLPrivate()
+
+	keyText, _ = b.nlPrivKey.MarshalText()
+	if err := b.store.WriteState(ipn.NLKeyStateKey, keyText); err != nil {
+		b.logf("error writing network-lock key to store: %v", err)
+		return err
+	}
+
+	b.logf("network-lock key written to store")
 	return nil
 }
 
@@ -1678,7 +1748,7 @@ func (b *LocalBackend) loadStateLocked(key ipn.StateKey, prefs *ipn.Prefs) (err 
 // setAtomicValuesFromPrefs populates sshAtomicBool and containsViaIPFuncAtomic
 // from the prefs p, which may be nil.
 func (b *LocalBackend) setAtomicValuesFromPrefs(p *ipn.Prefs) {
-	b.sshAtomicBool.Set(p != nil && p.RunSSH && canSSH)
+	b.sshAtomicBool.Store(p != nil && p.RunSSH && canSSH)
 
 	if p == nil {
 		b.containsViaIPFuncAtomic.Store(tsaddr.NewContainsIPFunc(nil))
@@ -2436,6 +2506,17 @@ func dnsConfigForNetmap(nm *netmap.NetworkMap, prefs *ipn.Prefs, logf logger.Log
 	return dcfg
 }
 
+// SetTailnetKeyAuthority sets the key authority which should be
+// used for locked tailnets.
+//
+// It should only be called before the LocalBackend is used.
+func (b *LocalBackend) SetTailnetKeyAuthority(a *tka.Authority, storage *tka.FS) {
+	b.tka = &tkaState{
+		authority: a,
+		storage:   storage,
+	}
+}
+
 // SetVarRoot sets the root directory of Tailscale's writable
 // storage area . (e.g. "/var/lib/tailscale")
 //
@@ -2455,8 +2536,7 @@ func (b *LocalBackend) TailscaleVarRoot() string {
 	}
 	switch runtime.GOOS {
 	case "ios", "android", "darwin":
-		dir, _ := paths.AppSharedDir.Load().(string)
-		return dir
+		return paths.AppSharedDir.Load()
 	}
 	return ""
 }
@@ -2723,14 +2803,12 @@ func (b *LocalBackend) routerConfig(cfg *wgcfg.Config, prefs *ipn.Prefs, oneCGNA
 			rs.LocalRoutes = internalIPs // unconditionally allow access to guest VM networks
 			if prefs.ExitNodeAllowLANAccess {
 				rs.LocalRoutes = append(rs.LocalRoutes, externalIPs...)
-				if len(externalIPs) != 0 {
-					b.logf("allowing exit node access to internal IPs: %v", internalIPs)
-				}
 			} else {
 				// Explicitly add routes to the local network so that we do not
 				// leak any traffic.
 				rs.Routes = append(rs.Routes, externalIPs...)
 			}
+			b.logf("allowing exit node access to local IPs: %v", rs.LocalRoutes)
 		}
 	}
 
@@ -2983,13 +3061,13 @@ func (b *LocalBackend) ResetForClientDisconnect() {
 	b.setAtomicValuesFromPrefs(nil)
 }
 
-func (b *LocalBackend) ShouldRunSSH() bool { return b.sshAtomicBool.Get() && canSSH }
+func (b *LocalBackend) ShouldRunSSH() bool { return b.sshAtomicBool.Load() && canSSH }
 
 // ShouldHandleViaIP reports whether whether ip is an IPv6 address in the
 // Tailscale ULA's v6 "via" range embedding an IPv4 address to be forwarded to
 // by Tailscale.
 func (b *LocalBackend) ShouldHandleViaIP(ip netip.Addr) bool {
-	if f, ok := b.containsViaIPFuncAtomic.Load().(func(netip.Addr) bool); ok {
+	if f, ok := b.containsViaIPFuncAtomic.LoadOk(); ok {
 		return f(ip)
 	}
 	return false
@@ -3215,7 +3293,7 @@ func (b *LocalBackend) FileTargets() ([]*apitype.FileTarget, error) {
 		return nil, errors.New("file sharing not enabled by Tailscale admin")
 	}
 	for _, p := range nm.Peers {
-		if p.User != nm.User {
+		if p.User != nm.User && !slices.Contains(p.Capabilities, tailcfg.CapabilityFileSharingTarget) {
 			continue
 		}
 		peerAPI := peerAPIBase(b.netMap, p)

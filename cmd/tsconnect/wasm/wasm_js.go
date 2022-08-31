@@ -19,6 +19,7 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"net/http"
 	"net/netip"
 	"strings"
 	"syscall/js"
@@ -30,15 +31,19 @@ import (
 	"tailscale.com/ipn/ipnlocal"
 	"tailscale.com/ipn/ipnserver"
 	"tailscale.com/ipn/store/mem"
+	"tailscale.com/logpolicy"
+	"tailscale.com/logtail"
 	"tailscale.com/net/netns"
 	"tailscale.com/net/tsdial"
 	"tailscale.com/safesocket"
 	"tailscale.com/tailcfg"
-	"tailscale.com/types/logger"
 	"tailscale.com/wgengine"
 	"tailscale.com/wgengine/netstack"
 	"tailscale.com/words"
 )
+
+// ControlURL defines the URL to be used for connection to Control.
+var ControlURL = ipn.DefaultControlURL
 
 func main() {
 	js.Global().Set("newIPN", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
@@ -55,7 +60,37 @@ func main() {
 
 func newIPN(jsConfig js.Value) map[string]any {
 	netns.SetEnabled(false)
-	var logf logger.Logf = log.Printf
+
+	jsStateStorage := jsConfig.Get("stateStorage")
+	var store ipn.StateStore
+	if jsStateStorage.IsUndefined() {
+		store = new(mem.Store)
+	} else {
+		store = &jsStateStore{jsStateStorage}
+	}
+
+	jsControlURL := jsConfig.Get("controlURL")
+	controlURL := ControlURL
+	if jsControlURL.Type() == js.TypeString {
+		controlURL = jsControlURL.String()
+	}
+
+	jsAuthKey := jsConfig.Get("authKey")
+	var authKey string
+	if jsAuthKey.Type() == js.TypeString {
+		authKey = jsAuthKey.String()
+	}
+
+	lpc := getOrCreateLogPolicyConfig(store)
+	c := logtail.Config{
+		Collection: lpc.Collection,
+		PrivateID:  lpc.PrivateID,
+		// NewZstdEncoder is intentionally not passed in, compressed requests
+		// set HTTP headers that are not supported by the no-cors fetching mode.
+		HTTPC: &http.Client{Transport: &noCORSTransport{http.DefaultTransport}},
+	}
+	logtail := logtail.NewLogger(c, log.Printf)
+	logf := logtail.Logf
 
 	dialer := new(tsdial.Dialer)
 	eng, err := wgengine.NewUserspaceEngine(logf, wgengine.Config{
@@ -85,14 +120,7 @@ func newIPN(jsConfig js.Value) map[string]any {
 		return ns.DialContextTCP(ctx, dst)
 	}
 
-	jsStateStorage := jsConfig.Get("stateStorage")
-	var store ipn.StateStore
-	if jsStateStorage.IsUndefined() {
-		store = new(mem.Store)
-	} else {
-		store = &jsStateStore{jsStateStorage}
-	}
-	srv, err := ipnserver.New(log.Printf, "some-logid", store, eng, dialer, nil, ipnserver.Options{
+	srv, err := ipnserver.New(logf, lpc.PublicID.String(), store, eng, dialer, nil, ipnserver.Options{
 		SurviveDisconnects: true,
 		LoginFlags:         controlclient.LoginEphemeral,
 	})
@@ -100,11 +128,14 @@ func newIPN(jsConfig js.Value) map[string]any {
 		log.Fatalf("ipnserver.New: %v", err)
 	}
 	lb := srv.LocalBackend()
+	ns.SetLocalBackend(lb)
 
 	jsIPN := &jsIPN{
-		dialer: dialer,
-		srv:    srv,
-		lb:     lb,
+		dialer:     dialer,
+		srv:        srv,
+		lb:         lb,
+		controlURL: controlURL,
+		authKey:    authKey,
 	}
 
 	return map[string]any{
@@ -142,24 +173,51 @@ func newIPN(jsConfig js.Value) map[string]any {
 				log.Printf("Usage: ssh(hostname, userName, termConfig)")
 				return nil
 			}
-			go jsIPN.ssh(
+			return jsIPN.ssh(
 				args[0].String(),
 				args[1].String(),
 				args[2])
-			return nil
+		}),
+		"fetch": js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			if len(args) != 1 {
+				log.Printf("Usage: fetch(url)")
+				return nil
+			}
+
+			url := args[0].String()
+			return jsIPN.fetch(url)
 		}),
 	}
 }
 
 type jsIPN struct {
-	dialer *tsdial.Dialer
-	srv    *ipnserver.Server
-	lb     *ipnlocal.LocalBackend
+	dialer     *tsdial.Dialer
+	srv        *ipnserver.Server
+	lb         *ipnlocal.LocalBackend
+	controlURL string
+	authKey    string
+}
+
+var jsIPNState = map[ipn.State]string{
+	ipn.NoState:          "NoState",
+	ipn.InUseOtherUser:   "InUseOtherUser",
+	ipn.NeedsLogin:       "NeedsLogin",
+	ipn.NeedsMachineAuth: "NeedsMachineAuth",
+	ipn.Stopped:          "Stopped",
+	ipn.Starting:         "Starting",
+	ipn.Running:          "Running",
+}
+
+var jsMachineStatus = map[tailcfg.MachineStatus]string{
+	tailcfg.MachineUnknown:      "MachineUnknown",
+	tailcfg.MachineUnauthorized: "MachineUnauthorized",
+	tailcfg.MachineAuthorized:   "MachineAuthorized",
+	tailcfg.MachineInvalid:      "MachineInvalid",
 }
 
 func (i *jsIPN) run(jsCallbacks js.Value) {
 	notifyState := func(state ipn.State) {
-		jsCallbacks.Call("notifyState", int(state))
+		jsCallbacks.Call("notifyState", jsIPNState[state])
 	}
 	notifyState(ipn.NoState)
 
@@ -178,7 +236,7 @@ func (i *jsIPN) run(jsCallbacks js.Value) {
 		if n.State != nil {
 			notifyState(*n.State)
 		}
-		if nm := n.NetMap; nm != nil && i.lb.State() == ipn.Running {
+		if nm := n.NetMap; nm != nil {
 			jsNetMap := jsNetMap{
 				Self: jsNetMapSelfNode{
 					jsNetMapNode: jsNetMapNode{
@@ -187,7 +245,7 @@ func (i *jsIPN) run(jsCallbacks js.Value) {
 						NodeKey:    nm.NodeKey.String(),
 						MachineKey: nm.MachineKey.String(),
 					},
-					MachineStatus: int(nm.MachineStatus),
+					MachineStatus: jsMachineStatus[nm.MachineStatus],
 				},
 				Peers: mapSlice(nm.Peers, func(p *tailcfg.Node) jsNetMapPeerNode {
 					name := p.Name
@@ -222,12 +280,13 @@ func (i *jsIPN) run(jsCallbacks js.Value) {
 		err := i.lb.Start(ipn.Options{
 			StateKey: "wasm",
 			UpdatePrefs: &ipn.Prefs{
-				ControlURL:       ipn.DefaultControlURL,
+				ControlURL:       i.controlURL,
 				RouteAll:         false,
 				AllowSingleHosts: true,
 				WantRunning:      true,
 				Hostname:         generateHostname(),
 			},
+			AuthKey: i.authKey,
 		})
 		if err != nil {
 			log.Printf("Start error: %v", err)
@@ -256,25 +315,55 @@ func (i *jsIPN) logout() {
 	go i.lb.Logout()
 }
 
-func (i *jsIPN) ssh(host, username string, termConfig js.Value) {
-	writeFn := termConfig.Get("writeFn")
-	setReadFn := termConfig.Get("setReadFn")
-	rows := termConfig.Get("rows").Int()
-	cols := termConfig.Get("cols").Int()
-	onDone := termConfig.Get("onDone")
+func (i *jsIPN) ssh(host, username string, termConfig js.Value) map[string]any {
+	jsSSHSession := &jsSSHSession{
+		jsIPN:      i,
+		host:       host,
+		username:   username,
+		termConfig: termConfig,
+	}
 
+	go jsSSHSession.Run()
+
+	return map[string]any{
+		"close": js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			return jsSSHSession.Close() != nil
+		}),
+		"resize": js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			rows := args[0].Int()
+			cols := args[1].Int()
+			return jsSSHSession.Resize(rows, cols) != nil
+		}),
+	}
+}
+
+type jsSSHSession struct {
+	jsIPN      *jsIPN
+	host       string
+	username   string
+	termConfig js.Value
+	session    *ssh.Session
+}
+
+func (s *jsSSHSession) Run() {
+	writeFn := s.termConfig.Get("writeFn")
+	writeErrorFn := s.termConfig.Get("writeErrorFn")
+	setReadFn := s.termConfig.Get("setReadFn")
+	rows := s.termConfig.Get("rows").Int()
+	cols := s.termConfig.Get("cols").Int()
+	onDone := s.termConfig.Get("onDone")
 	defer onDone.Invoke()
 
 	write := func(s string) {
 		writeFn.Invoke(s)
 	}
 	writeError := func(label string, err error) {
-		write(fmt.Sprintf("%s Error: %v\r\n", label, err))
+		writeErrorFn.Invoke(fmt.Sprintf("%s Error: %v\r\n", label, err))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c, err := i.dialer.UserDial(ctx, "tcp", net.JoinHostPort(host, "22"))
+	c, err := s.jsIPN.dialer.UserDial(ctx, "tcp", net.JoinHostPort(s.host, "22"))
 	if err != nil {
 		writeError("Dial", err)
 		return
@@ -283,10 +372,10 @@ func (i *jsIPN) ssh(host, username string, termConfig js.Value) {
 
 	config := &ssh.ClientConfig{
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		User:            username,
+		User:            s.username,
 	}
 
-	sshConn, _, _, err := ssh.NewClientConn(c, host, config)
+	sshConn, _, _, err := ssh.NewClientConn(c, s.host, config)
 	if err != nil {
 		writeError("SSH Connection", err)
 		return
@@ -302,6 +391,7 @@ func (i *jsIPN) ssh(host, username string, termConfig js.Value) {
 		writeError("SSH Session", err)
 		return
 	}
+	s.session = session
 	write("Session Established\r\n")
 	defer session.Close()
 
@@ -338,9 +428,47 @@ func (i *jsIPN) ssh(host, username string, termConfig js.Value) {
 
 	err = session.Wait()
 	if err != nil {
-		writeError("Exit", err)
+		writeError("Wait", err)
 		return
 	}
+}
+
+func (s *jsSSHSession) Close() error {
+	return s.session.Close()
+}
+
+func (s *jsSSHSession) Resize(rows, cols int) error {
+	return s.session.WindowChange(rows, cols)
+}
+
+func (i *jsIPN) fetch(url string) js.Value {
+	return makePromise(func() (any, error) {
+		c := &http.Client{
+			Transport: &http.Transport{
+				DialContext: i.dialer.UserDial,
+			},
+		}
+		res, err := c.Get(url)
+		if err != nil {
+			return nil, err
+		}
+
+		return map[string]any{
+			"status":     res.StatusCode,
+			"statusText": res.Status,
+			"text": js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+				return makePromise(func() (any, error) {
+					defer res.Body.Close()
+					buf := new(bytes.Buffer)
+					if _, err := buf.ReadFrom(res.Body); err != nil {
+						return nil, err
+					}
+					return buf.String(), nil
+				})
+			}),
+			// TODO: populate a more complete JS Response object
+		}, nil
+	})
 }
 
 type termWriter struct {
@@ -367,7 +495,7 @@ type jsNetMapNode struct {
 
 type jsNetMapSelfNode struct {
 	jsNetMapNode
-	MachineStatus int `json:"machineStatus"`
+	MachineStatus string `json:"machineStatus"`
 }
 
 type jsNetMapPeerNode struct {
@@ -427,4 +555,62 @@ func generateHostname() string {
 	tail := tails[rand.Intn(len(tails))]
 	scale := scales[rand.Intn(len(scales))]
 	return fmt.Sprintf("%s-%s", tail, scale)
+}
+
+// makePromise handles the boilerplate of wrapping goroutines with JS promises.
+// f is run on a goroutine and its return value is used to resolve the promise
+// (or reject it if an error is returned).
+func makePromise(f func() (any, error)) js.Value {
+	handler := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		resolve := args[0]
+		reject := args[1]
+		go func() {
+			if res, err := f(); err == nil {
+				resolve.Invoke(res)
+			} else {
+				reject.Invoke(err.Error())
+			}
+		}()
+		return nil
+	})
+
+	promiseConstructor := js.Global().Get("Promise")
+	return promiseConstructor.New(handler)
+}
+
+const logPolicyStateKey = "log-policy"
+
+func getOrCreateLogPolicyConfig(state ipn.StateStore) *logpolicy.Config {
+	if configBytes, err := state.ReadState(logPolicyStateKey); err == nil {
+		if config, err := logpolicy.ConfigFromBytes(configBytes); err == nil {
+			return config
+		} else {
+			log.Printf("Could not parse log policy config: %v", err)
+		}
+	} else if err != ipn.ErrStateNotExist {
+		log.Printf("Could not get log policy config from state store: %v", err)
+	}
+	config := logpolicy.NewConfig(logtail.CollectionNode)
+	if err := state.WriteState(logPolicyStateKey, config.ToBytes()); err != nil {
+		log.Printf("Could not save log policy config to state store: %v", err)
+	}
+	return config
+}
+
+// noCORSTransport wraps a RoundTripper and forces the no-cors mode on requests,
+// so that we can use it with non-CORS-aware servers.
+type noCORSTransport struct {
+	http.RoundTripper
+}
+
+func (t *noCORSTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.Header.Set("js.fetch:mode", "no-cors")
+	resp, err := t.RoundTripper.RoundTrip(req)
+	if err == nil {
+		// In no-cors mode no response properties are returned. Populate just
+		// the status so that callers do not think this was an error.
+		resp.StatusCode = http.StatusOK
+		resp.Status = http.StatusText(http.StatusOK)
+	}
+	return resp, err
 }

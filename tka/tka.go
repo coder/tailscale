@@ -11,7 +11,23 @@ import (
 	"fmt"
 	"os"
 	"sort"
+
+	"github.com/fxamacker/cbor/v2"
+	"tailscale.com/types/key"
+	"tailscale.com/types/tkatype"
 )
+
+// Strict settings for the CBOR decoder.
+var cborDecOpts = cbor.DecOptions{
+	DupMapKey:   cbor.DupMapKeyEnforcedAPF,
+	IndefLength: cbor.IndefLengthForbidden,
+	TagsMd:      cbor.TagsForbidden,
+
+	// Arbitrarily-chosen maximums.
+	MaxNestedLevels:  16, // Most likely to be hit for SigRotation sigs.
+	MaxArrayElements: 4096,
+	MaxMapPairs:      1024,
+}
 
 // Authority is a Tailnet Key Authority. This type is the main coupling
 // point to the rest of the tailscale client.
@@ -23,8 +39,15 @@ type Authority struct {
 	head           AUM
 	oldestAncestor AUM
 	state          State
+}
 
-	storage Chonk
+// Clone duplicates the Authority structure.
+func (a *Authority) Clone() *Authority {
+	return &Authority{
+		head:           a.head,
+		oldestAncestor: a.oldestAncestor,
+		state:          a.state.Clone(),
+	}
 }
 
 // A chain describes a linear sequence of updates from Oldest to Head,
@@ -414,7 +437,7 @@ func aumVerify(aum AUM, state State, isGenesisAUM bool) error {
 		if err != nil {
 			return fmt.Errorf("bad keyID on signature %d: %v", i, err)
 		}
-		if err := sig.Verify(sigHash, key); err != nil {
+		if err := signatureVerify(&sig, sigHash, key); err != nil {
 			return fmt.Errorf("signature %d: %v", i, err)
 		}
 	}
@@ -461,7 +484,6 @@ func Open(storage Chonk) (*Authority, error) {
 	return &Authority{
 		head:           c.Head,
 		oldestAncestor: c.Oldest,
-		storage:        storage,
 		state:          c.state,
 	}, nil
 }
@@ -483,9 +505,11 @@ func Create(storage Chonk, state State, signer Signer) (*Authority, AUM, error) 
 		// This serves as an easy way to validate the given state.
 		return nil, AUM{}, fmt.Errorf("invalid state: %v", err)
 	}
-	if err := signer.SignAUM(&genesis); err != nil {
+	sigs, err := signer.SignAUM(genesis.SigHash())
+	if err != nil {
 		return nil, AUM{}, fmt.Errorf("signing failed: %v", err)
 	}
+	genesis.Signatures = append(genesis.Signatures, sigs...)
 
 	a, err := Bootstrap(storage, genesis)
 	return a, genesis, err
@@ -531,58 +555,135 @@ func Bootstrap(storage Chonk, bootstrap AUM) (*Authority, error) {
 	return Open(storage)
 }
 
-// Inform is called to tell the authority about new updates. Updates
-// should be ordered oldest to newest. An error is returned if any
-// of the updates could not be processed.
-func (a *Authority) Inform(updates []AUM) error {
+// ValidDisablement returns true if the disablement secret was correct.
+//
+// If this method returns true, the caller should shut down the authority
+// and purge all network-lock state.
+func (a *Authority) ValidDisablement(secret []byte) bool {
+	return a.state.checkDisablement(secret)
+}
+
+// InformIdempotent returns a new Authority based on applying the given
+// updates, with the given updates committed to storage.
+//
+// If any of the updates could not be applied:
+//   - An error is returned
+//   - No changes to storage are made.
+//
+// MissingAUMs() should be used to get a list of updates appropriate for
+// this function. In any case, updates should be ordered oldest to newest.
+func (a *Authority) InformIdempotent(storage Chonk, updates []AUM) (Authority, error) {
+	if len(updates) == 0 {
+		return Authority{}, errors.New("inform called with empty slice")
+	}
 	stateAt := make(map[AUMHash]State, len(updates)+1)
 	toCommit := make([]AUM, 0, len(updates))
+	prevHash := a.Head()
+
+	// The state at HEAD is the current state of the authority. Its likely
+	// to be needed, so we prefill it rather than computing it.
+	stateAt[prevHash] = a.state
+
+	// Optimization: If the set of updates is a chain building from
+	// the current head, EG:
+	//   <a.Head()> ==> updates[0] ==> updates[1] ...
+	// Then theres no need to recompute the resulting state from the
+	// stored ancestor, because the last state computed during iteration
+	// is the new state. This should be the common case.
+	// isHeadChain keeps track of this.
+	isHeadChain := true
 
 	for i, update := range updates {
 		hash := update.Hash()
-		if _, err := a.storage.AUM(hash); err == nil {
-			// Already have this AUM.
+		// Check if we already have this AUM thus don't need to process it.
+		if _, err := storage.AUM(hash); err == nil {
+			isHeadChain = false // Disable the head-chain optimization.
 			continue
 		}
 
 		parent, hasParent := update.Parent()
 		if !hasParent {
-			return fmt.Errorf("update %d: missing parent", i)
+			return Authority{}, fmt.Errorf("update %d: missing parent", i)
 		}
 
 		state, hasState := stateAt[parent]
 		var err error
 		if !hasState {
-			if state, err = computeStateAt(a.storage, 2000, parent); err != nil {
-				return fmt.Errorf("update %d computing state: %v", i, err)
+			if state, err = computeStateAt(storage, 2000, parent); err != nil {
+				return Authority{}, fmt.Errorf("update %d computing state: %v", i, err)
 			}
 			stateAt[parent] = state
 		}
 
 		if err := aumVerify(update, state, false); err != nil {
-			return fmt.Errorf("update %d invalid: %v", i, err)
+			return Authority{}, fmt.Errorf("update %d invalid: %v", i, err)
 		}
 		if stateAt[hash], err = state.applyVerifiedAUM(update); err != nil {
-			return fmt.Errorf("update %d cannot be applied: %v", i, err)
+			return Authority{}, fmt.Errorf("update %d cannot be applied: %v", i, err)
 		}
+
+		if isHeadChain && parent != prevHash {
+			isHeadChain = false
+		}
+		prevHash = hash
 		toCommit = append(toCommit, update)
 	}
 
-	if err := a.storage.CommitVerifiedAUMs(toCommit); err != nil {
-		return fmt.Errorf("commit: %v", err)
+	if err := storage.CommitVerifiedAUMs(toCommit); err != nil {
+		return Authority{}, fmt.Errorf("commit: %v", err)
 	}
 
-	// TODO(tom): Theres no need to recompute the state from scratch
-	//            in every case. We should detect when updates were
-	//            a linear, non-forking series applied to head, and
-	//            just use the last State we computed.
-	oldestAncestor := a.oldestAncestor.Hash()
-	c, err := computeActiveChain(a.storage, &oldestAncestor, 2000)
-	if err != nil {
-		return fmt.Errorf("recomputing active chain: %v", err)
+	if isHeadChain {
+		// Head-chain fastpath: We can use the state we computed
+		// in the last iteration.
+		return Authority{
+			head:           updates[len(updates)-1],
+			oldestAncestor: a.oldestAncestor,
+			state:          stateAt[prevHash],
+		}, nil
 	}
-	a.head = c.Head
-	a.oldestAncestor = c.Oldest
-	a.state = c.state
+
+	oldestAncestor := a.oldestAncestor.Hash()
+	c, err := computeActiveChain(storage, &oldestAncestor, 2000)
+	if err != nil {
+		return Authority{}, fmt.Errorf("recomputing active chain: %v", err)
+	}
+	return Authority{
+		head:           c.Head,
+		oldestAncestor: c.Oldest,
+		state:          c.state,
+	}, nil
+}
+
+// Inform is the same as InformIdempotent, except the state of the Authority
+// is updated in-place.
+func (a *Authority) Inform(storage Chonk, updates []AUM) error {
+	newAuthority, err := a.InformIdempotent(storage, updates)
+	if err != nil {
+		return err
+	}
+	*a = newAuthority
 	return nil
+}
+
+// NodeKeyAuthorized checks if the provided nodeKeySignature authorizes
+// the given node key.
+func (a *Authority) NodeKeyAuthorized(nodeKey key.NodePublic, nodeKeySignature tkatype.MarshaledSignature) error {
+	var decoded NodeKeySignature
+	if err := decoded.Unserialize(nodeKeySignature); err != nil {
+		return fmt.Errorf("unserialize: %v", err)
+	}
+	key, err := a.state.GetKey(decoded.KeyID)
+	if err != nil {
+		return fmt.Errorf("key: %v", err)
+	}
+
+	return decoded.verifySignature(nodeKey, key)
+}
+
+// KeyTrusted returns true if the given keyID is trusted by the tailnet
+// key authority.
+func (a *Authority) KeyTrusted(keyID tkatype.KeyID) bool {
+	_, err := a.state.GetKey(keyID)
+	return err == nil
 }

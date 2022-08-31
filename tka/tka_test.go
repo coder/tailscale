@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"tailscale.com/types/tkatype"
 )
 
 func TestComputeChainCandidates(t *testing.T) {
@@ -34,10 +35,10 @@ func TestComputeChainCandidates(t *testing.T) {
 	}
 
 	want := []chain{
-		{Oldest: c.AUMs["G1"], Head: c.AUMs["L1"], chainsThroughActive: true},
-		{Oldest: c.AUMs["G1"], Head: c.AUMs["L3"], chainsThroughActive: true},
-		{Oldest: c.AUMs["G1"], Head: c.AUMs["L2"], chainsThroughActive: true},
 		{Oldest: c.AUMs["G2"], Head: c.AUMs["L4"]},
+		{Oldest: c.AUMs["G1"], Head: c.AUMs["L3"], chainsThroughActive: true},
+		{Oldest: c.AUMs["G1"], Head: c.AUMs["L1"], chainsThroughActive: true},
+		{Oldest: c.AUMs["G1"], Head: c.AUMs["L2"], chainsThroughActive: true},
 	}
 	if diff := cmp.Diff(want, got, cmp.AllowUnexported(chain{})); diff != "" {
 		t.Errorf("chains differ (-want, +got):\n%s", diff)
@@ -81,7 +82,7 @@ func TestForkResolutionSigWeight(t *testing.T) {
          | -> L2
 
         G1.template = addKey
-        L1.hashSeed = 2
+        L1.hashSeed = 11
         L2.signedWith = key
     `,
 		optTemplate("addKey", AUM{MessageKind: AUMAddKey, Key: &key}),
@@ -232,7 +233,7 @@ func TestOpenAuthority(t *testing.T) {
 
 	i2, i2H := fakeAUM(t, 2, &i1H)
 	i3, i3H := fakeAUM(t, 5, &i2H)
-	l2, l2H := fakeAUM(t, AUM{MessageKind: AUMNoOp, KeyID: []byte{7}, Signatures: []Signature{{KeyID: key.ID()}}}, &i3H)
+	l2, l2H := fakeAUM(t, AUM{MessageKind: AUMNoOp, KeyID: []byte{7}, Signatures: []tkatype.Signature{{KeyID: key.ID()}}}, &i3H)
 	l3, l3H := fakeAUM(t, 4, &i3H)
 
 	g2, g2H := fakeAUM(t, 8, nil)
@@ -294,6 +295,26 @@ func TestAuthorityHead(t *testing.T) {
 	}
 }
 
+func TestAuthorityValidDisablement(t *testing.T) {
+	pub, _ := testingKey25519(t, 1)
+	key := Key{Kind: Key25519, Public: pub, Votes: 2}
+	c := newTestchain(t, `
+        G1 -> L1
+
+        G1.template = genesis
+    `,
+		optTemplate("genesis", AUM{MessageKind: AUMCheckpoint, State: &State{
+			Keys:               []Key{key},
+			DisablementSecrets: [][]byte{disablementKDF([]byte{1, 2, 3})},
+		}}),
+	)
+
+	a, _ := Open(c.Chonk())
+	if valid := a.ValidDisablement([]byte{1, 2, 3}); !valid {
+		t.Error("ValidDisablement() returned false, want true")
+	}
+}
+
 func TestCreateBootstrapAuthority(t *testing.T) {
 	pub, priv := testingKey25519(t, 1)
 	key := Key{Kind: Key25519, Public: pub, Votes: 2}
@@ -316,15 +337,15 @@ func TestCreateBootstrapAuthority(t *testing.T) {
 	}
 
 	// Both authorities should trust the key laid down in the genesis state.
-	if _, err := a1.state.GetKey(key.ID()); err != nil {
-		t.Errorf("reading genesis key from a1: %v", err)
+	if !a1.KeyTrusted(key.ID()) {
+		t.Error("a1 did not trust genesis key")
 	}
-	if _, err := a2.state.GetKey(key.ID()); err != nil {
-		t.Errorf("reading genesis key from a2: %v", err)
+	if !a2.KeyTrusted(key.ID()) {
+		t.Error("a2 did not trust genesis key")
 	}
 }
 
-func TestAuthorityInform(t *testing.T) {
+func TestAuthorityInformNonLinear(t *testing.T) {
 	pub, priv := testingKey25519(t, 1)
 	key := Key{Kind: Key25519, Public: pub, Votes: 2}
 
@@ -334,7 +355,8 @@ func TestAuthorityInform(t *testing.T) {
                | -> L4 -> L5
 
         G1.template = genesis
-        L2.hashSeed = 1
+        L1.hashSeed = 3
+        L2.hashSeed = 2
         L4.hashSeed = 2
     `,
 		optTemplate("genesis", AUM{MessageKind: AUMCheckpoint, State: &State{
@@ -350,9 +372,54 @@ func TestAuthorityInform(t *testing.T) {
 		t.Fatalf("Bootstrap() failed: %v", err)
 	}
 
+	// L2 does not chain from L1, disabling the isHeadChain optimization
+	// and forcing Inform() to take the slow path.
 	informAUMs := []AUM{c.AUMs["L1"], c.AUMs["L2"], c.AUMs["L3"], c.AUMs["L4"], c.AUMs["L5"]}
 
-	if err := a.Inform(informAUMs); err != nil {
+	if err := a.Inform(storage, informAUMs); err != nil {
+		t.Fatalf("Inform() failed: %v", err)
+	}
+	for i, update := range informAUMs {
+		stored, err := storage.AUM(update.Hash())
+		if err != nil {
+			t.Errorf("reading stored update %d: %v", i, err)
+			continue
+		}
+		if diff := cmp.Diff(update, stored); diff != "" {
+			t.Errorf("update %d differs (-want, +got):\n%s", i, diff)
+		}
+	}
+
+	if a.Head() != c.AUMHashes["L3"] {
+		t.Fatal("authority did not converge to correct AUM")
+	}
+}
+
+func TestAuthorityInformLinear(t *testing.T) {
+	pub, priv := testingKey25519(t, 1)
+	key := Key{Kind: Key25519, Public: pub, Votes: 2}
+
+	c := newTestchain(t, `
+        G1 -> L1 -> L2 -> L3
+
+        G1.template = genesis
+    `,
+		optTemplate("genesis", AUM{MessageKind: AUMCheckpoint, State: &State{
+			Keys:               []Key{key},
+			DisablementSecrets: [][]byte{disablementKDF([]byte{1, 2, 3})},
+		}}),
+		optKey("key", key, priv),
+		optSignAllUsing("key"))
+
+	storage := &Mem{}
+	a, err := Bootstrap(storage, c.AUMs["G1"])
+	if err != nil {
+		t.Fatalf("Bootstrap() failed: %v", err)
+	}
+
+	informAUMs := []AUM{c.AUMs["L1"], c.AUMs["L2"], c.AUMs["L3"]}
+
+	if err := a.Inform(storage, informAUMs); err != nil {
 		t.Fatalf("Inform() failed: %v", err)
 	}
 	for i, update := range informAUMs {

@@ -16,6 +16,8 @@ type scenarioNode struct {
 	Name string
 	A    *Authority
 	AUMs map[string]AUM
+
+	storage Chonk
 }
 
 type scenarioTest struct {
@@ -30,7 +32,8 @@ type scenarioTest struct {
 }
 
 func (s *scenarioTest) mkNode(name string) *scenarioNode {
-	authority, err := Open(s.initial.Chonk())
+	storage := s.initial.Chonk()
+	authority, err := Open(storage)
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -41,9 +44,10 @@ func (s *scenarioTest) mkNode(name string) *scenarioNode {
 	}
 
 	n := &scenarioNode{
-		A:    authority,
-		AUMs: aums,
-		Name: name,
+		A:       authority,
+		AUMs:    aums,
+		Name:    name,
+		storage: storage,
 	}
 
 	s.nodes[name] = n
@@ -89,7 +93,7 @@ func (s *scenarioTest) mkNodeWithForks(name string, signWithDefault bool, chains
 			}
 			return false
 		})
-		if err := n.A.Inform(aums); err != nil {
+		if err := n.A.Inform(n.storage, aums); err != nil {
 			panic(err)
 		}
 	}
@@ -113,28 +117,35 @@ outer:
 	return strings.Join(out, ",")
 }
 
-func (s *scenarioTest) syncBetween(n1, n2 *scenarioNode) {
-	o1, err := n1.A.SyncOffer()
+func (s *scenarioTest) syncBetween(n1, n2 *scenarioNode) error {
+	o1, err := n1.A.SyncOffer(n1.storage)
 	if err != nil {
-		s.t.Fatal(err)
+		return err
 	}
-	o2, err := n2.A.SyncOffer()
+	o2, err := n2.A.SyncOffer(n2.storage)
 	if err != nil {
-		s.t.Fatal(err)
+		return err
 	}
 
-	aumsFrom1, err := n1.A.MissingAUMs(o2)
+	aumsFrom1, err := n1.A.MissingAUMs(n1.storage, o2)
 	if err != nil {
-		s.t.Fatal(err)
+		return err
 	}
-	aumsFrom2, err := n2.A.MissingAUMs(o1)
+	aumsFrom2, err := n2.A.MissingAUMs(n2.storage, o1)
 	if err != nil {
-		s.t.Fatal(err)
+		return err
 	}
-	if err := n2.A.Inform(aumsFrom1); err != nil {
-		s.t.Fatal(err)
+	if err := n2.A.Inform(n2.storage, aumsFrom1); err != nil {
+		return err
 	}
-	if err := n1.A.Inform(aumsFrom2); err != nil {
+	if err := n1.A.Inform(n1.storage, aumsFrom2); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *scenarioTest) testSyncsBetween(n1, n2 *scenarioNode) {
+	if err := s.syncBetween(n1, n2); err != nil {
 		s.t.Fatal(err)
 	}
 }
@@ -197,11 +208,11 @@ func TestScenarioHelpers(t *testing.T) {
 	if _, ok := n.AUMs["L3"]; !ok {
 		t.Errorf("node n is missing %s", "L3")
 	}
-	if err := n.AUMs["L3"].Signatures[0].Verify(n.AUMs["L3"].SigHash(), *s.defaultKey); err != nil {
+	if err := signatureVerify(&n.AUMs["L3"].Signatures[0], n.AUMs["L3"].SigHash(), *s.defaultKey); err != nil {
 		t.Errorf("chained AUM was not signed: %v", err)
 	}
 
-	s.syncBetween(control, n)
+	s.testSyncsBetween(control, n)
 	s.checkHaveConsensus(control, n)
 }
 
@@ -217,13 +228,13 @@ func TestNormalPropergation(t *testing.T) {
 		"L2": newTestchain(t, `L3 -> L4`),
 	})
 	// Can control haz the updates?
-	s.syncBetween(control, n1)
+	s.testSyncsBetween(control, n1)
 	s.checkHaveConsensus(control, n1)
 
 	// A new node came online, can the new node learn everything
 	// just via control?
 	n2 := s.mkNode("n2")
-	s.syncBetween(control, n2)
+	s.testSyncsBetween(control, n2)
 	s.checkHaveConsensus(control, n2)
 
 	// So by virtue of syncing with control n2 should be at the same
@@ -252,7 +263,7 @@ func TestForkingPropergation(t *testing.T) {
 		"L2": newTestchain(t, `L3 -> L4`),
 	})
 	// Can control haz the updates?
-	s.syncBetween(control, n1)
+	s.testSyncsBetween(control, n1)
 	s.checkHaveConsensus(control, n1)
 
 	// Ooooo what about a forking update?
@@ -264,11 +275,11 @@ func TestForkingPropergation(t *testing.T) {
 			optKey("key2", key, priv),
 			optTemplate("removeKey1", AUM{MessageKind: AUMRemoveKey, KeyID: s.defaultKey.ID()})),
 	})
-	s.syncBetween(control, n2)
+	s.testSyncsBetween(control, n2)
 	s.checkHaveConsensus(control, n2)
 
 	// No wozzles propergating from n2->CTRL, what about CTRL->n1?
-	s.syncBetween(control, n1)
+	s.testSyncsBetween(control, n1)
 	s.checkHaveConsensus(n1, n2)
 
 	if _, err := n1.A.state.GetKey(s.defaultKey.ID()); err != ErrNoSuchKey {
@@ -276,5 +287,106 @@ func TestForkingPropergation(t *testing.T) {
 	}
 	if _, err := n1.A.state.GetKey(key.ID()); err != nil {
 		t.Errorf("key2 was not trusted: %v", err)
+	}
+}
+
+func TestInvalidAUMPropergationRejected(t *testing.T) {
+	s := testScenario(t, `
+        G -> L1 -> L2
+        G.template = genesis
+    `)
+	control := s.mkNode("control")
+
+	// Construct an invalid L4 AUM, and manually apply it to n1,
+	// resulting in a corrupted Authority.
+	n1 := s.mkNodeWithForks("n1", true, map[string]*testChain{
+		"L2": newTestchain(t, `L3`),
+	})
+	l3 := n1.AUMs["L3"]
+	l3H := l3.Hash()
+	l4 := AUM{MessageKind: AUMAddKey, PrevAUMHash: l3H[:]}
+	l4.sign25519(s.defaultPriv)
+	l4H := l4.Hash()
+	n1.storage.CommitVerifiedAUMs([]AUM{l4})
+	n1.A.state.LastAUMHash = &l4H
+
+	// Does control nope out with syncing?
+	if err := s.syncBetween(control, n1); err == nil {
+		t.Error("sync with invalid AUM was successful")
+	}
+
+	// Control should not have accepted ANY of the updates, even
+	// though L3 was well-formed.
+	l2 := control.AUMs["L2"]
+	l2H := l2.Hash()
+	if control.A.Head() != l2H {
+		t.Errorf("head was %x, expected %x", control.A.Head(), l2H)
+	}
+}
+
+func TestUnsignedAUMPropergationRejected(t *testing.T) {
+	s := testScenario(t, `
+        G -> L1 -> L2
+        G.template = genesis
+    `)
+	control := s.mkNode("control")
+
+	// Construct an unsigned L4 AUM, and manually apply it to n1,
+	// resulting in a corrupted Authority.
+	n1 := s.mkNodeWithForks("n1", true, map[string]*testChain{
+		"L2": newTestchain(t, `L3`),
+	})
+	l3 := n1.AUMs["L3"]
+	l3H := l3.Hash()
+	l4 := AUM{MessageKind: AUMNoOp, PrevAUMHash: l3H[:]}
+	l4H := l4.Hash()
+	n1.storage.CommitVerifiedAUMs([]AUM{l4})
+	n1.A.state.LastAUMHash = &l4H
+
+	// Does control nope out with syncing?
+	if err := s.syncBetween(control, n1); err == nil || err.Error() != "update 1 invalid: unsigned AUM" {
+		t.Errorf("sync with unsigned AUM was successful (err = %v)", err)
+	}
+
+	// Control should not have accepted ANY of the updates, even
+	// though L3 was well-formed.
+	l2 := control.AUMs["L2"]
+	l2H := l2.Hash()
+	if control.A.Head() != l2H {
+		t.Errorf("head was %x, expected %x", control.A.Head(), l2H)
+	}
+}
+
+func TestBadSigAUMPropergationRejected(t *testing.T) {
+	s := testScenario(t, `
+        G -> L1 -> L2
+        G.template = genesis
+    `)
+	control := s.mkNode("control")
+
+	// Construct a otherwise-valid L4 AUM but mess up the signature.
+	n1 := s.mkNodeWithForks("n1", true, map[string]*testChain{
+		"L2": newTestchain(t, `L3`),
+	})
+	l3 := n1.AUMs["L3"]
+	l3H := l3.Hash()
+	l4 := AUM{MessageKind: AUMNoOp, PrevAUMHash: l3H[:]}
+	l4.sign25519(s.defaultPriv)
+	l4.Signatures[0].Signature[3] = 42
+	l4H := l4.Hash()
+	n1.storage.CommitVerifiedAUMs([]AUM{l4})
+	n1.A.state.LastAUMHash = &l4H
+
+	// Does control nope out with syncing?
+	if err := s.syncBetween(control, n1); err == nil || err.Error() != "update 1 invalid: signature 0: invalid signature" {
+		t.Errorf("sync with unsigned AUM was successful (err = %v)", err)
+	}
+
+	// Control should not have accepted ANY of the updates, even
+	// though L3 was well-formed.
+	l2 := control.AUMs["L2"]
+	l2H := l2.Hash()
+	if control.A.Head() != l2H {
+		t.Errorf("head was %x, expected %x", control.A.Head(), l2H)
 	}
 }

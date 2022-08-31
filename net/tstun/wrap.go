@@ -24,6 +24,7 @@ import (
 	"tailscale.com/disco"
 	"tailscale.com/net/packet"
 	"tailscale.com/net/tsaddr"
+	"tailscale.com/syncs"
 	"tailscale.com/tstime/mono"
 	"tailscale.com/types/ipproto"
 	"tailscale.com/types/key"
@@ -82,9 +83,9 @@ type Wrapper struct {
 	// you might need to add a pad32.Four field here.
 	lastActivityAtomic mono.Time // time of last send or receive
 
-	destIPActivity atomic.Value // of map[netip.Addr]func()
-	destMACAtomic  atomic.Value // of [6]byte
-	discoKey       atomic.Value // of key.DiscoPublic
+	destIPActivity syncs.AtomicValue[map[netip.Addr]func()]
+	destMACAtomic  syncs.AtomicValue[[6]byte]
+	discoKey       syncs.AtomicValue[key.DiscoPublic]
 
 	// buffer stores the oldest unconsumed packet from tdev.
 	// It is made a static buffer in order to avoid allocations.
@@ -126,7 +127,7 @@ type Wrapper struct {
 	eventsOther chan tun.Event
 
 	// filter atomically stores the currently active packet filter
-	filter atomic.Value // of *filter.Filter
+	filter atomic.Pointer[filter.Filter]
 	// filterFlags control the verbosity of logging packet drops/accepts.
 	filterFlags filter.RunFlags
 
@@ -247,8 +248,8 @@ func (t *Wrapper) isSelfDisco(p *packet.Parsed) bool {
 		return false
 	}
 	discoSrc := key.DiscoPublicFromRaw32(mem.B(discobs))
-	selfDiscoPub, ok := t.discoKey.Load().(key.DiscoPublic)
-	return ok && selfDiscoPub == discoSrc
+	selfDiscoPub := t.discoKey.Load()
+	return selfDiscoPub == discoSrc
 }
 
 func (t *Wrapper) Close() error {
@@ -477,8 +478,7 @@ func (t *Wrapper) filterOut(p *packet.Parsed) filter.Response {
 		}
 	}
 
-	filt, _ := t.filter.Load().(*filter.Filter)
-
+	filt := t.filter.Load()
 	if filt == nil {
 		return filter.Drop
 	}
@@ -544,7 +544,7 @@ func (t *Wrapper) Read(buf []byte, offset int) (int, error) {
 	defer parsedPacketPool.Put(p)
 	p.Decode(buf[offset : offset+n])
 
-	if m, ok := t.destIPActivity.Load().(map[netip.Addr]func()); ok {
+	if m := t.destIPActivity.Load(); m != nil {
 		if fn := m[p.Dst.Addr()]; fn != nil {
 			fn()
 		}
@@ -606,8 +606,7 @@ func (t *Wrapper) filterIn(buf []byte) filter.Response {
 		}
 	}
 
-	filt, _ := t.filter.Load().(*filter.Filter)
-
+	filt := t.filter.Load()
 	if filt == nil {
 		return filter.Drop
 	}
@@ -698,8 +697,7 @@ func (t *Wrapper) tdevWrite(buf []byte, offset int) (int, error) {
 }
 
 func (t *Wrapper) GetFilter() *filter.Filter {
-	filt, _ := t.filter.Load().(*filter.Filter)
-	return filt
+	return t.filter.Load()
 }
 
 func (t *Wrapper) SetFilter(filt *filter.Filter) {

@@ -21,7 +21,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	dns "golang.org/x/net/dns/dnsmessage"
@@ -29,6 +28,7 @@ import (
 	"tailscale.com/net/netaddr"
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/net/tsdial"
+	"tailscale.com/syncs"
 	"tailscale.com/types/dnstype"
 	"tailscale.com/types/logger"
 	"tailscale.com/util/clientmetric"
@@ -428,8 +428,8 @@ func handleExitNodeDNSQueryWithNetPkg(ctx context.Context, resolver *net.Resolve
 			return handleError(err)
 		}
 		for _, stdIP := range ips {
-			if ip, ok := netaddr.FromStdIP(stdIP); ok {
-				resp.IPs = append(resp.IPs, ip)
+			if ip, ok := netip.AddrFromSlice(stdIP); ok {
+				resp.IPs = append(resp.IPs, ip.Unmap())
 			}
 		}
 	case dns.TypeTXT:
@@ -495,7 +495,7 @@ type resolvConfCache struct {
 
 // resolvConfCacheValue contains the most recent stat metadata and parsed
 // version of /etc/resolv.conf.
-var resolvConfCacheValue atomic.Value // of resolvConfCache
+var resolvConfCacheValue syncs.AtomicValue[resolvConfCache]
 
 var errEmptyResolvConf = errors.New("resolv.conf has no nameservers")
 
@@ -510,7 +510,7 @@ func stubResolverForOS() (ip netip.Addr, err error) {
 		mod:  fi.ModTime(),
 		size: fi.Size(),
 	}
-	if c, ok := resolvConfCacheValue.Load().(resolvConfCache); ok && c.mod == cur.mod && c.size == cur.size {
+	if c, ok := resolvConfCacheValue.LoadOk(); ok && c.mod == cur.mod && c.size == cur.size {
 		return c.ip, nil
 	}
 	conf, err := resolvconffile.ParseFile(resolvconffile.Path)
@@ -1124,7 +1124,7 @@ func rdnsNameToIPv6(name dnsname.FQDN) (ip netip.Addr, ok bool) {
 		return netip.Addr{}, false
 	}
 
-	return netaddr.IPFrom16(ipb), true
+	return netip.AddrFrom16(ipb), true
 }
 
 // respondReverse returns a DNS response to a PTR query.
@@ -1221,7 +1221,7 @@ func unARPA(a string) (ipStr string, ok bool) {
 			}
 		}
 		hex.Decode(a16[:], hx[:])
-		return netaddr.IPFrom16(a16).String(), true
+		return netip.AddrFrom16(a16).Unmap().String(), true
 	}
 	return "", false
 

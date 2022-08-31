@@ -14,6 +14,7 @@ import (
 	"tailscale.com/types/key"
 	"tailscale.com/types/opt"
 	"tailscale.com/types/structs"
+	"tailscale.com/types/tkatype"
 )
 
 // Clone makes a deep copy of User.
@@ -47,6 +48,7 @@ func (src *Node) Clone() *Node {
 	}
 	dst := new(Node)
 	*dst = *src
+	dst.KeySignature = append(src.KeySignature[:0:0], src.KeySignature...)
 	dst.Addresses = append(src.Addresses[:0:0], src.Addresses...)
 	dst.AllowedIPs = append(src.AllowedIPs[:0:0], src.AllowedIPs...)
 	dst.Endpoints = append(src.Endpoints[:0:0], src.Endpoints...)
@@ -74,6 +76,7 @@ var _NodeCloneNeedsRegeneration = Node(struct {
 	Sharer                  UserID
 	Key                     key.NodePublic
 	KeyExpiry               time.Time
+	KeySignature            tkatype.MarshaledSignature
 	Machine                 key.MachinePublic
 	DiscoKey                key.DiscoPublic
 	Addresses               []netip.Prefix
@@ -112,24 +115,27 @@ func (src *Hostinfo) Clone() *Hostinfo {
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _HostinfoCloneNeedsRegeneration = Hostinfo(struct {
-	IPNVersion    string
-	FrontendLogID string
-	BackendLogID  string
-	OS            string
-	OSVersion     string
-	Desktop       opt.Bool
-	Package       string
-	DeviceModel   string
-	Hostname      string
-	ShieldsUp     bool
-	ShareeNode    bool
-	GoArch        string
-	RoutableIPs   []netip.Prefix
-	RequestTags   []string
-	Services      []Service
-	NetInfo       *NetInfo
-	SSH_HostKeys  []string
-	Cloud         string
+	IPNVersion      string
+	FrontendLogID   string
+	BackendLogID    string
+	OS              string
+	OSVersion       string
+	Desktop         opt.Bool
+	Package         string
+	DeviceModel     string
+	Hostname        string
+	ShieldsUp       bool
+	ShareeNode      bool
+	GoArch          string
+	GoVersion       string
+	RoutableIPs     []netip.Prefix
+	RequestTags     []string
+	Services        []Service
+	NetInfo         *NetInfo
+	SSH_HostKeys    []string
+	Cloud           string
+	Userspace       opt.Bool
+	UserspaceRouter opt.Bool
 }{})
 
 // Clone makes a deep copy of NetInfo.
@@ -156,6 +162,7 @@ var _NetInfoCloneNeedsRegeneration = NetInfo(struct {
 	WorkingIPv6           opt.Bool
 	OSHasIPv6             opt.Bool
 	WorkingUDP            opt.Bool
+	WorkingICMPv4         opt.Bool
 	HavePortMap           bool
 	UPnP                  opt.Bool
 	PMP                   opt.Bool

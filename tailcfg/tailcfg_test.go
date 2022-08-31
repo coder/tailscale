@@ -8,13 +8,17 @@ import (
 	"encoding"
 	"encoding/json"
 	"net/netip"
+	"os"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"tailscale.com/tstest"
 	"tailscale.com/types/key"
+	"tailscale.com/util/must"
 	"tailscale.com/version"
 )
 
@@ -30,9 +34,10 @@ func TestHostinfoEqual(t *testing.T) {
 		"IPNVersion", "FrontendLogID", "BackendLogID",
 		"OS", "OSVersion", "Desktop", "Package", "DeviceModel", "Hostname",
 		"ShieldsUp", "ShareeNode",
-		"GoArch",
+		"GoArch", "GoVersion",
 		"RoutableIPs", "RequestTags",
 		"Services", "NetInfo", "SSH_HostKeys", "Cloud",
+		"Userspace", "UserspaceRouter",
 	}
 	if have := fieldsOf(reflect.TypeOf(Hostinfo{})); !reflect.DeepEqual(have, hiHandles) {
 		t.Errorf("Hostinfo.Equal check might be out of sync\nfields: %q\nhandled: %q\n",
@@ -301,7 +306,7 @@ func TestHostinfoTailscaleSSHEnabled(t *testing.T) {
 func TestNodeEqual(t *testing.T) {
 	nodeHandles := []string{
 		"ID", "StableID", "Name", "User", "Sharer",
-		"Key", "KeyExpiry", "Machine", "DiscoKey",
+		"Key", "KeyExpiry", "KeySignature", "Machine", "DiscoKey",
 		"Addresses", "AllowedIPs", "Endpoints", "DERP", "Hostinfo",
 		"Created", "Tags", "PrimaryRoutes",
 		"LastSeen", "Online", "KeepAlive", "MachineAuthorized",
@@ -502,6 +507,7 @@ func TestNetInfoFields(t *testing.T) {
 		"WorkingIPv6",
 		"OSHasIPv6",
 		"WorkingUDP",
+		"WorkingICMPv4",
 		"HavePortMap",
 		"UPnP",
 		"PMP",
@@ -648,5 +654,22 @@ func TestRegisterRequestNilClone(t *testing.T) {
 	got := nilReq.Clone()
 	if got != nil {
 		t.Errorf("got = %v; want nil", got)
+	}
+}
+
+// Tests that CurrentCapabilityVersion is bumped when the comment block above it gets bumped.
+// We've screwed this up several times.
+func TestCurrentCapabilityVersion(t *testing.T) {
+	f := must.Get(os.ReadFile("tailcfg.go"))
+	matches := regexp.MustCompile(`(?m)^//\s+(\d+): \d\d\d\d-\d\d-\d\d: `).FindAllStringSubmatch(string(f), -1)
+	max := 0
+	for _, m := range matches {
+		n := must.Get(strconv.Atoi(m[1]))
+		if n > max {
+			max = n
+		}
+	}
+	if CapabilityVersion(max) != CurrentCapabilityVersion {
+		t.Errorf("CurrentCapabilityVersion = %d; want %d", CurrentCapabilityVersion, max)
 	}
 }

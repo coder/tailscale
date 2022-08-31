@@ -6,8 +6,6 @@ package tka
 
 import (
 	"bytes"
-	"encoding/base32"
-	"encoding/hex"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -174,10 +172,24 @@ type FS struct {
 	mu   sync.RWMutex
 }
 
+// ChonkDir returns an implementation of Chonk which uses the
+// given directory to store TKA state.
+func ChonkDir(dir string) (*FS, error) {
+	stat, err := os.Stat(dir)
+	if err != nil {
+		return nil, err
+	}
+	if !stat.IsDir() {
+		return nil, fmt.Errorf("chonk directory %q is a file", dir)
+	}
+	return &FS{base: dir}, nil
+}
+
 // fsHashInfo describes how information about an AUMHash is represented
 // on disk.
 //
-// The CBOR-serialization of this struct is stored to base/hex(hash[0])/base32(hash[1:])
+// The CBOR-serialization of this struct is stored to base/__/base32(hash)
+// where __ are the first two characters of base32(hash).
 //
 // CBOR was chosen because we are already using it and it serializes
 // much smaller than JSON for AUMs. The 'keyasint' thing isn't essential
@@ -187,12 +199,11 @@ type fsHashInfo struct {
 	AUM      *AUM      `cbor:"2,keyasint"`
 }
 
-func (c *FS) dirPrefix(h AUMHash) string {
-	return filepath.Join(c.base, hex.EncodeToString(h[:1]))
-}
-
-func (c *FS) filename(h AUMHash) string {
-	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(h[1:])
+// aumDir returns the directory an AUM is stored in, and its filename
+// within the directory.
+func (c *FS) aumDir(h AUMHash) (dir, base string) {
+	s := h.String()
+	return filepath.Join(c.base, s[:2]), s
 }
 
 // AUM returns the AUM with the specified digest.
@@ -243,15 +254,24 @@ func (c *FS) ChildAUMs(prevAUMHash AUMHash) ([]AUM, error) {
 }
 
 func (c *FS) get(h AUMHash) (*fsHashInfo, error) {
-	f, err := os.Open(filepath.Join(c.dirPrefix(h), c.filename(h)))
+	dir, base := c.aumDir(h)
+	f, err := os.Open(filepath.Join(dir, base))
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 
-	var out fsHashInfo
-	if err := cbor.NewDecoder(f).Decode(&out); err != nil {
+	m, err := cborDecOpts.DecMode()
+	if err != nil {
 		return nil, err
+	}
+
+	var out fsHashInfo
+	if err := m.NewDecoder(f).Decode(&out); err != nil {
+		return nil, err
+	}
+	if out.AUM != nil && out.AUM.Hash() != h {
+		return nil, fmt.Errorf("%s: AUM does not match file name hash %s", f.Name(), out.AUM.Hash())
 	}
 	return &out, nil
 }
@@ -284,24 +304,15 @@ func (c *FS) scanHashes(eachHashInfo func(*fsHashInfo)) error {
 		if !prefix.IsDir() {
 			continue
 		}
-		pb, err := hex.DecodeString(prefix.Name())
-		if err != nil || len(pb) != 1 {
-			return fmt.Errorf("invalid prefix directory %q: %v", prefix.Name(), err)
-		}
-
 		files, err := os.ReadDir(filepath.Join(c.base, prefix.Name()))
 		if err != nil {
 			return fmt.Errorf("reading prefix dir: %v", err)
 		}
 		for _, file := range files {
-			remainingHash, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(file.Name())
-			if err != nil {
-				return fmt.Errorf("invalid aum file %s/%s: %v", prefix.Name(), file.Name(), err)
-			}
 			var h AUMHash
-			h[0] = pb[0]
-			copy(h[1:], remainingHash)
-
+			if err := h.UnmarshalText([]byte(file.Name())); err != nil {
+				return fmt.Errorf("invalid aum file: %s: %w", file.Name(), err)
+			}
 			info, err := c.get(h)
 			if err != nil {
 				return fmt.Errorf("reading %x: %v", h, err)
@@ -409,13 +420,19 @@ func (c *FS) commit(h AUMHash, updater func(*fsHashInfo)) error {
 		return fmt.Errorf("cannot commit AUM with hash %x to %x", toCommit.AUM.Hash(), h)
 	}
 
-	if err := os.MkdirAll(c.dirPrefix(h), 0755); err != nil && !os.IsExist(err) {
+	dir, base := c.aumDir(h)
+	if err := os.MkdirAll(dir, 0755); err != nil && !os.IsExist(err) {
 		return fmt.Errorf("creating directory: %v", err)
 	}
 
+	m, err := cbor.CTAP2EncOptions().EncMode()
+	if err != nil {
+		return fmt.Errorf("cbor EncMode: %v", err)
+	}
+
 	var buff bytes.Buffer
-	if err := cbor.NewEncoder(&buff).Encode(toCommit); err != nil {
+	if err := m.NewEncoder(&buff).Encode(toCommit); err != nil {
 		return fmt.Errorf("encoding: %v", err)
 	}
-	return atomicfile.WriteFile(filepath.Join(c.dirPrefix(h), c.filename(h)), buff.Bytes(), 0644)
+	return atomicfile.WriteFile(filepath.Join(dir, base), buff.Bytes(), 0644)
 }

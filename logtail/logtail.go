@@ -17,13 +17,13 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"tailscale.com/logtail/backoff"
 	"tailscale.com/net/interfaces"
-	"tailscale.com/syncs"
 	tslogger "tailscale.com/types/logger"
 	"tailscale.com/wgengine/monitor"
 )
@@ -109,6 +109,10 @@ func NewLogger(cfg Config, logf tslogger.Logf) *Logger {
 			procID = 7
 		}
 	}
+
+	stdLogf := func(f string, a ...any) {
+		fmt.Fprintf(cfg.Stderr, strings.TrimSuffix(f, "\n")+"\n", a...)
+	}
 	l := &Logger{
 		privateID:      cfg.PrivateID,
 		stderr:         cfg.Stderr,
@@ -122,7 +126,7 @@ func NewLogger(cfg Config, logf tslogger.Logf) *Logger {
 		sentinel:       make(chan int32, 16),
 		drainLogs:      cfg.DrainLogs,
 		timeNow:        cfg.TimeNow,
-		bo:             backoff.NewBackoff("logtail", logf, 30*time.Second),
+		bo:             backoff.NewBackoff("logtail", stdLogf, 30*time.Second),
 		metricsDelta:   cfg.MetricsDelta,
 
 		procID:              procID,
@@ -270,7 +274,7 @@ func (l *Logger) drainPending(scratch []byte) (res []byte) {
 		if err == io.EOF {
 			break
 		} else if err != nil {
-			b = []byte(fmt.Sprintf("reading ringbuffer: %v", err))
+			b = fmt.Appendf(nil, "reading ringbuffer: %v", err)
 			batchDone = true
 		} else if b == nil {
 			if entries > 0 {
@@ -448,15 +452,15 @@ func (l *Logger) Flush() error {
 }
 
 // logtailDisabled is whether logtail uploads to logcatcher are disabled.
-var logtailDisabled syncs.AtomicBool
+var logtailDisabled atomic.Bool
 
 // Disable disables logtail uploads for the lifetime of the process.
 func Disable() {
-	logtailDisabled.Set(true)
+	logtailDisabled.Store(true)
 }
 
 func (l *Logger) sendLocked(jsonBlob []byte) (int, error) {
-	if logtailDisabled.Get() {
+	if logtailDisabled.Load() {
 		return len(jsonBlob), nil
 	}
 	n, err := l.buffer.Write(jsonBlob)

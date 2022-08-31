@@ -531,8 +531,8 @@ func (c *Client) createOrGetMapping(ctx context.Context) (external netip.AddrPor
 			return netip.AddrPort{}, NoMappingError{ErrNoPortMappingServices}
 		}
 		srcu := srci.(*net.UDPAddr)
-		src, ok := netaddr.FromStdAddr(srcu.IP, srcu.Port, srcu.Zone)
-		if !ok {
+		src := netaddr.Unmap(srcu.AddrPort())
+		if !src.IsValid() {
 			continue
 		}
 		if src == pxpAddr {
@@ -788,10 +788,11 @@ func (c *Client) Probe(ctx context.Context) (res ProbeResult, err error) {
 			}
 			return res, err
 		}
-		ip, ok := netaddr.FromStdIP(addr.(*net.UDPAddr).IP)
+		ip, ok := netip.AddrFromSlice(addr.(*net.UDPAddr).IP)
 		if !ok {
 			continue
 		}
+		ip = ip.Unmap()
 		port := uint16(addr.(*net.UDPAddr).Port)
 		switch port {
 		case c.upnpPort():

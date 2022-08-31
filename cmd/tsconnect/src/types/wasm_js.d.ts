@@ -4,8 +4,7 @@
 
 /**
  * @fileoverview Type definitions for types exported by the wasm_js.go Go
- * module. Not actually a .d.ts file so that we can use enums from it in
- * esbuild's simplified TypeScript compiler (see https://github.com/evanw/esbuild/issues/2298#issuecomment-1146378367)
+ * module.
  */
 
 declare global {
@@ -20,12 +19,23 @@ declare global {
       username: string,
       termConfig: {
         writeFn: (data: string) => void
+        writeErrorFn: (err: string) => void
         setReadFn: (readFn: (data: string) => void) => void
         rows: number
         cols: number
         onDone: () => void
       }
-    ): void
+    ): IPNSSHSession
+    fetch(url: string): Promise<{
+      status: number
+      statusText: string
+      text: () => Promise<string>
+    }>
+  }
+
+  interface IPNSSHSession {
+    resize(rows: number, cols: number): boolean
+    close(): boolean
   }
 
   interface IPNStateStorage {
@@ -35,6 +45,8 @@ declare global {
 
   type IPNConfig = {
     stateStorage?: IPNStateStorage
+    authKey?: string
+    controlURL?: string
   }
 
   type IPNCallbacks = {
@@ -64,23 +76,23 @@ declare global {
     online?: boolean
     tailscaleSSHEnabled: boolean
   }
+
+  /** Mirrors values from ipn/backend.go */
+  type IPNState =
+    | "NoState"
+    | "InUseOtherUser"
+    | "NeedsLogin"
+    | "NeedsMachineAuth"
+    | "Stopped"
+    | "Starting"
+    | "Running"
+
+  /** Mirrors values from MachineStatus in tailcfg.go */
+  type IPNMachineStatus =
+    | "MachineUnknown"
+    | "MachineUnauthorized"
+    | "MachineAuthorized"
+    | "MachineInvalid"
 }
 
-/** Mirrors values from ipn/backend.go */
-export const enum IPNState {
-  NoState = 0,
-  InUseOtherUser = 1,
-  NeedsLogin = 2,
-  NeedsMachineAuth = 3,
-  Stopped = 4,
-  Starting = 5,
-  Running = 6,
-}
-
-/** Mirrors values from MachineStatus in tailcfg.go */
-export const enum IPNMachineStatus {
-  MachineUnknown = 0,
-  MachineUnauthorized = 1,
-  MachineAuthorized = 2,
-  MachineInvalid = 3,
-}
+export {}

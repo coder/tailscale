@@ -7,8 +7,6 @@ package key
 import (
 	"bytes"
 	"testing"
-
-	"tailscale.com/tka"
 )
 
 func TestNLPrivate(t *testing.T) {
@@ -26,22 +24,17 @@ func TestNLPrivate(t *testing.T) {
 		t.Error("decoded and generated NLPrivate bytes differ")
 	}
 
-	// Test that NLPrivate implements tka.Signer by making a new
-	// authority.
-	k := tka.Key{Kind: tka.Key25519, Public: p.Public(), Votes: 1}
-	_, aum, err := tka.Create(&tka.Mem{}, tka.State{
-		Keys:               []tka.Key{k},
-		DisablementSecrets: [][]byte{bytes.Repeat([]byte{1}, 32)},
-	}, p)
+	// Test NLPublic
+	pub := p.Public()
+	encoded, err = pub.MarshalText()
 	if err != nil {
-		t.Fatalf("tka.Create() failed: %v", err)
+		t.Fatal(err)
 	}
-
-	// Make sure the generated genesis AUM was signed.
-	if got, want := len(aum.Signatures), 1; got != want {
-		t.Fatalf("len(signatures) = %d, want %d", got, want)
+	var decodedPub NLPublic
+	if err := decodedPub.UnmarshalText(encoded); err != nil {
+		t.Fatal(err)
 	}
-	if err := aum.Signatures[0].Verify(aum.SigHash(), k); err != nil {
-		t.Errorf("signature did not verify: %v", err)
+	if !bytes.Equal(decodedPub.k[:], pub.k[:]) {
+		t.Error("decoded and generated NLPublic bytes differ")
 	}
 }

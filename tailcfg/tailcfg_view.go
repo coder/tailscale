@@ -12,10 +12,12 @@ import (
 	"net/netip"
 	"time"
 
+	"go4.org/mem"
 	"tailscale.com/types/dnstype"
 	"tailscale.com/types/key"
 	"tailscale.com/types/opt"
 	"tailscale.com/types/structs"
+	"tailscale.com/types/tkatype"
 	"tailscale.com/types/views"
 )
 
@@ -137,6 +139,7 @@ func (v NodeView) User() UserID                    { return v.ж.User }
 func (v NodeView) Sharer() UserID                  { return v.ж.Sharer }
 func (v NodeView) Key() key.NodePublic             { return v.ж.Key }
 func (v NodeView) KeyExpiry() time.Time            { return v.ж.KeyExpiry }
+func (v NodeView) KeySignature() mem.RO            { return mem.B(v.ж.KeySignature) }
 func (v NodeView) Machine() key.MachinePublic      { return v.ж.Machine }
 func (v NodeView) DiscoKey() key.DiscoPublic       { return v.ж.DiscoKey }
 func (v NodeView) Addresses() views.IPPrefixSlice  { return views.IPPrefixSliceOf(v.ж.Addresses) }
@@ -181,6 +184,7 @@ var _NodeViewNeedsRegeneration = Node(struct {
 	Sharer                  UserID
 	Key                     key.NodePublic
 	KeyExpiry               time.Time
+	KeySignature            tkatype.MarshaledSignature
 	Machine                 key.MachinePublic
 	DiscoKey                key.DiscoPublic
 	Addresses               []netip.Prefix
@@ -258,6 +262,7 @@ func (v HostinfoView) Hostname() string      { return v.ж.Hostname }
 func (v HostinfoView) ShieldsUp() bool       { return v.ж.ShieldsUp }
 func (v HostinfoView) ShareeNode() bool      { return v.ж.ShareeNode }
 func (v HostinfoView) GoArch() string        { return v.ж.GoArch }
+func (v HostinfoView) GoVersion() string     { return v.ж.GoVersion }
 func (v HostinfoView) RoutableIPs() views.IPPrefixSlice {
 	return views.IPPrefixSliceOf(v.ж.RoutableIPs)
 }
@@ -266,28 +271,33 @@ func (v HostinfoView) Services() views.Slice[Service]    { return views.SliceOf(
 func (v HostinfoView) NetInfo() NetInfoView              { return v.ж.NetInfo.View() }
 func (v HostinfoView) SSH_HostKeys() views.Slice[string] { return views.SliceOf(v.ж.SSH_HostKeys) }
 func (v HostinfoView) Cloud() string                     { return v.ж.Cloud }
+func (v HostinfoView) Userspace() opt.Bool               { return v.ж.Userspace }
+func (v HostinfoView) UserspaceRouter() opt.Bool         { return v.ж.UserspaceRouter }
 func (v HostinfoView) Equal(v2 HostinfoView) bool        { return v.ж.Equal(v2.ж) }
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _HostinfoViewNeedsRegeneration = Hostinfo(struct {
-	IPNVersion    string
-	FrontendLogID string
-	BackendLogID  string
-	OS            string
-	OSVersion     string
-	Desktop       opt.Bool
-	Package       string
-	DeviceModel   string
-	Hostname      string
-	ShieldsUp     bool
-	ShareeNode    bool
-	GoArch        string
-	RoutableIPs   []netip.Prefix
-	RequestTags   []string
-	Services      []Service
-	NetInfo       *NetInfo
-	SSH_HostKeys  []string
-	Cloud         string
+	IPNVersion      string
+	FrontendLogID   string
+	BackendLogID    string
+	OS              string
+	OSVersion       string
+	Desktop         opt.Bool
+	Package         string
+	DeviceModel     string
+	Hostname        string
+	ShieldsUp       bool
+	ShareeNode      bool
+	GoArch          string
+	GoVersion       string
+	RoutableIPs     []netip.Prefix
+	RequestTags     []string
+	Services        []Service
+	NetInfo         *NetInfo
+	SSH_HostKeys    []string
+	Cloud           string
+	Userspace       opt.Bool
+	UserspaceRouter opt.Bool
 }{})
 
 // View returns a readonly view of NetInfo.
@@ -340,6 +350,7 @@ func (v NetInfoView) HairPinning() opt.Bool           { return v.ж.HairPinning 
 func (v NetInfoView) WorkingIPv6() opt.Bool           { return v.ж.WorkingIPv6 }
 func (v NetInfoView) OSHasIPv6() opt.Bool             { return v.ж.OSHasIPv6 }
 func (v NetInfoView) WorkingUDP() opt.Bool            { return v.ж.WorkingUDP }
+func (v NetInfoView) WorkingICMPv4() opt.Bool         { return v.ж.WorkingICMPv4 }
 func (v NetInfoView) HavePortMap() bool               { return v.ж.HavePortMap }
 func (v NetInfoView) UPnP() opt.Bool                  { return v.ж.UPnP }
 func (v NetInfoView) PMP() opt.Bool                   { return v.ж.PMP }
@@ -357,6 +368,7 @@ var _NetInfoViewNeedsRegeneration = NetInfo(struct {
 	WorkingIPv6           opt.Bool
 	OSHasIPv6             opt.Bool
 	WorkingUDP            opt.Bool
+	WorkingICMPv4         opt.Bool
 	HavePortMap           bool
 	UPnP                  opt.Bool
 	PMP                   opt.Bool

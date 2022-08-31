@@ -30,15 +30,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	gossh "github.com/tailscale/golang-x-crypto/ssh"
 	"tailscale.com/envknob"
 	"tailscale.com/ipn/ipnlocal"
 	"tailscale.com/logtail/backoff"
-	"tailscale.com/net/netaddr"
 	"tailscale.com/net/tsaddr"
-	"tailscale.com/syncs"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tempfork/gliderlabs/ssh"
 	"tailscale.com/types/logger"
@@ -410,11 +409,11 @@ func toIPPort(a net.Addr) (ipp netip.AddrPort) {
 	if !ok {
 		return
 	}
-	tanetaddr, ok := netaddr.FromStdIP(ta.IP)
+	tanetaddr, ok := netip.AddrFromSlice(ta.IP)
 	if !ok {
 		return
 	}
-	return netip.AddrPortFrom(tanetaddr, uint16(ta.Port))
+	return netip.AddrPortFrom(tanetaddr.Unmap(), uint16(ta.Port))
 }
 
 // connInfo returns a populated sshConnInfo from the provided arguments,
@@ -646,7 +645,7 @@ func (c *conn) resolveTerminalActionLocked(s ssh.Session, cr *contextReader) (ac
 	action = c.action0
 
 	var awaitReadOnce sync.Once // to start Reads on cr
-	var sawInterrupt syncs.AtomicBool
+	var sawInterrupt atomic.Bool
 	var wg sync.WaitGroup
 	defer wg.Wait() // wait for awaitIntrOnce's goroutine to exit
 
@@ -688,7 +687,7 @@ func (c *conn) resolveTerminalActionLocked(s ssh.Session, cr *contextReader) (ac
 						return
 					}
 					if n > 0 && buf[0] == 0x03 { // Ctrl-C
-						sawInterrupt.Set(true)
+						sawInterrupt.Store(true)
 						s.Stderr().Write([]byte("Canceled.\r\n"))
 						s.Exit(1)
 						return
@@ -696,11 +695,11 @@ func (c *conn) resolveTerminalActionLocked(s ssh.Session, cr *contextReader) (ac
 				}
 			}()
 		})
-		url = c.expandDelegateURL(url)
+		url = c.expandDelegateURLLocked(url)
 		var err error
 		action, err = c.fetchSSHAction(ctx, url)
 		if err != nil {
-			if sawInterrupt.Get() {
+			if sawInterrupt.Load() {
 				metricTerminalInterrupt.Add(1)
 				return nil, fmt.Errorf("aborted by user")
 			} else {
@@ -711,12 +710,10 @@ func (c *conn) resolveTerminalActionLocked(s ssh.Session, cr *contextReader) (ac
 	}
 }
 
-func (c *conn) expandDelegateURL(actionURL string) string {
+func (c *conn) expandDelegateURLLocked(actionURL string) string {
 	nm := c.srv.lb.NetMap()
-	c.mu.Lock()
 	ci := c.info
 	lu := c.localUser
-	c.mu.Unlock()
 	var dstNodeID string
 	if nm != nil {
 		dstNodeID = fmt.Sprint(int64(nm.SelfNode.ID))

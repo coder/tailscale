@@ -252,7 +252,7 @@ func calcAdvertiseRoutes(advertiseRoutes string, advertiseDefaultRoute bool) ([]
 		if default4 && !default6 {
 			return nil, fmt.Errorf("%s advertised without its IPv6 counterpart, please also advertise %s", ipv4default, ipv6default)
 		} else if default6 && !default4 {
-			return nil, fmt.Errorf("%s advertised without its IPv6 counterpart, please also advertise %s", ipv6default, ipv4default)
+			return nil, fmt.Errorf("%s advertised without its IPv4 counterpart, please also advertise %s", ipv6default, ipv4default)
 		}
 	}
 	if advertiseDefaultRoute {
@@ -571,9 +571,9 @@ func runUp(ctx context.Context, args []string) (retErr error) {
 
 				data, err := json.MarshalIndent(js, "", "\t")
 				if err != nil {
-					log.Printf("upOutputJSON marshalling error: %v", err)
+					printf("upOutputJSON marshalling error: %v", err)
 				} else {
-					fmt.Println(string(data))
+					outln(string(data))
 				}
 			} else {
 				fmt.Fprintf(Stderr, "\nTo authenticate, visit:\n\n\t%s\n\n", *url)
@@ -711,7 +711,7 @@ func printUpDoneJSON(state ipn.State, errorString string) {
 	if err != nil {
 		log.Printf("printUpDoneJSON marshalling error: %v", err)
 	} else {
-		fmt.Println(string(data))
+		outln(string(data))
 	}
 }
 

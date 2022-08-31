@@ -21,6 +21,7 @@ import (
 	"tailscale.com/net/stun"
 	"tailscale.com/net/stun/stuntest"
 	"tailscale.com/tailcfg"
+	"tailscale.com/util/strs"
 )
 
 func TestHairpinSTUN(t *testing.T) {
@@ -524,7 +525,12 @@ func TestLogConciseReport(t *testing.T) {
 		{
 			name: "no_udp",
 			r:    &Report{},
-			want: "udp=false v4=false v6=false mapvarydest= hair= portmap=? derp=0",
+			want: "udp=false v4=false icmpv4=false v6=false mapvarydest= hair= portmap=? derp=0",
+		},
+		{
+			name: "no_udp_icmp",
+			r:    &Report{ICMPv4: true, IPv4: true},
+			want: "udp=false icmpv4=true v6=false mapvarydest= hair= portmap=? derp=0",
 		},
 		{
 			name: "ipv4_one_region",
@@ -611,7 +617,7 @@ func TestLogConciseReport(t *testing.T) {
 			var buf bytes.Buffer
 			c := &Client{Logf: func(f string, a ...any) { fmt.Fprintf(&buf, f, a...) }}
 			c.logConciseReport(tt.r, dm)
-			if got := strings.TrimPrefix(buf.String(), "[v1] report: "); got != tt.want {
+			if got, ok := strs.CutPrefix(buf.String(), "[v1] report: "); !ok {
 				t.Errorf("unexpected result.\n got: %#q\nwant: %#q\n", got, tt.want)
 			}
 		})

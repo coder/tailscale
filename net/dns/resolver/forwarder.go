@@ -76,8 +76,6 @@ const (
 	wellKnownHostBackupDelay = 200 * time.Millisecond
 )
 
-var errNoUpstreams = errors.New("upstream nameservers not set")
-
 // txid identifies a DNS transaction.
 //
 // As the standard DNS Request ID is only 16 bits, we extend it:
@@ -205,7 +203,7 @@ type forwarder struct {
 	//
 	// That is, if we're running on GCP or AWS where there's always a well-known
 	// IP of a recursive resolver, return that rather than having callers return
-	// errNoUpstreams. This fixes both normal 100.100.100.100 resolution when
+	// SERVFAIL. This fixes both normal 100.100.100.100 resolution when
 	// /etc/resolv.conf is missing/corrupt, and the peerapi ExitDNS stub
 	// resolver lookup.
 	cloudHostFallback []resolverAndDelay
@@ -408,6 +406,7 @@ func (f *forwarder) getKnownDoHClientForProvider(urlBase string) (c *http.Client
 	})
 	c = &http.Client{
 		Transport: &http.Transport{
+			ForceAttemptHTTP2: true,
 			IdleConnTimeout: dohTransportTimeout,
 			DialContext: func(ctx context.Context, netw, addr string) (net.Conn, error) {
 				if !strings.HasPrefix(netw, "tcp") {
@@ -678,6 +677,8 @@ func (f *forwarder) forwardWithDestChan(ctx context.Context, query packet, respo
 		res, err := nxDomainResponse(query)
 		if err != nil {
 			f.logf("error parsing bonjour query: %v", err)
+			// Returning an error will cause an internal retry, there is
+			// nothing we can do if parsing failed. Just drop the packet.
 			return nil
 		}
 		select {
@@ -688,7 +689,7 @@ func (f *forwarder) forwardWithDestChan(ctx context.Context, query packet, respo
 		}
 	}
 
-	if fl, ok := fwdLogAtomic.Load().(*fwdLog); ok {
+	if fl := fwdLogAtomic.Load(); fl != nil {
 		fl.addName(string(domain))
 	}
 
@@ -698,7 +699,20 @@ func (f *forwarder) forwardWithDestChan(ctx context.Context, query packet, respo
 		resolvers = f.resolvers(domain)
 		if len(resolvers) == 0 {
 			metricDNSFwdErrorNoUpstream.Add(1)
-			return errNoUpstreams
+			f.logf("no upstream resolvers set, returning SERVFAIL")
+			res, err := servfailResponse(query)
+			if err != nil {
+				f.logf("building servfail response: %v", err)
+				// Returning an error will cause an internal retry, there is
+				// nothing we can do if parsing failed. Just drop the packet.
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case responseChan <- res:
+				return nil
+			}
 		}
 	}
 
