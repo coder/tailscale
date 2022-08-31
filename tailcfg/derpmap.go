@@ -140,9 +140,9 @@ type DERPNode struct {
 	// It should not be set by users.
 	InsecureForTests bool `json:",omitempty"`
 
-	// HTTPForTests is used by unit tests to force HTTP.
+	// ForceHTTP is used by unit tests to force HTTP.
 	// It should not be set by users.
-	HTTPForTests bool `json:",omitempty"`
+	ForceHTTP bool `json:",omitempty"`
 
 	// STUNTestIP is used in tests to override the STUN server's IP.
 	// If empty, it's assumed to be the same as the DERP server.
