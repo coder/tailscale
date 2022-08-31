@@ -179,7 +179,7 @@ func (c *Client) targetString(reg *tailcfg.DERPRegion) string {
 }
 
 func (c *Client) useHTTPS(node *tailcfg.DERPNode) bool {
-	if node.ForceHTTP {
+	if node != nil && node.ForceHTTP {
 		return false
 	}
 	if c.url != nil && c.url.Scheme == "http" {
