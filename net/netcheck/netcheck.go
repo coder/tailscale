@@ -1086,7 +1086,15 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
 	}
 	hc := &http.Client{Transport: tr}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://"+node.HostName+"/derp/latency-check", nil)
+	host := node.HostName
+	if host == "" {
+		host = fmt.Sprintf("%s:%d", node.IPv4, node.DERPPort)
+	}
+	scheme := "https"
+	if node.ForceHTTP {
+		scheme = "http"
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s://%s/derp/latency-check", scheme, host), nil)
 	if err != nil {
 		return 0, ip, err
 	}
