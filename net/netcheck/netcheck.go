@@ -962,9 +962,11 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap) (_ *Report,
 					// random which fields end up getting set here.
 					// Since they're not needed, that's fine for now.
 					if ip.Is4() {
+						updateLatency(rs.report.RegionV4Latency, reg.RegionID, d)
 						rs.report.IPv4 = true
 					}
 					if ip.Is6() {
+						updateLatency(rs.report.RegionV6Latency, reg.RegionID, d)
 						rs.report.IPv6 = true
 					}
 					rs.mu.Unlock()
