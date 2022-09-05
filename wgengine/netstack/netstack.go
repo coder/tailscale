@@ -1010,6 +1010,15 @@ func (ns *Impl) forwardUDP(client *gonet.UDPConn, wq *waiter.Queue, clientAddr, 
 	extend := func() {
 		timer.Reset(idleTimeout)
 	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ns.ctx.Done():
+		}
+		client.Close()
+		backendConn.Close()
+	}()
 	startPacketCopy(ctx, cancel, client, net.UDPAddrFromAddrPort(clientAddr), backendConn, ns.logf, extend)
 	startPacketCopy(ctx, cancel, backendConn, backendRemoteAddr, client, ns.logf, extend)
 	if isLocal {
