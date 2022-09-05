@@ -27,19 +27,19 @@ func Serve(l net.Listener) error {
 		if err != nil {
 			return err
 		}
-		err = handleConnection(conn)
+		err = ServeConn(conn)
 		if err != nil {
 			return err
 		}
 	}
 }
 
-// handleConnection handles the initial exchange between the server and the client.
+// ServeConn handles the initial exchange between the server and the client.
 // It reads the testconfig message into a config struct. If any errors occur with
 // the testconfig (specifically, if there is a version mismatch), it will return those
 // errors to the client with a configResponse. After the exchange, it will start
 // the speed test.
-func handleConnection(conn net.Conn) error {
+func ServeConn(conn net.Conn) error {
 	defer conn.Close()
 	var conf config
 
