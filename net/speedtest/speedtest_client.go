@@ -19,19 +19,22 @@ func RunClient(direction Direction, duration time.Duration, host string) ([]Resu
 	if err != nil {
 		return nil, err
 	}
+	return RunClientWithConn(direction, duration, conn)
+}
 
+func RunClientWithConn(direction Direction, duration time.Duration, conn net.Conn) ([]Result, error) {
 	conf := config{TestDuration: duration, Version: version, Direction: direction}
 
 	defer conn.Close()
 	encoder := json.NewEncoder(conn)
 
-	if err = encoder.Encode(conf); err != nil {
+	if err := encoder.Encode(conf); err != nil {
 		return nil, err
 	}
 
 	var response configResponse
 	decoder := json.NewDecoder(conn)
-	if err = decoder.Decode(&response); err != nil {
+	if err := decoder.Decode(&response); err != nil {
 		return nil, err
 	}
 	if response.Error != "" {
