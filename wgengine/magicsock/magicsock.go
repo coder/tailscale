@@ -1018,7 +1018,7 @@ func (c *Conn) determineEndpoints(ctx context.Context) ([]tailcfg.Endpoint, erro
 	var havePortmap bool
 	var portmapExt netip.AddrPort
 	if runtime.GOOS != "js" {
-		portmapExt, havePortmap = c.portMapper.GetCachedMappingOrStartCreatingOne()
+		portmapExt, havePortmap = c.portMapper.GetCachedMappingOrStartCreatingOne(ctx)
 	}
 
 	nr, err := c.updateNetInfo(ctx)
@@ -1058,7 +1058,7 @@ func (c *Conn) determineEndpoints(ctx context.Context) ([]tailcfg.Endpoint, erro
 
 	// If we didn't have a portmap earlier, maybe it's done by now.
 	if !havePortmap {
-		portmapExt, havePortmap = c.portMapper.GetCachedMappingOrStartCreatingOne()
+		portmapExt, havePortmap = c.portMapper.GetCachedMappingOrStartCreatingOne(ctx)
 	}
 	if havePortmap {
 		addAddr(portmapExt, tailcfg.EndpointPortmapped)

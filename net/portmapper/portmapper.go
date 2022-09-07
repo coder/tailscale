@@ -350,7 +350,7 @@ var (
 // If there's not one, it starts up a background goroutine to create one.
 // If the background goroutine ends up creating one, the onChange hook registered with the
 // NewClient constructor (if any) will fire.
-func (c *Client) GetCachedMappingOrStartCreatingOne() (external netip.AddrPort, ok bool) {
+func (c *Client) GetCachedMappingOrStartCreatingOne(ctx context.Context) (external netip.AddrPort, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -359,28 +359,28 @@ func (c *Client) GetCachedMappingOrStartCreatingOne() (external netip.AddrPort, 
 	if m := c.mapping; m != nil {
 		if now.Before(m.GoodUntil()) {
 			if now.After(m.RenewAfter()) {
-				c.maybeStartMappingLocked()
+				c.maybeStartMappingLocked(ctx)
 			}
 			return m.External(), true
 		}
 	}
 
-	c.maybeStartMappingLocked()
+	c.maybeStartMappingLocked(ctx)
 	return netip.AddrPort{}, false
 }
 
 // maybeStartMappingLocked starts a createMapping goroutine up, if one isn't already running.
 //
 // c.mu must be held.
-func (c *Client) maybeStartMappingLocked() {
+func (c *Client) maybeStartMappingLocked(ctx context.Context) {
 	if !c.runningCreate {
 		c.runningCreate = true
-		go c.createMapping()
+		go c.createMapping(ctx)
 	}
 }
 
-func (c *Client) createMapping() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (c *Client) createMapping(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	defer func() {
