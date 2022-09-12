@@ -1400,7 +1400,7 @@ func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) cha
 	if firstDerp {
 		startGate = c.derpStarted
 		go func() {
-			dc.Connect(ctx)
+			// dc.Connect(ctx)
 			c.mu.Lock()
 			defer c.mu.Unlock()
 			close(c.derpStarted)
