@@ -1356,14 +1356,14 @@ func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) cha
 	}
 	c.logf("magicsock: adding connection to derp-%v for %v", regionID, why)
 
+	if c.derpMap == nil || c.derpMap.Regions[regionID] == nil {
+		return nil
+	}
 	firstDerp := false
 	if c.activeDerp == nil {
 		firstDerp = true
 		c.activeDerp = make(map[int]activeDerp)
 		c.prevDerp = make(map[int]*syncs.WaitGroupChan)
-	}
-	if c.derpMap == nil || c.derpMap.Regions[regionID] == nil {
-		return nil
 	}
 
 	// Note that derphttp.NewRegionClient does not dial the server
