@@ -562,6 +562,42 @@ func TestManager(t *testing.T) {
 					"bradfitz.ts.com.", "2.3.4.5"),
 			},
 		},
+		{
+			name: "corp-v6",
+			in: Config{
+				DefaultResolvers: mustRes("1::1"),
+			},
+			os: OSConfig{
+				Nameservers: mustIPs("1::1"),
+			},
+		},
+		{
+			// This one's structurally the same as the previous one (corp-v6), but
+			// instead of 1::1 as the IPv6 address, it uses a NextDNS IPv6 address which
+			// is specially recognized.
+			name: "corp-v6-nextdns",
+			in: Config{
+				DefaultResolvers: mustRes("2a07:a8c0::c3:a884"),
+			},
+			os: OSConfig{
+				Nameservers: mustIPs("100.100.100.100"),
+			},
+			rs: resolver.Config{
+				Routes: upstreams(".", "2a07:a8c0::c3:a884"),
+			},
+		},
+		{
+			name: "nextdns-doh",
+			in: Config{
+				DefaultResolvers: mustRes("https://dns.nextdns.io/c3a884"),
+			},
+			os: OSConfig{
+				Nameservers: mustIPs("100.100.100.100"),
+			},
+			rs: resolver.Config{
+				Routes: upstreams(".", "https://dns.nextdns.io/c3a884"),
+			},
+		},
 	}
 
 	trIP := cmp.Transformer("ipStr", func(ip netip.Addr) string { return ip.String() })

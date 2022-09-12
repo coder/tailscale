@@ -40,45 +40,46 @@ type CapabilityVersion int
 //
 // History of versions:
 //
-//	 3: implicit compression, keep-alives
-//	 4: opt-in keep-alives via KeepAlive field, opt-in compression via Compress
-//	 5: 2020-10-19, implies IncludeIPv6, delta Peers/UserProfiles, supports MagicDNS
-//	 6: 2020-12-07: means MapResponse.PacketFilter nil means unchanged
-//	 7: 2020-12-15: FilterRule.SrcIPs accepts CIDRs+ranges, doesn't warn about 0.0.0.0/::
-//	 8: 2020-12-19: client can buggily receive IPv6 addresses and routes if beta enabled server-side
-//	 9: 2020-12-30: client doesn't auto-add implicit search domains from peers; only DNSConfig.Domains
-//	10: 2021-01-17: client understands MapResponse.PeerSeenChange
-//	11: 2021-03-03: client understands IPv6, multiple default routes, and goroutine dumping
-//	12: 2021-03-04: client understands PingRequest
-//	13: 2021-03-19: client understands FilterRule.IPProto
-//	14: 2021-04-07: client understands DNSConfig.Routes and DNSConfig.Resolvers
-//	15: 2021-04-12: client treats nil MapResponse.DNSConfig as meaning unchanged
-//	16: 2021-04-15: client understands Node.Online, MapResponse.OnlineChange
-//	17: 2021-04-18: MapResponse.Domain empty means unchanged
-//	18: 2021-04-19: MapResponse.Node nil means unchanged (all fields now omitempty)
-//	19: 2021-04-21: MapResponse.Debug.SleepSeconds
-//	20: 2021-06-11: MapResponse.LastSeen used even less (https://github.com/tailscale/tailscale/issues/2107)
-//	21: 2021-06-15: added MapResponse.DNSConfig.CertDomains
-//	22: 2021-06-16: added MapResponse.DNSConfig.ExtraRecords
-//	23: 2021-08-25: DNSConfig.Routes values may be empty (for ExtraRecords support in 1.14.1+)
-//	24: 2021-09-18: MapResponse.Health from control to node; node shows in "tailscale status"
-//	25: 2021-11-01: MapResponse.Debug.Exit
-//	26: 2022-01-12: (nothing, just bumping for 1.20.0)
-//	27: 2022-02-18: start of SSHPolicy being respected
-//	28: 2022-03-09: client can communicate over Noise.
-//	29: 2022-03-21: MapResponse.PopBrowserURL
-//	30: 2022-03-22: client can request id tokens.
-//	31: 2022-04-15: PingRequest & PingResponse TSMP & disco support
-//	32: 2022-04-17: client knows FilterRule.CapMatch
-//	33: 2022-07-20: added MapResponse.PeersChangedPatch (DERPRegion + Endpoints)
-//	34: 2022-08-02: client understands CapabilityFileSharingTarget
-//	36: 2022-08-02: added PeersChangedPatch.{Key,DiscoKey,Online,LastSeen,KeyExpiry,Capabilities}
-//	37: 2022-08-09: added Debug.{SetForceBackgroundSTUN,SetRandomizeClientPort}; Debug are sticky
-//	38: 2022-08-11: added PingRequest.URLIsNoise
-//	39: 2022-08-15: clients can talk Noise over arbitrary HTTPS port
-//	40: 2022-08-22: added Node.KeySignature, PeersChangedPatch.KeySignature
-//	41: 2022-08-30: uses 100.100.100.100 for route-less ExtraRecords if global nameservers is set
-const CurrentCapabilityVersion CapabilityVersion = 41
+//   - 3: implicit compression, keep-alives
+//   - 4: opt-in keep-alives via KeepAlive field, opt-in compression via Compress
+//   - 5: 2020-10-19, implies IncludeIPv6, delta Peers/UserProfiles, supports MagicDNS
+//   - 6: 2020-12-07: means MapResponse.PacketFilter nil means unchanged
+//   - 7: 2020-12-15: FilterRule.SrcIPs accepts CIDRs+ranges, doesn't warn about 0.0.0.0/::
+//   - 8: 2020-12-19: client can buggily receive IPv6 addresses and routes if beta enabled server-side
+//   - 9: 2020-12-30: client doesn't auto-add implicit search domains from peers; only DNSConfig.Domains
+//   - 10: 2021-01-17: client understands MapResponse.PeerSeenChange
+//   - 11: 2021-03-03: client understands IPv6, multiple default routes, and goroutine dumping
+//   - 12: 2021-03-04: client understands PingRequest
+//   - 13: 2021-03-19: client understands FilterRule.IPProto
+//   - 14: 2021-04-07: client understands DNSConfig.Routes and DNSConfig.Resolvers
+//   - 15: 2021-04-12: client treats nil MapResponse.DNSConfig as meaning unchanged
+//   - 16: 2021-04-15: client understands Node.Online, MapResponse.OnlineChange
+//   - 17: 2021-04-18: MapResponse.Domain empty means unchanged
+//   - 18: 2021-04-19: MapResponse.Node nil means unchanged (all fields now omitempty)
+//   - 19: 2021-04-21: MapResponse.Debug.SleepSeconds
+//   - 20: 2021-06-11: MapResponse.LastSeen used even less (https://github.com/tailscale/tailscale/issues/2107)
+//   - 21: 2021-06-15: added MapResponse.DNSConfig.CertDomains
+//   - 22: 2021-06-16: added MapResponse.DNSConfig.ExtraRecords
+//   - 23: 2021-08-25: DNSConfig.Routes values may be empty (for ExtraRecords support in 1.14.1+)
+//   - 24: 2021-09-18: MapResponse.Health from control to node; node shows in "tailscale status"
+//   - 25: 2021-11-01: MapResponse.Debug.Exit
+//   - 26: 2022-01-12: (nothing, just bumping for 1.20.0)
+//   - 27: 2022-02-18: start of SSHPolicy being respected
+//   - 28: 2022-03-09: client can communicate over Noise.
+//   - 29: 2022-03-21: MapResponse.PopBrowserURL
+//   - 30: 2022-03-22: client can request id tokens.
+//   - 31: 2022-04-15: PingRequest & PingResponse TSMP & disco support
+//   - 32: 2022-04-17: client knows FilterRule.CapMatch
+//   - 33: 2022-07-20: added MapResponse.PeersChangedPatch (DERPRegion + Endpoints)
+//   - 34: 2022-08-02: client understands CapabilityFileSharingTarget
+//   - 36: 2022-08-02: added PeersChangedPatch.{Key,DiscoKey,Online,LastSeen,KeyExpiry,Capabilities}
+//   - 37: 2022-08-09: added Debug.{SetForceBackgroundSTUN,SetRandomizeClientPort}; Debug are sticky
+//   - 38: 2022-08-11: added PingRequest.URLIsNoise
+//   - 39: 2022-08-15: clients can talk Noise over arbitrary HTTPS port
+//   - 40: 2022-08-22: added Node.KeySignature, PeersChangedPatch.KeySignature
+//   - 41: 2022-08-30: uses 100.100.100.100 for route-less ExtraRecords if global nameservers is set
+//   - 42: 2022-09-06: NextDNS DoH support; see https://github.com/tailscale/tailscale/pull/5556
+const CurrentCapabilityVersion CapabilityVersion = 42
 
 type StableID string
 
@@ -465,11 +466,29 @@ type Service struct {
 // Because it contains pointers (slices), this type should not be used
 // as a value type.
 type Hostinfo struct {
-	IPNVersion      string         `json:",omitempty"` // version of this code
-	FrontendLogID   string         `json:",omitempty"` // logtail ID of frontend instance
-	BackendLogID    string         `json:",omitempty"` // logtail ID of backend instance
-	OS              string         `json:",omitempty"` // operating system the client runs on (a version.OS value)
-	OSVersion       string         `json:",omitempty"` // operating system version, with optional distro prefix ("Debian 10.4", "Windows 10 Pro 10.0.19041")
+	IPNVersion    string `json:",omitempty"` // version of this code (in version.Long format)
+	FrontendLogID string `json:",omitempty"` // logtail ID of frontend instance
+	BackendLogID  string `json:",omitempty"` // logtail ID of backend instance
+	OS            string `json:",omitempty"` // operating system the client runs on (a version.OS value)
+
+	// OSVersion is the version of the OS, if available.
+	//
+	// For Android, it's like "10", "11", "12", etc. For iOS and macOS it's like
+	// "15.6.1" or "12.4.0". For Windows it's like "10.0.19044.1889". For
+	// FreeBSD it's like "12.3-STABLE".
+	//
+	// For Linux, prior to Tailscale 1.32, we jammed a bunch of fields into this
+	// string on Linux, like "Debian 10.4; kernel=xxx; container; env=kn" and so
+	// on. As of Tailscale 1.32, this is simply the kernel version on Linux, like
+	// "5.10.0-17-amd64".
+	OSVersion string `json:",omitempty"`
+
+	Container      opt.Bool `json:",omitempty"` // whether the client is running in a container
+	Env            string   `json:",omitempty"` // a hostinfo.EnvType in string form
+	Distro         string   `json:",omitempty"` // "debian", "ubuntu", "nixos", ...
+	DistroVersion  string   `json:",omitempty"` // "20.04", ...
+	DistroCodeName string   `json:",omitempty"` // "jammy", "bullseye", ...
+
 	Desktop         opt.Bool       `json:",omitempty"` // if a desktop was detected on Linux
 	Package         string         `json:",omitempty"` // Tailscale package to disambiguate ("choco", "appstore", etc; "" for unknown)
 	DeviceModel     string         `json:",omitempty"` // mobile phone model ("Pixel 3a", "iPhone12,3")
@@ -902,11 +921,6 @@ type MapRequest struct {
 	IncludeIPv6 bool `json:",omitempty"` // include IPv6 endpoints in returned Node Endpoints (for Version 4 clients)
 	Stream      bool // if true, multiple MapResponse objects are returned
 	Hostinfo    *Hostinfo
-
-	// TKA describes request parameters relating to a local instance of
-	// the tailnet key authority. This field is omitted if a local instance
-	// is not running.
-	TKA *TKAMapRequest `json:",omitempty"`
 
 	// Endpoints are the client's magicsock UDP ip:port endpoints (IPv4 or IPv6).
 	Endpoints []string
@@ -1347,9 +1361,15 @@ type MapResponse struct {
 	// ControlTime, if non-zero, is the current timestamp according to the control server.
 	ControlTime *time.Time `json:",omitempty"`
 
-	// TKA, if non-nil, describes updates for the local instance of the
-	// tailnet key authority.
-	TKA *TKAMapResponse `json:",omitempty"`
+	// TKAInfo describes the control plane's view of tailnet
+	// key authority (TKA) state.
+	//
+	// An initial nil TKAInfo indicates that the control plane
+	// believes TKA should not be enabled. An initial non-nil TKAInfo
+	// indicates the control plane believes TKA should be enabled.
+	// A nil TKAInfo in a mapresponse stream (i.e. a 'delta' mapresponse)
+	// indicates no change from the value sent earlier.
+	TKAInfo *TKAInfo `json:",omitempty"`
 
 	// Debug is normally nil, except for when the control server
 	// is setting debug settings on a node.
@@ -1851,85 +1871,6 @@ type PeerChange struct {
 	// It's a pointer to a slice for "omitempty", to allow differentiating
 	// a change to empty from no change.
 	Capabilities *[]string `json:",omitempty"`
-}
-
-// TKAInitBeginRequest submits a genesis AUM to seed the creation of the
-// tailnet's key authority.
-type TKAInitBeginRequest struct {
-	NodeID NodeID // NodeID of the initiating client
-
-	GenesisAUM tkatype.MarshaledAUM
-}
-
-// TKASignInfo describes information about an existing node that needs
-// to be signed into a node-key signature.
-type TKASignInfo struct {
-	NodeID     NodeID // NodeID of the node-key being signed
-	NodePublic key.NodePublic
-
-	// RotationPubkey specifies the public key which may sign
-	// a NodeKeySignature (NKS), which rotates the node key.
-	//
-	// This is necessary so the node can rotate its node-key without
-	// talking to a node which holds a trusted network-lock key.
-	// It does this by nesting the original NKS in a 'rotation' NKS,
-	// which it then signs with the key corresponding to RotationPubkey.
-	//
-	// This field expects a raw ed25519 public key.
-	RotationPubkey []byte
-}
-
-// TKAInitBeginResponse describes node information which must be signed to
-// complete initialization of the tailnets' key authority.
-type TKAInitBeginResponse struct {
-	NeedSignatures []TKASignInfo
-}
-
-// TKAInitFinishRequest finalizes initialization of the tailnet key authority
-// by submitting node-key signatures for all existing nodes.
-type TKAInitFinishRequest struct {
-	NodeID NodeID // NodeID of the initiating client
-
-	Signatures map[NodeID]tkatype.MarshaledSignature
-}
-
-// TKAInitFinishResponse describes the successful enablement of the tailnet's
-// key authority.
-type TKAInitFinishResponse struct{}
-
-// TKAMapRequest describes request parameters relating to the tailnet key
-// authority instance on this node. This information is transmitted as
-// part of the MapRequest.
-type TKAMapRequest struct {
-	// Head is the AUMHash of the latest authority update message committed
-	// by this node.
-	Head string // tka.AUMHash.String
-}
-
-// TKAMapResponse encodes information for the tailnet key authority
-// instance on the node. This information is transmitted as
-// part of the MapResponse.
-//
-// If there are no updates to be transmitted (in other words, if both
-// control and the node have the same head hash), len(Updates) == 0 and
-// WantSync is false.
-//
-// If control has updates that build off the head hash reported by the
-// node, they are simply transmitted in Updates (avoiding the more
-// expensive synchronization process).
-//
-// In all other cases, WantSync is set to true, and the node is expected
-// to reach out to control separately to synchronize.
-type TKAMapResponse struct {
-	// Updates is any AUMs that control believes the node should apply.
-	Updates []tkatype.MarshaledAUM `json:",omitempty"`
-
-	// WantSync is set by control to request the node complete AUM
-	// synchronization.
-	//
-	// TODO(tom): Implement AUM synchronization, probably as noise endpoints
-	// /machine/tka/sync/offer & /machine/tka/sync/send.
-	WantSync bool `json:",omitempty"`
 }
 
 // DerpMagicIP is a fake WireGuard endpoint IP address that means to

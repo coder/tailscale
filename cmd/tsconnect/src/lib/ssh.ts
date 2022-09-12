@@ -1,5 +1,6 @@
 import { Terminal } from "xterm"
 import { FitAddon } from "xterm-addon-fit"
+import { WebLinksAddon } from "xterm-addon-web-links"
 
 export type SSHSessionDef = {
   username: string
@@ -14,11 +15,16 @@ export function runSSHSession(
 ) {
   const term = new Terminal({
     cursorBlink: true,
+    allowProposedApi: true,
   })
+
   const fitAddon = new FitAddon()
   term.loadAddon(fitAddon)
   term.open(termContainerNode)
   fitAddon.fit()
+
+  const webLinksAddon = new WebLinksAddon()
+  term.loadAddon(webLinksAddon)
 
   let onDataHook: ((data: string) => void) | undefined
   term.onData((e) => {
@@ -30,7 +36,7 @@ export function runSSHSession(
   let resizeObserver: ResizeObserver | undefined
   let handleBeforeUnload: ((e: BeforeUnloadEvent) => void) | undefined
 
-  const sshSession = ipn.ssh(def.hostname + "2", def.username, {
+  const sshSession = ipn.ssh(def.hostname, def.username, {
     writeFn(input) {
       term.write(input)
     },
@@ -54,7 +60,10 @@ export function runSSHSession(
   })
 
   // Make terminal and SSH session track the size of the containing DOM node.
-  resizeObserver = new ResizeObserver(() => fitAddon.fit())
+  resizeObserver =
+    new termContainerNode.ownerDocument.defaultView!.ResizeObserver(() =>
+      fitAddon.fit()
+    )
   resizeObserver.observe(termContainerNode)
   term.onResize(({ rows, cols }) => sshSession.resize(rows, cols))
 
