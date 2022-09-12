@@ -629,7 +629,9 @@ func (c *Conn) updateEndpoints(why string) {
 			}
 		}
 		c.endpointsUpdateActive = false
+		c.logf("goroutinesRunningLocked: broadcasting")
 		c.muCond.Broadcast()
+		c.logf("goroutinesRunningLocked: broadcasted")
 	}()
 	c.logf("[v1] magicsock: starting endpoint update (%s)", why)
 	if c.noV4Send.Load() && runtime.GOOS != "js" {
@@ -1402,7 +1404,9 @@ func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) cha
 			c.mu.Lock()
 			defer c.mu.Unlock()
 			close(c.derpStarted)
+			c.logf("goroutinesRunningLocked: broadcasting firstDerp")
 			c.muCond.Broadcast()
+			c.logf("goroutinesRunningLocked: broadcasted firstDerp")
 		}()
 	}
 
@@ -2691,6 +2695,7 @@ func (c *Conn) Close() error {
 
 func (c *Conn) goroutinesRunningLocked() bool {
 	if c.endpointsUpdateActive {
+		c.logf("goroutinesRunningLocked: endpointsUpdateActive returning true")
 		return true
 	}
 	// The goroutine running dc.Connect in derpWriteChanOfAddr may linger
@@ -2706,6 +2711,7 @@ func (c *Conn) goroutinesRunningLocked() bool {
 		case <-c.derpStarted:
 			break
 		default:
+			c.logf("goroutinesRunningLocked: derpStarted returning true")
 			return true
 		}
 	}
