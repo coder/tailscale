@@ -1,4 +1,4 @@
-import { Terminal } from "xterm"
+import { Terminal, ITerminalOptions } from "xterm"
 import { FitAddon } from "xterm-addon-fit"
 import { WebLinksAddon } from "xterm-addon-web-links"
 
@@ -11,11 +11,13 @@ export function runSSHSession(
   termContainerNode: HTMLDivElement,
   def: SSHSessionDef,
   ipn: IPN,
-  onDone: () => void
+  onDone: () => void,
+  terminalOptions?: ITerminalOptions
 ) {
   const term = new Terminal({
     cursorBlink: true,
     allowProposedApi: true,
+    ...terminalOptions,
   })
 
   const fitAddon = new FitAddon()
@@ -23,7 +25,9 @@ export function runSSHSession(
   term.open(termContainerNode)
   fitAddon.fit()
 
-  const webLinksAddon = new WebLinksAddon()
+  const webLinksAddon = new WebLinksAddon((event, uri) =>
+    event.view?.open(uri, "_blank", "noopener")
+  )
   term.loadAddon(webLinksAddon)
 
   let onDataHook: ((data: string) => void) | undefined

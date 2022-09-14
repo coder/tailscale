@@ -438,6 +438,13 @@ func tryFixLogStateLocation(dir, cmdname string) {
 // New returns a new log policy (a logger and its instance ID) for a
 // given collection name.
 func New(collection string) *Policy {
+	return NewWithConfigPath(collection, "", "")
+}
+
+// NewWithConfigPath is identical to New,
+// but uses the specified directory and command name.
+// If either is empty, it derives them automatically.
+func NewWithConfigPath(collection, dir, cmdName string) *Policy {
 	var lflags int
 	if term.IsTerminal(2) || runtime.GOOS == "windows" {
 		lflags = 0
@@ -460,9 +467,12 @@ func New(collection string) *Policy {
 		earlyErrBuf.WriteByte('\n')
 	}
 
-	dir := logsDir(earlyLogf)
-
-	cmdName := version.CmdName()
+	if dir == "" {
+		dir = logsDir(earlyLogf)
+	}
+	if cmdName == "" {
+		cmdName = version.CmdName()
+	}
 	tryFixLogStateLocation(dir, cmdName)
 
 	cfgPath := filepath.Join(dir, fmt.Sprintf("%s.log.conf", cmdName))
@@ -539,7 +549,10 @@ func New(collection string) *Policy {
 		conf.IncludeProcSequence = true
 	}
 
-	if val := getLogTarget(); val != "" {
+	if envknob.NoLogsNoSupport() {
+		log.Println("You have disabled logging. Tailscale will not be able to provide support.")
+		conf.HTTPC = &http.Client{Transport: noopPretendSuccessTransport{}}
+	} else if val := getLogTarget(); val != "" {
 		log.Println("You have enabled a non-default log target. Doing without being told to by Tailscale staff or your network administrator will make getting support difficult.")
 		conf.BaseURL = val
 		u, _ := url.Parse(val)
@@ -734,4 +747,15 @@ func goVersion() string {
 		return v + "-race"
 	}
 	return v
+}
+
+type noopPretendSuccessTransport struct{}
+
+func (noopPretendSuccessTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	io.ReadAll(req.Body)
+	req.Body.Close()
+	return &http.Response{
+		StatusCode: 200,
+		Status:     "200 OK",
+	}, nil
 }
