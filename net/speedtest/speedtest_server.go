@@ -85,7 +85,7 @@ func doTest(conn net.Conn, conf config) ([]Result, error) {
 	lastCalculated := startTime
 
 	if conf.Direction == Download {
-		conn.SetReadDeadline(time.Now().Add(conf.TestDuration).Add(3 * conf.TestDuration))
+		conn.SetReadDeadline(time.Now().Add(conf.TestDuration).Add(5 * time.Second))
 	} else {
 		_, err := rand.Read(bufferData)
 		if err != nil {
