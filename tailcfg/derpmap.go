@@ -4,7 +4,9 @@
 
 package tailcfg
 
-import "sort"
+import (
+	"sort"
+)
 
 // DERPMap describes the set of DERP packet relay servers that are available.
 type DERPMap struct {
@@ -39,6 +41,10 @@ func (m *DERPMap) RegionIDs() []int {
 // connect to other regions as necessary to communicate with peers
 // advertising other regions as their homes.
 type DERPRegion struct {
+	// EmbeddedRelay is true when the region is bundled with the Coder
+	// control plane.
+	EmbeddedRelay bool
+
 	// RegionID is a unique integer for a geographic region.
 	//
 	// It corresponds to the legacy derpN.tailscale.com hostnames
