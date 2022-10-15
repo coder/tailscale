@@ -77,6 +77,7 @@ func Config(host string, base *tls.Config) *tls.Config {
 		opts := x509.VerifyOptions{
 			DNSName:       cs.ServerName,
 			Intermediates: x509.NewCertPool(),
+			Roots:         conf.RootCAs,
 		}
 		for _, cert := range cs.PeerCertificates[1:] {
 			opts.Intermediates.AddCert(cert)
