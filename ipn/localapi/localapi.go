@@ -26,17 +26,61 @@ import (
 
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/envknob"
+	"tailscale.com/health"
+	"tailscale.com/hostinfo"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnlocal"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/net/netutil"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tka"
+	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 	"tailscale.com/util/clientmetric"
 	"tailscale.com/util/mak"
+	"tailscale.com/util/strs"
 	"tailscale.com/version"
 )
+
+type localAPIHandler func(*Handler, http.ResponseWriter, *http.Request)
+
+// handler is the set of LocalAPI handlers, keyed by the part of the
+// Request.URL.Path after "/localapi/v0/". If the key ends with a trailing slash
+// then it's a prefix match.
+var handler = map[string]localAPIHandler{
+	// The prefix match handlers end with a slash:
+	"cert/":     (*Handler).serveCert,
+	"file-put/": (*Handler).serveFilePut,
+	"files/":    (*Handler).serveFiles,
+
+	// The other /localapi/v0/NAME handlers are exact matches and contain only NAME
+	// without a trailing slash:
+	"bugreport":               (*Handler).serveBugReport,
+	"check-ip-forwarding":     (*Handler).serveCheckIPForwarding,
+	"check-prefs":             (*Handler).serveCheckPrefs,
+	"component-debug-logging": (*Handler).serveComponentDebugLogging,
+	"debug":                   (*Handler).serveDebug,
+	"derpmap":                 (*Handler).serveDERPMap,
+	"dial":                    (*Handler).serveDial,
+	"file-targets":            (*Handler).serveFileTargets,
+	"goroutines":              (*Handler).serveGoroutines,
+	"id-token":                (*Handler).serveIDToken,
+	"login-interactive":       (*Handler).serveLoginInteractive,
+	"logout":                  (*Handler).serveLogout,
+	"metrics":                 (*Handler).serveMetrics,
+	"ping":                    (*Handler).servePing,
+	"prefs":                   (*Handler).servePrefs,
+	"profile":                 (*Handler).serveProfile,
+	"set-dns":                 (*Handler).serveSetDNS,
+	"set-expiry-sooner":       (*Handler).serveSetExpirySooner,
+	"status":                  (*Handler).serveStatus,
+	"tka/init":                (*Handler).serveTKAInit,
+	"tka/modify":              (*Handler).serveTKAModify,
+	"tka/sign":                (*Handler).serveTKASign,
+	"tka/status":              (*Handler).serveTKAStatus,
+	"upload-client-metrics":   (*Handler).serveUploadClientMetrics,
+	"whois":                   (*Handler).serveWhoIs,
+}
 
 func randHex(n int) string {
 	b := make([]byte, n)
@@ -99,68 +143,45 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if strings.HasPrefix(r.URL.Path, "/localapi/v0/files/") {
-		h.serveFiles(w, r)
-		return
+	if fn, ok := handlerForPath(r.URL.Path); ok {
+		fn(h, w, r)
+	} else {
+		http.NotFound(w, r)
 	}
-	if strings.HasPrefix(r.URL.Path, "/localapi/v0/file-put/") {
-		h.serveFilePut(w, r)
-		return
+}
+
+// handlerForPath returns the LocalAPI handler for the provided Request.URI.Path.
+// (the path doesn't include any query parameters)
+func handlerForPath(urlPath string) (h localAPIHandler, ok bool) {
+	if urlPath == "/" {
+		return (*Handler).serveLocalAPIRoot, true
 	}
-	if strings.HasPrefix(r.URL.Path, "/localapi/v0/cert/") {
-		h.serveCert(w, r)
-		return
+	suff, ok := strs.CutPrefix(urlPath, "/localapi/v0/")
+	if !ok {
+		// Currently all LocalAPI methods start with "/localapi/v0/" to signal
+		// to people that they're not necessarily stable APIs. In practice we'll
+		// probably need to keep them pretty stable anyway, but for now treat
+		// them as an internal implementation detail.
+		return nil, false
 	}
-	switch r.URL.Path {
-	case "/localapi/v0/whois":
-		h.serveWhoIs(w, r)
-	case "/localapi/v0/goroutines":
-		h.serveGoroutines(w, r)
-	case "/localapi/v0/profile":
-		h.serveProfile(w, r)
-	case "/localapi/v0/status":
-		h.serveStatus(w, r)
-	case "/localapi/v0/logout":
-		h.serveLogout(w, r)
-	case "/localapi/v0/login-interactive":
-		h.serveLoginInteractive(w, r)
-	case "/localapi/v0/prefs":
-		h.servePrefs(w, r)
-	case "/localapi/v0/ping":
-		h.servePing(w, r)
-	case "/localapi/v0/check-prefs":
-		h.serveCheckPrefs(w, r)
-	case "/localapi/v0/check-ip-forwarding":
-		h.serveCheckIPForwarding(w, r)
-	case "/localapi/v0/bugreport":
-		h.serveBugReport(w, r)
-	case "/localapi/v0/file-targets":
-		h.serveFileTargets(w, r)
-	case "/localapi/v0/set-dns":
-		h.serveSetDNS(w, r)
-	case "/localapi/v0/derpmap":
-		h.serveDERPMap(w, r)
-	case "/localapi/v0/metrics":
-		h.serveMetrics(w, r)
-	case "/localapi/v0/debug":
-		h.serveDebug(w, r)
-	case "/localapi/v0/set-expiry-sooner":
-		h.serveSetExpirySooner(w, r)
-	case "/localapi/v0/dial":
-		h.serveDial(w, r)
-	case "/localapi/v0/id-token":
-		h.serveIDToken(w, r)
-	case "/localapi/v0/upload-client-metrics":
-		h.serveUploadClientMetrics(w, r)
-	case "/localapi/v0/tka/status":
-		h.serveTkaStatus(w, r)
-	case "/localapi/v0/tka/init":
-		h.serveTkaInit(w, r)
-	case "/":
-		io.WriteString(w, "tailscaled\n")
-	default:
-		http.Error(w, "404 not found", 404)
+	if fn, ok := handler[suff]; ok {
+		// Here we match exact handler suffixes like "status" or ones with a
+		// slash already in their name, like "tka/status".
+		return fn, true
 	}
+	// Otherwise, it might be a prefix match like "files/*" which we look up
+	// by the prefix including first trailing slash.
+	if i := strings.IndexByte(suff, '/'); i != -1 {
+		suff = suff[:i+1]
+		if fn, ok := handler[suff]; ok {
+			return fn, true
+		}
+	}
+	return nil, false
+}
+
+func (*Handler) serveLocalAPIRoot(w http.ResponseWriter, r *http.Request) {
+	io.WriteString(w, "tailscaled\n")
 }
 
 // serveIDToken handles requests to get an OIDC ID token.
@@ -213,16 +234,81 @@ func (h *Handler) serveBugReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logMarker := fmt.Sprintf("BUG-%v-%v-%v", h.backendLogID, time.Now().UTC().Format("20060102150405Z"), randHex(8))
-	if envknob.NoLogsNoSupport() {
-		logMarker = "BUG-NO-LOGS-NO-SUPPORT-this-node-has-had-its-logging-disabled"
+	logMarker := func() string {
+		return fmt.Sprintf("BUG-%v-%v-%v", h.backendLogID, time.Now().UTC().Format("20060102150405Z"), randHex(8))
 	}
-	h.logf("user bugreport: %s", logMarker)
-	if note := r.FormValue("note"); len(note) > 0 {
+	if envknob.NoLogsNoSupport() {
+		logMarker = func() string { return "BUG-NO-LOGS-NO-SUPPORT-this-node-has-had-its-logging-disabled" }
+	}
+
+	startMarker := logMarker()
+	h.logf("user bugreport: %s", startMarker)
+	if note := r.URL.Query().Get("note"); len(note) > 0 {
 		h.logf("user bugreport note: %s", note)
 	}
+	hi, _ := json.Marshal(hostinfo.New())
+	h.logf("user bugreport hostinfo: %s", hi)
+	if err := health.OverallError(); err != nil {
+		h.logf("user bugreport health: %s", err.Error())
+	} else {
+		h.logf("user bugreport health: ok")
+	}
+	if defBool(r.URL.Query().Get("diagnose"), false) {
+		h.b.Doctor(r.Context(), logger.WithPrefix(h.logf, "diag: "))
+	}
 	w.Header().Set("Content-Type", "text/plain")
-	fmt.Fprintln(w, logMarker)
+	fmt.Fprintln(w, startMarker)
+
+	// Nothing else to do if we're not in record mode; we wrote the marker
+	// above, so we can just finish our response now.
+	if !defBool(r.URL.Query().Get("record"), false) {
+		return
+	}
+
+	until := time.Now().Add(12 * time.Hour)
+
+	var changed map[string]bool
+	for _, component := range []string{"magicsock"} {
+		if h.b.GetComponentDebugLogging(component).IsZero() {
+			if err := h.b.SetComponentDebugLogging(component, until); err != nil {
+				h.logf("bugreport: error setting component %q logging: %v", component, err)
+				continue
+			}
+
+			mak.Set(&changed, component, true)
+		}
+	}
+	defer func() {
+		for component := range changed {
+			h.b.SetComponentDebugLogging(component, time.Time{})
+		}
+	}()
+
+	// NOTE(andrew): if we have anything else we want to do while recording
+	// a bugreport, we can add it here.
+
+	// Read from the client; this will also return when the client closes
+	// the connection.
+	var buf [1]byte
+	_, err := r.Body.Read(buf[:])
+
+	switch {
+	case err == nil:
+		// good
+	case errors.Is(err, io.EOF):
+		// good
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		// this happens when Ctrl-C'ing the tailscale client; don't
+		// bother logging an error
+	default:
+		// Log but continue anyway.
+		h.logf("user bugreport: error reading body: %v", err)
+	}
+
+	// Generate another log marker and return it to the client.
+	endMarker := logMarker()
+	h.logf("user bugreport end: %s", endMarker)
+	fmt.Fprintln(w, endMarker)
 }
 
 func (h *Handler) serveWhoIs(w http.ResponseWriter, r *http.Request) {
@@ -315,6 +401,24 @@ func (h *Handler) serveDebug(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, "done\n")
 }
 
+func (h *Handler) serveComponentDebugLogging(w http.ResponseWriter, r *http.Request) {
+	if !h.PermitWrite {
+		http.Error(w, "debug access denied", http.StatusForbidden)
+		return
+	}
+	component := r.FormValue("component")
+	secs, _ := strconv.Atoi(r.FormValue("secs"))
+	err := h.b.SetComponentDebugLogging(component, time.Now().Add(time.Duration(secs)*time.Second))
+	var res struct {
+		Error string
+	}
+	if err != nil {
+		res.Error = err.Error()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
+}
+
 // serveProfileFunc is the implementation of Handler.serveProfile, after auth,
 // for platforms where we want to link it in.
 var serveProfileFunc func(http.ResponseWriter, *http.Request)
@@ -403,7 +507,7 @@ func (h *Handler) servePrefs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "prefs access denied", http.StatusForbidden)
 		return
 	}
-	var prefs *ipn.Prefs
+	var prefs ipn.PrefsView
 	switch r.Method {
 	case "PATCH":
 		if !h.PermitWrite {
@@ -800,13 +904,13 @@ func (h *Handler) serveUploadClientMetrics(w http.ResponseWriter, r *http.Reques
 	json.NewEncoder(w).Encode(struct{}{})
 }
 
-func (h *Handler) serveTkaStatus(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) serveTKAStatus(w http.ResponseWriter, r *http.Request) {
 	if !h.PermitRead {
 		http.Error(w, "lock status access denied", http.StatusForbidden)
 		return
 	}
 	if r.Method != http.MethodGet {
-		http.Error(w, "use Get", http.StatusMethodNotAllowed)
+		http.Error(w, "use GET", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -819,7 +923,35 @@ func (h *Handler) serveTkaStatus(w http.ResponseWriter, r *http.Request) {
 	w.Write(j)
 }
 
-func (h *Handler) serveTkaInit(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) serveTKASign(w http.ResponseWriter, r *http.Request) {
+	if !h.PermitRead {
+		http.Error(w, "lock status access denied", http.StatusForbidden)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "use POST", http.StatusMethodNotAllowed)
+		return
+	}
+
+	type signRequest struct {
+		NodeKey        key.NodePublic
+		RotationPublic []byte
+	}
+	var req signRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.b.NetworkLockSign(req.NodeKey, req.RotationPublic); err != nil {
+		http.Error(w, "signing failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handler) serveTKAInit(w http.ResponseWriter, r *http.Request) {
 	if !h.PermitWrite {
 		http.Error(w, "lock init access denied", http.StatusForbidden)
 		return
@@ -830,7 +962,8 @@ func (h *Handler) serveTkaInit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type initRequest struct {
-		Keys []tka.Key
+		Keys              []tka.Key
+		DisablementValues [][]byte
 	}
 	var req initRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -838,8 +971,42 @@ func (h *Handler) serveTkaInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.b.NetworkLockInit(req.Keys); err != nil {
+	if err := h.b.NetworkLockInit(req.Keys, req.DisablementValues); err != nil {
 		http.Error(w, "initialization failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	j, err := json.MarshalIndent(h.b.NetworkLockStatus(), "", "\t")
+	if err != nil {
+		http.Error(w, "JSON encoding error", 500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(j)
+}
+
+func (h *Handler) serveTKAModify(w http.ResponseWriter, r *http.Request) {
+	if !h.PermitWrite {
+		http.Error(w, "network-lock modify access denied", http.StatusForbidden)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "use POST", http.StatusMethodNotAllowed)
+		return
+	}
+
+	type modifyRequest struct {
+		AddKeys    []tka.Key
+		RemoveKeys []tka.Key
+	}
+	var req modifyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON body", 400)
+		return
+	}
+
+	if err := h.b.NetworkLockModify(req.AddKeys, req.RemoveKeys); err != nil {
+		http.Error(w, "network-lock modify failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 

@@ -12,6 +12,7 @@ import (
 	"path"
 
 	"github.com/tailscale/hujson"
+	"tailscale.com/util/precompress"
 	"tailscale.com/version"
 )
 
@@ -26,7 +27,7 @@ func runBuildPkg() {
 		log.Fatalf("Linting failed: %v", err)
 	}
 
-	if err := cleanDir(*pkgDir, "package.json"); err != nil {
+	if err := cleanDir(*pkgDir); err != nil {
 		log.Fatalf("Cannot clean %s: %v", *pkgDir, err)
 	}
 
@@ -37,6 +38,10 @@ func runBuildPkg() {
 
 	runEsbuild(*buildOptions)
 
+	if err := precompressWasm(); err != nil {
+		log.Fatalf("Could not pre-recompress wasm: %v", err)
+	}
+
 	log.Printf("Generating types...\n")
 	if err := runYarn("pkg-types"); err != nil {
 		log.Fatalf("Type generation failed: %v", err)
@@ -46,7 +51,18 @@ func runBuildPkg() {
 		log.Fatalf("Cannot update version: %v", err)
 	}
 
+	if err := copyReadme(); err != nil {
+		log.Fatalf("Cannot copy readme: %v", err)
+	}
+
 	log.Printf("Built package version %s", version.Long)
+}
+
+func precompressWasm() error {
+	log.Printf("Pre-compressing main.wasm...\n")
+	return precompress.Precompress(path.Join(*pkgDir, "main.wasm"), precompress.Options{
+		FastCompression: *fastCompression,
+	})
 }
 
 func updateVersion() error {
@@ -71,4 +87,12 @@ func updateVersion() error {
 	}
 
 	return os.WriteFile(path.Join(*pkgDir, "package.json"), packageJSONBytes, 0644)
+}
+
+func copyReadme() error {
+	readmeBytes, err := os.ReadFile("README.pkg.md")
+	if err != nil {
+		return fmt.Errorf("Could not read README.pkg.md: %w", err)
+	}
+	return os.WriteFile(path.Join(*pkgDir, "README.md"), readmeBytes, 0644)
 }

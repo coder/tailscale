@@ -9,9 +9,9 @@ package tsnet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -85,6 +85,7 @@ type Server struct {
 	initOnce         sync.Once
 	initErr          error
 	lb               *ipnlocal.LocalBackend
+	netstack         *netstack.Impl
 	linkMon          *monitor.Mon
 	localAPIListener net.Listener
 	rootPath         string // the state directory
@@ -152,6 +153,10 @@ func (s *Server) Close() error {
 		}()
 	}
 
+	if s.netstack != nil {
+		s.netstack.Close()
+		s.netstack = nil
+	}
 	s.shutdownCancel()
 	s.lb.Shutdown()
 	s.linkMon.Close()
@@ -252,7 +257,7 @@ func (s *Server) start() (reterr error) {
 	c := logtail.Config{
 		Collection: lpc.Collection,
 		PrivateID:  lpc.PrivateID,
-		Stderr:     ioutil.Discard, // log everything to Buffer
+		Stderr:     io.Discard, // log everything to Buffer
 		Buffer:     s.logbuffer,
 		NewZstdEncoder: func() logtail.Encoder {
 			w, err := smallzstd.NewEncoder(nil)
@@ -272,7 +277,7 @@ func (s *Server) start() (reterr error) {
 	}
 	closePool.add(s.linkMon)
 
-	s.dialer = new(tsdial.Dialer) // mutated below (before used)
+	s.dialer = &tsdial.Dialer{Logf: logf} // mutated below (before used)
 	eng, err := wgengine.NewUserspaceEngine(logf, wgengine.Config{
 		ListenPort:  0,
 		LinkMonitor: s.linkMon,
@@ -297,6 +302,7 @@ func (s *Server) start() (reterr error) {
 	if err := ns.Start(); err != nil {
 		return fmt.Errorf("failed to start netstack: %w", err)
 	}
+	s.netstack = ns
 	s.dialer.UseNetstackForIP = func(ip netip.Addr) bool {
 		_, ok := eng.PeerForIP(ip)
 		return ok
@@ -474,6 +480,22 @@ func getTSNetDir(logf logger.Logf, confDir, prog string) (string, error) {
 	}
 	logf("renamed old tsnet state storage directory %q to %q", oldPath, newPath)
 	return newPath, nil
+}
+
+// APIClient returns a tailscale.Client that can be used to make authenticated
+// requests to the Tailscale control server.
+// It requires the user to set tailscale.I_Acknowledge_This_API_Is_Unstable.
+func (s *Server) APIClient() (*tailscale.Client, error) {
+	if !tailscale.I_Acknowledge_This_API_Is_Unstable {
+		return nil, errors.New("use of Client without setting I_Acknowledge_This_API_Is_Unstable")
+	}
+	if err := s.Start(); err != nil {
+		return nil, err
+	}
+
+	c := tailscale.NewClient("-", nil)
+	c.HTTPClient = &http.Client{Transport: s.lb.KeyProvingNoiseRoundTripper()}
+	return c, nil
 }
 
 // Listen announces only on the Tailscale network.

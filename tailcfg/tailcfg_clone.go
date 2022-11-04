@@ -92,9 +92,11 @@ var _NodeCloneNeedsRegeneration = Node(struct {
 	KeepAlive               bool
 	MachineAuthorized       bool
 	Capabilities            []string
+	UnsignedPeerAPIOnly     bool
 	ComputedName            string
 	computedHostIfDifferent string
 	ComputedNameWithHost    string
+	DataPlaneAuditLogID     string
 }{})
 
 // Clone makes a deep copy of Hostinfo.
@@ -238,7 +240,6 @@ var _DNSConfigCloneNeedsRegeneration = DNSConfig(struct {
 	Domains             []string
 	Proxied             bool
 	Nameservers         []netip.Addr
-	PerDomain           bool
 	CertDomains         []string
 	ExtraRecords        []DNSRecord
 	ExitNodeFilteredSet []string
@@ -253,6 +254,7 @@ func (src *RegisterResponse) Clone() *RegisterResponse {
 	dst := new(RegisterResponse)
 	*dst = *src
 	dst.User = *src.User.Clone()
+	dst.NodeKeySignature = append(src.NodeKeySignature[:0:0], src.NodeKeySignature...)
 	return dst
 }
 
@@ -263,6 +265,7 @@ var _RegisterResponseCloneNeedsRegeneration = RegisterResponse(struct {
 	NodeKeyExpired    bool
 	MachineAuthorized bool
 	AuthURL           string
+	NodeKeySignature  tkatype.MarshaledSignature
 	Error             string
 }{})
 
@@ -400,9 +403,26 @@ var _SSHPrincipalCloneNeedsRegeneration = SSHPrincipal(struct {
 	PubKeys   []string
 }{})
 
+// Clone makes a deep copy of ControlDialPlan.
+// The result aliases no memory with the original.
+func (src *ControlDialPlan) Clone() *ControlDialPlan {
+	if src == nil {
+		return nil
+	}
+	dst := new(ControlDialPlan)
+	*dst = *src
+	dst.Candidates = append(src.Candidates[:0:0], src.Candidates...)
+	return dst
+}
+
+// A compilation failure here means this code must be regenerated, with the command at the top of this file.
+var _ControlDialPlanCloneNeedsRegeneration = ControlDialPlan(struct {
+	Candidates []ControlIPCandidate
+}{})
+
 // Clone duplicates src into dst and reports whether it succeeded.
 // To succeed, <src, dst> must be of types <*T, *T> or <*T, **T>,
-// where T is one of User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPRegion,DERPMap,DERPNode,SSHRule,SSHPrincipal.
+// where T is one of User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPRegion,DERPMap,DERPNode,SSHRule,SSHPrincipal,ControlDialPlan.
 func Clone(dst, src any) bool {
 	switch src := src.(type) {
 	case *User:
@@ -510,6 +530,15 @@ func Clone(dst, src any) bool {
 			*dst = *src.Clone()
 			return true
 		case **SSHPrincipal:
+			*dst = src.Clone()
+			return true
+		}
+	case *ControlDialPlan:
+		switch dst := dst.(type) {
+		case *ControlDialPlan:
+			*dst = *src.Clone()
+			return true
+		case **ControlDialPlan:
 			*dst = src.Clone()
 			return true
 		}

@@ -3,7 +3,6 @@
 // license that can be found in the LICENSE file.
 
 //go:build linux
-// +build linux
 
 package dns
 
@@ -302,7 +301,7 @@ func (m *nmManager) GetBaseConfig() (OSConfig, error) {
 	for _, cfg := range cfgs {
 		if name, ok := cfg["interface"]; ok {
 			if s, ok := name.Value().(string); ok && s == m.interfaceName {
-				// Config for the taislcale interface, skip.
+				// Config for the tailscale interface, skip.
 				continue
 			}
 		}

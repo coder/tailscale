@@ -45,6 +45,11 @@ func (h AUMHash) MarshalText() ([]byte, error) {
 	return b, nil
 }
 
+// IsZero returns true if the hash is the empty value.
+func (h AUMHash) IsZero() bool {
+	return h == (AUMHash{})
+}
+
 // AUMKind describes valid AUM types.
 type AUMKind uint8
 
@@ -55,7 +60,7 @@ const (
 	//
 	// Only the Key optional field may be set.
 	AUMAddKey
-	// A RemoveKey AUM describes hte removal of a key trusted by TKA.
+	// A RemoveKey AUM describes the removal of a key trusted by TKA.
 	//
 	// Only the KeyID optional field may be set.
 	AUMRemoveKey

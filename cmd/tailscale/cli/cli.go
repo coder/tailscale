@@ -157,6 +157,7 @@ change in the future.
 		Subcommands: []*ffcli.Command{
 			upCmd,
 			downCmd,
+			setCmd,
 			logoutCmd,
 			netcheckCmd,
 			ipCmd,
@@ -177,7 +178,9 @@ change in the future.
 		UsageFunc: usageFunc,
 	}
 	for _, c := range rootCmd.Subcommands {
-		c.UsageFunc = usageFunc
+		if c.UsageFunc == nil {
+			c.UsageFunc = usageFunc
+		}
 	}
 	if envknob.UseWIPCode() {
 		rootCmd.Subcommands = append(rootCmd.Subcommands, idTokenCmd)
@@ -292,7 +295,16 @@ func strSliceContains(ss []string, s string) bool {
 	return false
 }
 
+// usageFuncNoDefaultValues is like usageFunc but doesn't print default values.
+func usageFuncNoDefaultValues(c *ffcli.Command) string {
+	return usageFuncOpt(c, false)
+}
+
 func usageFunc(c *ffcli.Command) string {
+	return usageFuncOpt(c, true)
+}
+
+func usageFuncOpt(c *ffcli.Command, withDefaults bool) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "USAGE\n")
@@ -323,6 +335,9 @@ func usageFunc(c *ffcli.Command) string {
 		c.FlagSet.VisitAll(func(f *flag.Flag) {
 			var s string
 			name, usage := flag.UnquoteUsage(f)
+			if strings.HasPrefix(usage, "HIDDEN: ") {
+				return
+			}
 			if isBoolFlag(f) {
 				s = fmt.Sprintf("  --%s, --%s=false", f.Name, f.Name)
 			} else {
@@ -336,7 +351,7 @@ func usageFunc(c *ffcli.Command) string {
 			s += "\n    \t"
 			s += strings.ReplaceAll(usage, "\n", "\n    \t")
 
-			if f.DefValue != "" {
+			if f.DefValue != "" && withDefaults {
 				s += fmt.Sprintf(" (default %s)", f.DefValue)
 			}
 

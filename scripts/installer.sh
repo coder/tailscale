@@ -66,7 +66,10 @@ main() {
 				PACKAGETYPE="apt"
 				# Third-party keyrings became the preferred method of
 				# installation in Debian 11 (Bullseye).
-				if [ "$VERSION_ID" -lt 11 ]; then
+				if [ -z "${VERSION_ID:-}" ]; then
+					# rolling release. If you haven't kept current, that's on you.
+					APT_KEY_TYPE="keyring"
+				elif [ "$VERSION_ID" -lt 11 ]; then
 					APT_KEY_TYPE="legacy"
 				else
 					APT_KEY_TYPE="keyring"
@@ -160,6 +163,9 @@ main() {
 				OS="$ID"
 				VERSION="$(echo "$VERSION_ID" | cut -f1 -d.)"
 				PACKAGETYPE="dnf"
+				if [ "$VERSION" = "7" ]; then
+					PACKAGETYPE="yum"
+				fi
 				;;
 			fedora)
 				OS="$ID"
@@ -227,6 +233,13 @@ main() {
 				VERSION="$(echo "$VERSION_ID" | cut -f1 -d.)"
 				PACKAGETYPE="pkg"
 				;;
+			osmc)
+				OS="debian"
+				PACKAGETYPE="apt"
+				VERSION="bullseye"
+				APT_KEY_TYPE="keyring"
+				;;
+
 			# TODO: wsl?
 			# TODO: synology? qnap?
 		esac
@@ -276,7 +289,8 @@ main() {
 			   [ "$VERSION" != "groovy" ] && \
 			   [ "$VERSION" != "hirsute" ] && \
 			   [ "$VERSION" != "impish" ] && \
-			   [ "$VERSION" != "jammy" ]
+			   [ "$VERSION" != "jammy" ] && \
+			   [ "$VERSION" != "kinetic" ]
 			then
 				OS_UNSUPPORTED=1
 			fi
@@ -315,8 +329,9 @@ main() {
 			fi
 		;;
 		rhel)
-			if [ "$VERSION" != "8" ] && \
-                           [ "$VERSION" != "9" ]
+			if [ "$VERSION" != "7" ] && \
+			   [ "$VERSION" != "8" ] && \
+			   [ "$VERSION" != "9" ]
 			then
 				OS_UNSUPPORTED=1
 			fi
@@ -331,6 +346,7 @@ main() {
 			if [ "$VERSION" != "leap/15.1" ] && \
 			   [ "$VERSION" != "leap/15.2" ] && \
 			   [ "$VERSION" != "leap/15.3" ] && \
+			   [ "$VERSION" != "leap/15.4" ] && \
 			   [ "$VERSION" != "tumbleweed" ]
 			then
 				OS_UNSUPPORTED=1

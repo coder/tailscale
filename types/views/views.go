@@ -201,6 +201,11 @@ func (v IPPrefixSlice) AsSlice() []netip.Prefix {
 	return v.ж.AsSlice()
 }
 
+// Filter returns a new slice, containing elements of v that match f.
+func (v IPPrefixSlice) Filter(f func(netip.Prefix) bool) []netip.Prefix {
+	return tsaddr.FilterPrefixesCopy(v.ж.ж, f)
+}
+
 // PrefixesContainsIP reports whether any IPPrefix contains IP.
 func (v IPPrefixSlice) ContainsIP(ip netip.Addr) bool {
 	return tsaddr.PrefixesContainsIP(v.ж.ж, ip)
@@ -214,6 +219,17 @@ func (v IPPrefixSlice) ContainsFunc(f func(netip.Prefix) bool) bool {
 // ContainsExitRoutes reports whether v contains ExitNode Routes.
 func (v IPPrefixSlice) ContainsExitRoutes() bool {
 	return tsaddr.ContainsExitRoutes(v.ж.ж)
+}
+
+// ContainsNonExitSubnetRoutes reports whether v contains Subnet
+// Routes other than ExitNode Routes.
+func (v IPPrefixSlice) ContainsNonExitSubnetRoutes() bool {
+	for i := 0; i < v.Len(); i++ {
+		if v.At(i).Bits() != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // MarshalJSON implements json.Marshaler.

@@ -72,6 +72,10 @@ const (
 	// the Windows network adapter's "category" (public, private, domain).
 	// If it's unhealthy, the Windows firewall rules won't match.
 	SysNetworkCategory = Subsystem("network-category")
+
+	// SysValidUnsignedNodes is a health check area for recording problems
+	// with the unsigned nodes that the coordination server sent.
+	SysValidUnsignedNodes = Subsystem("valid-unsigned-nodes")
 )
 
 type watchHandle byte
@@ -98,6 +102,9 @@ func RegisterWatcher(cb func(key Subsystem, err error)) (unregister func()) {
 		}
 	}
 }
+
+// SetValidUnsignedNodes sets the state of the map response validation.
+func SetValidUnsignedNodes(err error) { set(SysValidUnsignedNodes, err) }
 
 // SetRouterHealth sets the state of the wgengine/router.Router.
 func SetRouterHealth(err error) { set(SysRouter, err) }
@@ -325,7 +332,7 @@ func OverallError() error {
 	return overallErrorLocked()
 }
 
-var fakeErrForTesting = envknob.String("TS_DEBUG_FAKE_HEALTH_ERROR")
+var fakeErrForTesting = envknob.RegisterString("TS_DEBUG_FAKE_HEALTH_ERROR")
 
 func overallErrorLocked() error {
 	if !anyInterfaceUp {
@@ -383,7 +390,10 @@ func overallErrorLocked() error {
 	for _, s := range controlHealth {
 		errs = append(errs, errors.New(s))
 	}
-	if e := fakeErrForTesting; len(errs) == 0 && e != "" {
+	if err := envknob.ApplyDiskConfigError(); err != nil {
+		errs = append(errs, err)
+	}
+	if e := fakeErrForTesting(); len(errs) == 0 && e != "" {
 		return errors.New(e)
 	}
 	sort.Slice(errs, func(i, j int) bool {

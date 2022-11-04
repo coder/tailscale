@@ -67,9 +67,9 @@ type Notify struct {
 
 	LoginFinished *empty.Message     // non-nil when/if the login process succeeded
 	State         *State             // if non-nil, the new or current IPN state
-	Prefs         *Prefs             // if non-nil, the new or current preferences
+	Prefs         *PrefsView         // if non-nil && Valid, the new or current preferences
 	NetMap        *netmap.NetworkMap // if non-nil, the new or current netmap
-	Engine        *EngineStatus      // if non-nil, the new or urrent wireguard stats
+	Engine        *EngineStatus      // if non-nil, the new or current wireguard stats
 	BrowseToURL   *string            // if non-nil, UI should open a browser right now
 	BackendLogID  *string            // if non-nil, the public logtail ID used by backend
 
@@ -106,7 +106,7 @@ func (n Notify) String() string {
 	if n.State != nil {
 		fmt.Fprintf(&sb, "state=%v ", *n.State)
 	}
-	if n.Prefs != nil {
+	if n.Prefs != nil && n.Prefs.Valid() {
 		fmt.Fprintf(&sb, "%v ", n.Prefs.Pretty())
 	}
 	if n.NetMap != nil {
@@ -168,6 +168,11 @@ type PartialFile struct {
 //     LocalBackend.userID, a string like "user-$USER_ID" (used in
 //     server mode).
 //   - on Linux/etc, it's always "_daemon" (ipn.GlobalDaemonStateKey)
+//
+// Additionally, the StateKey can be debug setting name:
+//
+//   - "_debug_magicsock_until" with value being a unix timestamp stringified
+//   - "_debug_<component>_until" with value being a unix timestamp stringified
 type StateKey string
 
 type Options struct {

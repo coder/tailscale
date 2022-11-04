@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -215,7 +214,7 @@ func newUserspaceRouterAdvanced(logf logger.Logf, tunname string, linkMon *monit
 	//
 	// As such, if we are running on openWRT, detect a mwan3 config, AND detect a rule
 	// with a preference 2001 (corresponding to the first interface wman3 manages), we
-	// shift the priority of our policies to 13xx. This effectively puts us betwen mwan3's
+	// shift the priority of our policies to 13xx. This effectively puts us between mwan3's
 	// permit-by-src-ip rules and mwan3 lookup of its own routing table which would drop
 	// the packet.
 	isMWAN3, err := checkOpenWRTUsingMWAN3()
@@ -316,7 +315,7 @@ func useAmbientCaps() bool {
 	return distro.DSMVersion() >= 7
 }
 
-var forceIPCommand = envknob.Bool("TS_DEBUG_USE_IP_COMMAND")
+var forceIPCommand = envknob.RegisterBool("TS_DEBUG_USE_IP_COMMAND")
 
 // useIPCommand reports whether r should use the "ip" command (or its
 // fake commandRunner for tests) instead of netlink.
@@ -324,7 +323,7 @@ func (r *linuxRouter) useIPCommand() bool {
 	if r.cmd == nil {
 		panic("invalid init")
 	}
-	if forceIPCommand {
+	if forceIPCommand() {
 		return true
 	}
 	// In the future we might need to fall back to using the "ip"
@@ -1533,25 +1532,10 @@ func cidrDiff(kind string, old map[netip.Prefix]bool, new []netip.Prefix, add, d
 		ret[cidr] = true
 	}
 
-	var delFail []error
-	for cidr := range old {
-		if newMap[cidr] {
-			continue
-		}
-		if err := del(cidr); err != nil {
-			logf("%s del failed: %v", kind, err)
-			delFail = append(delFail, err)
-		} else {
-			delete(ret, cidr)
-		}
-	}
-	if len(delFail) == 1 {
-		return ret, delFail[0]
-	}
-	if len(delFail) > 0 {
-		return ret, fmt.Errorf("%d delete %s failures; first was: %w", len(delFail), kind, delFail[0])
-	}
-
+	// We want to add before we delete, so that if there is no overlap, we don't
+	// end up in a state where we have no addresses on an interface as that
+	// results in other kernel entities (like routes) pointing to that interface
+	// to also be deleted.
 	var addFail []error
 	for cidr := range newMap {
 		if old[cidr] {
@@ -1570,6 +1554,25 @@ func cidrDiff(kind string, old map[netip.Prefix]bool, new []netip.Prefix, add, d
 	}
 	if len(addFail) > 0 {
 		return ret, fmt.Errorf("%d add %s failures; first was: %w", len(addFail), kind, addFail[0])
+	}
+
+	var delFail []error
+	for cidr := range old {
+		if newMap[cidr] {
+			continue
+		}
+		if err := del(cidr); err != nil {
+			logf("%s del failed: %v", kind, err)
+			delFail = append(delFail, err)
+		} else {
+			delete(ret, cidr)
+		}
+	}
+	if len(delFail) == 1 {
+		return ret, delFail[0]
+	}
+	if len(delFail) > 0 {
+		return ret, fmt.Errorf("%d delete %s failures; first was: %w", len(delFail), kind, delFail[0])
 	}
 
 	return ret, nil
@@ -1601,7 +1604,7 @@ func checkIPv6(logf logger.Logf) error {
 	if os.IsNotExist(err) {
 		return err
 	}
-	bs, err := ioutil.ReadFile("/proc/sys/net/ipv6/conf/all/disable_ipv6")
+	bs, err := os.ReadFile("/proc/sys/net/ipv6/conf/all/disable_ipv6")
 	if err != nil {
 		// Be conservative if we can't find the ipv6 configuration knob.
 		return err
@@ -1617,7 +1620,7 @@ func checkIPv6(logf logger.Logf) error {
 	// Older kernels don't support IPv6 policy routing. Some kernels
 	// support policy routing but don't have this knob, so absence of
 	// the knob is not fatal.
-	bs, err = ioutil.ReadFile("/proc/sys/net/ipv6/conf/all/disable_policy")
+	bs, err = os.ReadFile("/proc/sys/net/ipv6/conf/all/disable_policy")
 	if err == nil {
 		disabled, err = strconv.ParseBool(strings.TrimSpace(string(bs)))
 		if err != nil {
@@ -1647,7 +1650,7 @@ func checkIPv6(logf logger.Logf) error {
 // netfilter, so some older distros ship a kernel that can't NAT IPv6
 // traffic.
 func supportsV6NAT() bool {
-	bs, err := ioutil.ReadFile("/proc/net/ip6_tables_names")
+	bs, err := os.ReadFile("/proc/net/ip6_tables_names")
 	if err != nil {
 		// Can't read the file. Assume SNAT works.
 		return true
@@ -1714,7 +1717,7 @@ func checkOpenWRTUsingMWAN3() (bool, error) {
 		//
 		// We dont match on the mask because it can vary, or the
 		// table because I'm not sure if it can vary.
-		if r.Priority == 2001 && r.Mark != 0 {
+		if r.Priority >= 2001 && r.Priority <= 2004 && r.Mark != 0 {
 			return true, nil
 		}
 	}

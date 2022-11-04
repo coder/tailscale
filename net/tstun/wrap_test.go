@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net/netip"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	"tailscale.com/types/ipproto"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
+	"tailscale.com/types/netlogtype"
 	"tailscale.com/wgengine/filter"
 )
 
@@ -281,6 +283,11 @@ func TestWriteAndInject(t *testing.T) {
 			t.Errorf("%s not received", packet)
 		}
 	}
+
+	// Statistics gathering is disabled by default.
+	if stats := tun.ExtractStatistics(); len(stats) > 0 {
+		t.Errorf("tun.ExtractStatistics = %v, want {}", stats)
+	}
 }
 
 func TestFilter(t *testing.T) {
@@ -329,11 +336,16 @@ func TestFilter(t *testing.T) {
 	}()
 
 	var buf [MaxPacketSize]byte
+	tun.SetStatisticsEnabled(true)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var n int
 			var err error
 			var filtered bool
+
+			if stats := tun.ExtractStatistics(); len(stats) > 0 {
+				t.Errorf("tun.ExtractStatistics = %v, want {}", stats)
+			}
 
 			if tt.dir == in {
 				// Use the side effect of updating the last
@@ -363,6 +375,24 @@ func TestFilter(t *testing.T) {
 				if tt.drop {
 					t.Errorf("got accept; want drop")
 				}
+			}
+
+			got := tun.ExtractStatistics()
+			want := map[netlogtype.Connection]netlogtype.Counts{}
+			if !tt.drop {
+				var p packet.Parsed
+				p.Decode(tt.data)
+				switch tt.dir {
+				case in:
+					conn := netlogtype.Connection{Proto: ipproto.UDP, Src: p.Dst, Dst: p.Src}
+					want[conn] = netlogtype.Counts{RxPackets: 1, RxBytes: uint64(len(tt.data))}
+				case out:
+					conn := netlogtype.Connection{Proto: ipproto.UDP, Src: p.Src, Dst: p.Dst}
+					want[conn] = netlogtype.Counts{TxPackets: 1, TxBytes: uint64(len(tt.data))}
+				}
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("tun.ExtractStatistics = %v, want %v", got, want)
 			}
 		})
 	}

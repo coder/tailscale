@@ -13,7 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"tailscale.com/envknob"
 	"tailscale.com/logtail/backoff"
 	"tailscale.com/net/interfaces"
 	tslogger "tailscale.com/types/logger"
@@ -31,6 +32,8 @@ import (
 // DefaultHost is the default host name to upload logs to when
 // Config.BaseURL isn't provided.
 const DefaultHost = "log.tailscale.io"
+
+const defaultFlushDelay = 2 * time.Second
 
 const (
 	// CollectionNode is the name of a logtail Config.Collection
@@ -45,12 +48,13 @@ type Encoder interface {
 
 type Config struct {
 	Collection     string           // collection name, a domain name
-	PrivateID      PrivateID        // machine-specific private identifier
+	PrivateID      PrivateID        // private ID for the primary log stream
+	CopyPrivateID  PrivateID        // private ID for a log stream that is a superset of this log stream
 	BaseURL        string           // if empty defaults to "https://log.tailscale.io"
 	HTTPC          *http.Client     // if empty defaults to http.DefaultClient
 	SkipClientTime bool             // if true, client_time is not written to logs
 	LowMemory      bool             // if true, logtail minimizes memory use
-	TimeNow        func() time.Time // if set, subsitutes uses of time.Now
+	TimeNow        func() time.Time // if set, substitutes uses of time.Now
 	Stderr         io.Writer        // if set, logs are sent here instead of os.Stderr
 	StderrLevel    int              // max verbosity level to write to stderr; 0 means the non-verbose messages only
 	Buffer         Buffer           // temp storage, if nil a MemoryBuffer
@@ -62,9 +66,13 @@ type Config struct {
 	// that's safe to embed in a JSON string literal without further escaping.
 	MetricsDelta func() string
 
-	// DrainLogs, if non-nil, disables automatic uploading of new logs,
-	// so that logs are only uploaded when a token is sent to DrainLogs.
-	DrainLogs <-chan struct{}
+	// FlushDelay is how long to wait to accumulate logs before
+	// uploading them.
+	//
+	// If zero, a default value is used. (currently 2 seconds)
+	//
+	// Negative means to upload immediately.
+	FlushDelay time.Duration
 
 	// IncludeProcID, if true, results in an ephemeral process identifier being
 	// included in logs. The ID is random and not guaranteed to be globally
@@ -74,7 +82,7 @@ type Config struct {
 
 	// IncludeProcSequence, if true, results in an ephemeral sequence number
 	// being included in the logs. The sequence number is incremented for each
-	// log message sent, but is not peristed across process restarts.
+	// log message sent, but is not persisted across process restarts.
 	IncludeProcSequence bool
 }
 
@@ -109,22 +117,35 @@ func NewLogger(cfg Config, logf tslogger.Logf) *Logger {
 			procID = 7
 		}
 	}
+	if s := envknob.String("TS_DEBUG_LOGTAIL_FLUSHDELAY"); s != "" {
+		var err error
+		cfg.FlushDelay, err = time.ParseDuration(s)
+		if err != nil {
+			log.Fatalf("invalid TS_DEBUG_LOGTAIL_FLUSHDELAY: %v", err)
+		}
+	} else if cfg.FlushDelay == 0 && !envknob.Bool("IN_TS_TEST") {
+		cfg.FlushDelay = defaultFlushDelay
+	}
 
 	stdLogf := func(f string, a ...any) {
 		fmt.Fprintf(cfg.Stderr, strings.TrimSuffix(f, "\n")+"\n", a...)
+	}
+	var urlSuffix string
+	if !cfg.CopyPrivateID.IsZero() {
+		urlSuffix = "?copyId=" + cfg.CopyPrivateID.String()
 	}
 	l := &Logger{
 		privateID:      cfg.PrivateID,
 		stderr:         cfg.Stderr,
 		stderrLevel:    int64(cfg.StderrLevel),
 		httpc:          cfg.HTTPC,
-		url:            cfg.BaseURL + "/c/" + cfg.Collection + "/" + cfg.PrivateID.String(),
+		url:            cfg.BaseURL + "/c/" + cfg.Collection + "/" + cfg.PrivateID.String() + urlSuffix,
 		lowMem:         cfg.LowMemory,
 		buffer:         cfg.Buffer,
 		skipClientTime: cfg.SkipClientTime,
-		sent:           make(chan struct{}, 1),
+		drainWake:      make(chan struct{}, 1),
 		sentinel:       make(chan int32, 16),
-		drainLogs:      cfg.DrainLogs,
+		flushDelay:     cfg.FlushDelay,
 		timeNow:        cfg.TimeNow,
 		bo:             backoff.NewBackoff("logtail", stdLogf, 30*time.Second),
 		metricsDelta:   cfg.MetricsDelta,
@@ -158,8 +179,9 @@ type Logger struct {
 	skipClientTime bool
 	linkMonitor    *monitor.Mon
 	buffer         Buffer
-	sent           chan struct{}   // signal to speed up drain
-	drainLogs      <-chan struct{} // if non-nil, external signal to attempt a drain
+	drainWake      chan struct{} // signal to speed up drain
+	flushDelay     time.Duration // negative or zero to upload agressively, or >0 to batch at this delay
+	flushPending   atomic.Bool
 	sentinel       chan int32
 	timeNow        func() time.Time
 	bo             *backoff.Backoff
@@ -168,12 +190,14 @@ type Logger struct {
 	explainedRaw   bool
 	metricsDelta   func() string // or nil
 	privateID      PrivateID
+	httpDoCalls    atomic.Int32
 
 	procID              uint32
 	includeProcSequence bool
 
-	writeLock    sync.Mutex // guards increments of procSequence
+	writeLock    sync.Mutex // guards procSequence, flushTimer, buffer.Write calls
 	procSequence uint64
+	flushTimer   *time.Timer // used when flushDelay is >0
 
 	shutdownStart chan struct{} // closed when shutdown begins
 	shutdownDone  chan struct{} // closed when shutdown complete
@@ -237,24 +261,16 @@ func (l *Logger) Close() {
 
 // drainBlock is called by drainPending when there are no logs to drain.
 //
-// In typical operation, every call to the Write method unblocks and triggers
-// a buffer.TryReadline, so logs are written with very low latency.
+// In typical operation, every call to the Write method unblocks and triggers a
+// buffer.TryReadline, so logs are written with very low latency.
 //
-// If the caller provides a DrainLogs channel, then unblock-drain-on-Write
-// is disabled, and it is up to the caller to trigger unblock the drain.
+// If the caller specified FlushInterface, drainWake is only sent to
+// periodically.
 func (l *Logger) drainBlock() (shuttingDown bool) {
-	if l.drainLogs == nil {
-		select {
-		case <-l.shutdownStart:
-			return true
-		case <-l.sent:
-		}
-	} else {
-		select {
-		case <-l.shutdownStart:
-			return true
-		case <-l.drainLogs:
-		}
+	select {
+	case <-l.shutdownStart:
+		return true
+	case <-l.drainWake:
 	}
 	return false
 }
@@ -422,6 +438,7 @@ func (l *Logger) upload(ctx context.Context, body []byte, origlen int) (uploaded
 		compressedNote = "compressed"
 	}
 
+	l.httpDoCalls.Add(1)
 	resp, err := l.httpc.Do(req)
 	if err != nil {
 		return false, fmt.Errorf("log upload of %d bytes %s failed: %v", len(body), compressedNote, err)
@@ -430,7 +447,7 @@ func (l *Logger) upload(ctx context.Context, body []byte, origlen int) (uploaded
 
 	if resp.StatusCode != 200 {
 		uploaded = resp.StatusCode == 400 // the server saved the logs anyway
-		b, _ := ioutil.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return uploaded, fmt.Errorf("log upload of %d bytes %s failed %d: %q", len(body), compressedNote, resp.StatusCode, b)
 	}
 
@@ -459,16 +476,40 @@ func Disable() {
 	logtailDisabled.Store(true)
 }
 
+var debugWakesAndUploads = envknob.RegisterBool("TS_DEBUG_LOGTAIL_WAKES")
+
+// tryDrainWake tries to send to lg.drainWake, to cause an uploading wakeup.
+// It does not block.
+func (l *Logger) tryDrainWake() {
+	l.flushPending.Store(false)
+	if debugWakesAndUploads() {
+		// Using println instead of log.Printf here to avoid recursing back into
+		// ourselves.
+		println("logtail: try drain wake, numHTTP:", l.httpDoCalls.Load())
+	}
+	select {
+	case l.drainWake <- struct{}{}:
+	default:
+	}
+}
+
 func (l *Logger) sendLocked(jsonBlob []byte) (int, error) {
 	if logtailDisabled.Load() {
 		return len(jsonBlob), nil
 	}
+
 	n, err := l.buffer.Write(jsonBlob)
-	if l.drainLogs == nil {
-		select {
-		case l.sent <- struct{}{}:
-		default:
+
+	if l.flushDelay > 0 {
+		if l.flushPending.CompareAndSwap(false, true) {
+			if l.flushTimer == nil {
+				l.flushTimer = time.AfterFunc(l.flushDelay, l.tryDrainWake)
+			} else {
+				l.flushTimer.Reset(l.flushDelay)
+			}
 		}
+	} else {
+		l.tryDrainWake()
 	}
 	return n, err
 }
@@ -520,7 +561,7 @@ func (l *Logger) encodeText(buf []byte, skipClientTime bool, procID uint32, proc
 		b = append(b, `"logtail": {`...)
 		if !skipClientTime {
 			b = append(b, `"client_time": "`...)
-			b = now.AppendFormat(b, time.RFC3339Nano)
+			b = now.UTC().AppendFormat(b, time.RFC3339Nano)
 			b = append(b, `",`...)
 		}
 		if procID != 0 {
@@ -613,7 +654,7 @@ func (l *Logger) encodeLocked(buf []byte, level int) []byte {
 	if !l.skipClientTime || l.procID != 0 || l.procSequence != 0 {
 		logtail := map[string]any{}
 		if !l.skipClientTime {
-			logtail["client_time"] = now.Format(time.RFC3339Nano)
+			logtail["client_time"] = now.UTC().Format(time.RFC3339Nano)
 		}
 		if l.procID != 0 {
 			logtail["proc_id"] = l.procID
@@ -654,7 +695,7 @@ func (l *Logger) Write(buf []byte) (int, error) {
 		return 0, nil
 	}
 	level, buf := parseAndRemoveLogLevel(buf)
-	if l.stderr != nil && l.stderr != ioutil.Discard && int64(level) <= atomic.LoadInt64(&l.stderrLevel) {
+	if l.stderr != nil && l.stderr != io.Discard && int64(level) <= atomic.LoadInt64(&l.stderrLevel) {
 		if buf[len(buf)-1] == '\n' {
 			l.stderr.Write(buf)
 		} else {

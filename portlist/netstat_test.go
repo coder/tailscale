@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build !ios && !js
+
 package portlist
 
 import (
@@ -68,22 +70,22 @@ udp4       0      0  *.5553                 *.*
 
 func TestParsePortsNetstat(t *testing.T) {
 	want := List{
-		Port{"tcp", 22, "", ""},
-		Port{"tcp", 23, "", ""},
-		Port{"tcp", 24, "", ""},
-		Port{"tcp", 32, "sshd", ""},
-		Port{"udp", 53, "chrome", ""},
-		Port{"udp", 53, "funball", ""},
-		Port{"udp", 5050, "CDPSvc", ""},
-		Port{"udp", 5353, "", ""},
-		Port{"udp", 5354, "", ""},
-		Port{"udp", 5453, "", ""},
-		Port{"udp", 5553, "", ""},
-		Port{"tcp", 8185, "", ""}, // but not 8186, 8187, 8188 on localhost
-		Port{"udp", 9353, "iTunes", ""},
+		Port{"tcp", 22, ""},
+		Port{"tcp", 23, ""},
+		Port{"tcp", 24, ""},
+		Port{"tcp", 32, "sshd"},
+		Port{"udp", 53, "chrome"},
+		Port{"udp", 53, "funball"},
+		Port{"udp", 5050, "CDPSvc"},
+		Port{"udp", 5353, ""},
+		Port{"udp", 5354, ""},
+		Port{"udp", 5453, ""},
+		Port{"udp", 5553, ""},
+		Port{"tcp", 8185, ""}, // but not 8186, 8187, 8188 on localhost
+		Port{"udp", 9353, "iTunes"},
 	}
 
-	pl := parsePortsNetstat(netstatOutput)
+	pl := appendParsePortsNetstat(nil, netstatOutput)
 	jgot, _ := json.MarshalIndent(pl, "", "\t")
 	jwant, _ := json.MarshalIndent(want, "", "\t")
 	if len(pl) != len(want) {

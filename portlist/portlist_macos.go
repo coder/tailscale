@@ -3,7 +3,6 @@
 // license that can be found in the LICENSE file.
 
 //go:build darwin && !ios
-// +build darwin,!ios
 
 package portlist
 
@@ -21,8 +20,8 @@ import (
 // We have to run netstat, which is a bit expensive, so don't do it too often.
 const pollInterval = 5 * time.Second
 
-func listPorts() (List, error) {
-	return listPortsNetstat("-na")
+func appendListeningPorts(base []Port) ([]Port, error) {
+	return appendListeningPortsNetstat(base, "-na")
 }
 
 var lsofFailed int64 // atomic bool

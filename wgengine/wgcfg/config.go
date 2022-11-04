@@ -8,6 +8,8 @@ package wgcfg
 import (
 	"net/netip"
 
+	"tailscale.com/logtail"
+	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 )
 
@@ -17,11 +19,19 @@ import (
 // It only supports the set of things Tailscale uses.
 type Config struct {
 	Name       string
+	NodeID     tailcfg.StableNodeID
 	PrivateKey key.NodePrivate
 	Addresses  []netip.Prefix
 	MTU        uint16
 	DNS        []netip.Addr
 	Peers      []Peer
+
+	// NetworkLogging enables network logging.
+	// It is disabled if either ID is the zero value.
+	NetworkLogging struct {
+		NodeID   logtail.PrivateID
+		DomainID logtail.PrivateID
+	}
 }
 
 type Peer struct {

@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -254,7 +253,7 @@ func qnapAuthnFinish(user, url string) (string, *qnapAuthResponse, error) {
 		return "", nil, err
 	}
 	defer resp.Body.Close()
-	out, err := ioutil.ReadAll(resp.Body)
+	out, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", nil, err
 	}
@@ -475,8 +474,8 @@ func tailscaleUp(ctx context.Context, prefs *ipn.Prefs, forceReauth bool) (authU
 			authURL = *url
 			cancel()
 		}
-		if !forceReauth && n.Prefs != nil {
-			p1, p2 := *n.Prefs, *prefs
+		if !forceReauth && n.Prefs != nil && n.Prefs.Valid() {
+			p1, p2 := n.Prefs.AsStruct(), *prefs
 			p1.Persist = nil
 			p2.Persist = nil
 			if p1.Equals(&p2) {

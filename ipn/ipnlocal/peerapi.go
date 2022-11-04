@@ -44,6 +44,7 @@ import (
 	"tailscale.com/net/netutil"
 	"tailscale.com/tailcfg"
 	"tailscale.com/util/clientmetric"
+	"tailscale.com/util/strs"
 	"tailscale.com/wgengine"
 	"tailscale.com/wgengine/filter"
 )
@@ -78,7 +79,7 @@ type peerAPIServer struct {
 }
 
 const (
-	// partialSuffix is the suffix appened to files while they're
+	// partialSuffix is the suffix appended to files while they're
 	// still in the process of being transferred.
 	partialSuffix = ".partial"
 
@@ -720,8 +721,8 @@ func (h *peerAPIHandler) handlePeerPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rawPath := r.URL.EscapedPath()
-	suffix := strings.TrimPrefix(rawPath, "/v0/put/")
-	if suffix == rawPath {
+	suffix, ok := strs.CutPrefix(rawPath, "/v0/put/")
+	if !ok {
 		http.Error(w, "misconfigured internals", 500)
 		return
 	}
@@ -1183,7 +1184,7 @@ func newFakePeerAPIListener(ip netip.Addr) net.Listener {
 // even if the kernel isn't cooperating (like on Android: Issue 4449, 4293, etc)
 // or we lack permission to listen on a port. It's okay to not actually listen via
 // the kernel because on almost all platforms (except iOS as of 2022-04-20) we
-// also intercept netstack TCP requests in to our peerapi port and hand it over
+// also intercept incoming netstack TCP requests to our peerapi port and hand them over
 // directly to peerapi, without involving the kernel. So this doesn't need to be
 // real. But the port number we return (1, in this case) is the port number we advertise
 // to peers and they connect to. 1 seems pretty safe to use. Even if the kernel's

@@ -3,7 +3,6 @@
 // license that can be found in the LICENSE file.
 
 //go:build linux
-// +build linux
 
 package tshttpproxy
 
@@ -11,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
@@ -60,7 +58,7 @@ func TestSynologyProxyFromConfigCached(t *testing.T) {
 		cache.httpProxy = nil
 		cache.httpsProxy = nil
 
-		if err := ioutil.WriteFile(synologyProxyConfigPath, []byte(`
+		if err := os.WriteFile(synologyProxyConfigPath, []byte(`
 proxy_enabled=yes
 http_host=10.0.0.55
 http_port=80
@@ -116,7 +114,7 @@ https_port=443
 		cache.httpProxy = nil
 		cache.httpsProxy = nil
 
-		if err := ioutil.WriteFile(synologyProxyConfigPath, []byte(`
+		if err := os.WriteFile(synologyProxyConfigPath, []byte(`
 proxy_enabled=yes
 http_host=10.0.0.55
 http_port=80
@@ -205,7 +203,7 @@ http_port=80
 
 	})
 
-	t.Run("non-existent config", func(t *testing.T) {
+	t.Run("nonexistent config", func(t *testing.T) {
 		openReader = nil
 		openErr = os.ErrNotExist
 

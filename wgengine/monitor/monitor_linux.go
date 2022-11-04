@@ -3,7 +3,6 @@
 // license that can be found in the LICENSE file.
 
 //go:build !android
-// +build !android
 
 package monitor
 
@@ -20,7 +19,7 @@ import (
 	"tailscale.com/types/logger"
 )
 
-var debugNetlinkMessages = envknob.Bool("TS_DEBUG_NETLINK")
+var debugNetlinkMessages = envknob.RegisterBool("TS_DEBUG_NETLINK")
 
 // unspecifiedMessage is a minimal message implementation that should not
 // be ignored. In general, OS-specific implementations should use better
@@ -96,7 +95,7 @@ func (c *nlConn) Receive() (message, error) {
 
 		nip := netaddrIP(rmsg.Attributes.Address)
 
-		if debugNetlinkMessages {
+		if debugNetlinkMessages() {
 			typ := "RTM_NEWADDR"
 			if msg.Header.Type == unix.RTM_DELADDR {
 				typ = "RTM_DELADDR"
@@ -125,7 +124,7 @@ func (c *nlConn) Receive() (message, error) {
 			}
 
 			if addrs[nip] {
-				if debugNetlinkMessages {
+				if debugNetlinkMessages() {
 					c.logf("ignored duplicate RTM_NEWADDR for %s", nip)
 				}
 				return ignoreMessage{}, nil
@@ -147,7 +146,7 @@ func (c *nlConn) Receive() (message, error) {
 			Addr:    nip,
 			Delete:  msg.Header.Type == unix.RTM_DELADDR,
 		}
-		if debugNetlinkMessages {
+		if debugNetlinkMessages() {
 			c.logf("%+v", nam)
 		}
 		return nam, nil
@@ -169,7 +168,7 @@ func (c *nlConn) Receive() (message, error) {
 			(rmsg.Attributes.Table == 255 || rmsg.Attributes.Table == 254) &&
 			(dst.Addr().IsMulticast() || dst.Addr().IsLinkLocalUnicast()) {
 
-			if debugNetlinkMessages {
+			if debugNetlinkMessages() {
 				c.logf("%s ignored", typeStr)
 			}
 
@@ -202,7 +201,7 @@ func (c *nlConn) Receive() (message, error) {
 			Dst:     dst,
 			Gateway: gw,
 		}
-		if debugNetlinkMessages {
+		if debugNetlinkMessages() {
 			c.logf("%+v", nrm)
 		}
 		return nrm, nil
@@ -225,7 +224,7 @@ func (c *nlConn) Receive() (message, error) {
 			table:    rmsg.Table,
 			priority: rmsg.Attributes.Priority,
 		}
-		if debugNetlinkMessages {
+		if debugNetlinkMessages() {
 			c.logf("%+v", rdm)
 		}
 		return rdm, nil

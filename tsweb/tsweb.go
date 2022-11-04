@@ -13,7 +13,6 @@ import (
 	"expvar"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -22,6 +21,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,9 +38,19 @@ import (
 func init() {
 	expvar.Publish("process_start_unix_time", expvar.Func(func() any { return timeStart.Unix() }))
 	expvar.Publish("version", expvar.Func(func() any { return version.Long }))
+	expvar.Publish("go_version", expvar.Func(func() any { return runtime.Version() }))
 	expvar.Publish("counter_uptime_sec", expvar.Func(func() any { return int64(Uptime().Seconds()) }))
 	expvar.Publish("gauge_goroutines", expvar.Func(func() any { return runtime.NumGoroutine() }))
 }
+
+const (
+	gaugePrefix    = "gauge_"
+	counterPrefix  = "counter_"
+	labelMapPrefix = "labelmap_"
+)
+
+// prefixesToTrim contains key prefixes to remove when exporting and sorting metrics.
+var prefixesToTrim = []string{gaugePrefix, counterPrefix, labelMapPrefix}
 
 // DevMode controls whether extra output in shown, for when the binary is being run in dev mode.
 var DevMode bool
@@ -81,7 +91,7 @@ func AllowDebugAccess(r *http.Request) bool {
 		urlKey := r.FormValue("debugkey")
 		keyPath := envknob.String("TS_DEBUG_KEY_PATH")
 		if urlKey != "" && keyPath != "" {
-			slurp, err := ioutil.ReadFile(keyPath)
+			slurp, err := os.ReadFile(keyPath)
 			if err == nil && string(bytes.TrimSpace(slurp)) == urlKey {
 				return true
 			}
@@ -185,9 +195,9 @@ type ReturnHandler interface {
 }
 
 type HandlerOptions struct {
-	Quiet200s bool // if set, do not log successfully handled HTTP requests
-	Logf      logger.Logf
-	Now       func() time.Time // if nil, defaults to time.Now
+	QuietLoggingIfSuccessful bool // if set, do not log successfully handled HTTP requests (200 and 304 status codes)
+	Logf                     logger.Logf
+	Now                      func() time.Time // if nil, defaults to time.Now
 
 	// If non-nil, StatusCodeCounters maintains counters
 	// of status codes for handled responses.
@@ -317,7 +327,7 @@ func (h retHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if msg.Code != 200 || !h.opts.Quiet200s {
+	if !h.opts.QuietLoggingIfSuccessful || (msg.Code != http.StatusOK && msg.Code != http.StatusNotModified) {
 		h.opts.Logf("%s", msg)
 	}
 
@@ -412,7 +422,7 @@ func (l loggingResponseWriter) Flush() {
 //
 // It is the error type to be (optionally) used by Handler.ServeHTTPReturn.
 type HTTPError struct {
-	Code   int         // HTTP response code to send to client; 0 means means 500
+	Code   int         // HTTP response code to send to client; 0 means 500
 	Msg    string      // Response body to send to client
 	Err    error       // Detailed error to log on the server
 	Header http.Header // Optional set of HTTP headers to set in the response
@@ -420,6 +430,8 @@ type HTTPError struct {
 
 // Error implements the error interface.
 func (e HTTPError) Error() string { return fmt.Sprintf("httperror{%d, %q, %v}", e.Code, e.Msg, e.Err) }
+
+func (e HTTPError) Unwrap() error { return e.Err }
 
 // Error returns an HTTPError containing the given information.
 func Error(code int, msg string, err error) HTTPError {
@@ -448,16 +460,16 @@ func writePromExpVar(w io.Writer, prefix string, kv expvar.KeyValue) {
 	var typ string
 	var label string
 	switch {
-	case strings.HasPrefix(kv.Key, "gauge_"):
+	case strings.HasPrefix(kv.Key, gaugePrefix):
 		typ = "gauge"
-		key = strings.TrimPrefix(kv.Key, "gauge_")
+		key = strings.TrimPrefix(kv.Key, gaugePrefix)
 
-	case strings.HasPrefix(kv.Key, "counter_"):
+	case strings.HasPrefix(kv.Key, counterPrefix):
 		typ = "counter"
-		key = strings.TrimPrefix(kv.Key, "counter_")
+		key = strings.TrimPrefix(kv.Key, counterPrefix)
 	}
-	if strings.HasPrefix(key, "labelmap_") {
-		key = strings.TrimPrefix(key, "labelmap_")
+	if strings.HasPrefix(key, labelMapPrefix) {
+		key = strings.TrimPrefix(key, labelMapPrefix)
 		if a, b, ok := strings.Cut(key, "_"); ok {
 			label, key = a, b
 		}
@@ -579,6 +591,18 @@ func writePromExpVar(w io.Writer, prefix string, kv expvar.KeyValue) {
 	}
 }
 
+var sortedKVsPool = &sync.Pool{New: func() any { return new(sortedKVs) }}
+
+// sortedKV is a KeyValue with a sort key.
+type sortedKV struct {
+	expvar.KeyValue
+	sortKey string // KeyValue.Key with type prefix removed
+}
+
+type sortedKVs struct {
+	kvs []sortedKV
+}
+
 // VarzHandler is an HTTP handler to write expvar values into the
 // prometheus export format:
 //
@@ -598,9 +622,19 @@ func writePromExpVar(w io.Writer, prefix string, kv expvar.KeyValue) {
 // This will evolve over time, or perhaps be replaced.
 func VarzHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+
+	s := sortedKVsPool.Get().(*sortedKVs)
+	defer sortedKVsPool.Put(s)
+	s.kvs = s.kvs[:0]
 	expvarDo(func(kv expvar.KeyValue) {
-		writePromExpVar(w, "", kv)
+		s.kvs = append(s.kvs, sortedKV{kv, removeTypePrefixes(kv.Key)})
 	})
+	sort.Slice(s.kvs, func(i, j int) bool {
+		return s.kvs[i].sortKey < s.kvs[j].sortKey
+	})
+	for _, e := range s.kvs {
+		writePromExpVar(w, "", e.KeyValue)
+	}
 }
 
 // PrometheusMetricsReflectRooter is an optional interface that expvar.Var implementations
@@ -632,8 +666,25 @@ func writeMemstats(w io.Writer, ms *runtime.MemStats) {
 	c("num_gc", uint64(ms.NumGC), "number of completed GC cycles")
 }
 
-func foreachExportedStructField(rv reflect.Value, f func(fieldOrJSONName, metricType string, rv reflect.Value)) {
-	t := rv.Type()
+// sortedStructField is metadata about a struct field used both for sorting once
+// (by structTypeSortedFields) and at serving time (by
+// foreachExportedStructField).
+type sortedStructField struct {
+	Index           int    // index of struct field in struct
+	Name            string // struct field name, or "json" name
+	SortName        string // Name with "foo_" type prefixes removed
+	MetricType      string // the "metrictype" struct tag
+	StructFieldType *reflect.StructField
+}
+
+var structSortedFieldsCache sync.Map // reflect.Type => []sortedStructField
+
+// structTypeSortedFields returns the sorted fields of t, caching as needed.
+func structTypeSortedFields(t reflect.Type) []sortedStructField {
+	if v, ok := structSortedFieldsCache.Load(t); ok {
+		return v.([]sortedStructField)
+	}
+	fields := make([]sortedStructField, 0, t.NumField())
 	for i, n := 0, t.NumField(); i < n; i++ {
 		sf := t.Field(i)
 		name := sf.Name
@@ -647,13 +698,45 @@ func foreachExportedStructField(rv reflect.Value, f func(fieldOrJSONName, metric
 				name = v
 			}
 		}
-		metricType := sf.Tag.Get("metrictype")
-		if metricType != "" || sf.Type.Kind() == reflect.Struct {
-			f(name, metricType, rv.Field(i))
+		fields = append(fields, sortedStructField{
+			Index:           i,
+			Name:            name,
+			SortName:        removeTypePrefixes(name),
+			MetricType:      sf.Tag.Get("metrictype"),
+			StructFieldType: &sf,
+		})
+	}
+	sort.Slice(fields, func(i, j int) bool {
+		return fields[i].SortName < fields[j].SortName
+	})
+	structSortedFieldsCache.Store(t, fields)
+	return fields
+}
+
+// removeTypePrefixes returns s with the first "foo_" prefix in prefixesToTrim
+// removed.
+func removeTypePrefixes(s string) string {
+	for _, prefix := range prefixesToTrim {
+		if trimmed := strings.TrimPrefix(s, prefix); trimmed != s {
+			return trimmed
+		}
+	}
+	return s
+}
+
+// foreachExportedStructField iterates over the fields in sorted order of
+// their name, after removing metric prefixes. This is not necessarily the
+// order they were declared in the struct
+func foreachExportedStructField(rv reflect.Value, f func(fieldOrJSONName, metricType string, rv reflect.Value)) {
+	t := rv.Type()
+	for _, ssf := range structTypeSortedFields(t) {
+		sf := ssf.StructFieldType
+		if ssf.MetricType != "" || sf.Type.Kind() == reflect.Struct {
+			f(ssf.Name, ssf.MetricType, rv.Field(ssf.Index))
 		} else if sf.Type.Kind() == reflect.Ptr && sf.Type.Elem().Kind() == reflect.Struct {
-			fv := rv.Field(i)
+			fv := rv.Field(ssf.Index)
 			if !fv.IsNil() {
-				f(name, metricType, fv.Elem())
+				f(ssf.Name, ssf.MetricType, fv.Elem())
 			}
 		}
 	}

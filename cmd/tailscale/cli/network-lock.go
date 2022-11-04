@@ -5,6 +5,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -17,11 +18,17 @@ import (
 )
 
 var netlockCmd = &ffcli.Command{
-	Name:        "lock",
-	ShortUsage:  "lock <sub-command> <arguments>",
-	ShortHelp:   "Manipulate the tailnet key authority",
-	Subcommands: []*ffcli.Command{nlInitCmd, nlStatusCmd},
-	Exec:        runNetworkLockStatus,
+	Name:       "lock",
+	ShortUsage: "lock <sub-command> <arguments>",
+	ShortHelp:  "Manipulate the tailnet key authority",
+	Subcommands: []*ffcli.Command{
+		nlInitCmd,
+		nlStatusCmd,
+		nlAddCmd,
+		nlRemoveCmd,
+		nlSignCmd,
+	},
+	Exec: runNetworkLockStatus,
 }
 
 var nlInitCmd = &ffcli.Command{
@@ -41,32 +48,15 @@ func runNetworkLockInit(ctx context.Context, args []string) error {
 	}
 
 	// Parse the set of initially-trusted keys.
-	// Keys are specified using their key.NLPublic.MarshalText representation,
-	// with an optional '?<votes>' suffix.
-	var keys []tka.Key
-	for i, a := range args {
-		var key key.NLPublic
-		spl := strings.SplitN(a, "?", 2)
-		if err := key.UnmarshalText([]byte(spl[0])); err != nil {
-			return fmt.Errorf("parsing key %d: %v", i+1, err)
-		}
-
-		k := tka.Key{
-			Kind:   tka.Key25519,
-			Public: key.Verifier(),
-			Votes:  1,
-		}
-		if len(spl) > 1 {
-			votes, err := strconv.Atoi(spl[1])
-			if err != nil {
-				return fmt.Errorf("parsing key %d votes: %v", i+1, err)
-			}
-			k.Votes = uint(votes)
-		}
-		keys = append(keys, k)
+	keys, err := parseNLKeyArgs(args)
+	if err != nil {
+		return err
 	}
 
-	status, err := localClient.NetworkLockInit(ctx, keys)
+	// TODO(tom): Implement specification of disablement values from the command line.
+	disablementValues := [][]byte{bytes.Repeat([]byte{0xa5}, 32)}
+
+	status, err := localClient.NetworkLockInit(ctx, keys, disablementValues)
 	if err != nil {
 		return err
 	}
@@ -98,4 +88,103 @@ func runNetworkLockStatus(ctx context.Context, args []string) error {
 	}
 	fmt.Printf("our public-key: %s\n", p)
 	return nil
+}
+
+var nlAddCmd = &ffcli.Command{
+	Name:       "add",
+	ShortUsage: "add <public-key>...",
+	ShortHelp:  "Adds one or more signing keys to the tailnet key authority",
+	Exec: func(ctx context.Context, args []string) error {
+		return runNetworkLockModify(ctx, args, nil)
+	},
+}
+
+var nlRemoveCmd = &ffcli.Command{
+	Name:       "remove",
+	ShortUsage: "remove <public-key>...",
+	ShortHelp:  "Removes one or more signing keys to the tailnet key authority",
+	Exec: func(ctx context.Context, args []string) error {
+		return runNetworkLockModify(ctx, nil, args)
+	},
+}
+
+// parseNLKeyArgs converts a slice of strings into a slice of tka.Key. The keys
+// should be specified using their key.NLPublic.MarshalText representation with
+// an optional '?<votes>' suffix. If any of the keys encounters an error, a nil
+// slice is returned along with an appropriate error.
+func parseNLKeyArgs(args []string) ([]tka.Key, error) {
+	var keys []tka.Key
+	for i, a := range args {
+		var nlpk key.NLPublic
+		spl := strings.SplitN(a, "?", 2)
+		if err := nlpk.UnmarshalText([]byte(spl[0])); err != nil {
+			return nil, fmt.Errorf("parsing key %d: %v", i+1, err)
+		}
+
+		k := tka.Key{
+			Kind:   tka.Key25519,
+			Public: nlpk.Verifier(),
+			Votes:  1,
+		}
+		if len(spl) > 1 {
+			votes, err := strconv.Atoi(spl[1])
+			if err != nil {
+				return nil, fmt.Errorf("parsing key %d votes: %v", i+1, err)
+			}
+			k.Votes = uint(votes)
+		}
+		keys = append(keys, k)
+	}
+	return keys, nil
+}
+
+func runNetworkLockModify(ctx context.Context, addArgs, removeArgs []string) error {
+	st, err := localClient.NetworkLockStatus(ctx)
+	if err != nil {
+		return fixTailscaledConnectError(err)
+	}
+	if st.Enabled {
+		return errors.New("network-lock is already enabled")
+	}
+
+	addKeys, err := parseNLKeyArgs(addArgs)
+	if err != nil {
+		return err
+	}
+	removeKeys, err := parseNLKeyArgs(removeArgs)
+	if err != nil {
+		return err
+	}
+
+	status, err := localClient.NetworkLockModify(ctx, addKeys, removeKeys)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Status: %+v\n\n", status)
+	return nil
+}
+
+var nlSignCmd = &ffcli.Command{
+	Name:       "sign",
+	ShortUsage: "sign <node-key>",
+	ShortHelp:  "Signs a node-key and transmits that signature to the control plane",
+	Exec:       runNetworkLockSign,
+}
+
+// TODO(tom): Implement specifying the rotation key for the signature.
+func runNetworkLockSign(ctx context.Context, args []string) error {
+	switch len(args) {
+	case 0:
+		return errors.New("expected node-key as second argument")
+	case 1:
+		var nodeKey key.NodePublic
+		if err := nodeKey.UnmarshalText([]byte(args[0])); err != nil {
+			return fmt.Errorf("decoding node-key: %w", err)
+		}
+
+		return localClient.NetworkLockSign(ctx, nodeKey, nil)
+	default:
+		return errors.New("expected a single node-key as only argument")
+	}
 }

@@ -331,7 +331,9 @@ func TestNodeEqual(t *testing.T) {
 		"Created", "Tags", "PrimaryRoutes",
 		"LastSeen", "Online", "KeepAlive", "MachineAuthorized",
 		"Capabilities",
+		"UnsignedPeerAPIOnly",
 		"ComputedName", "computedHostIfDifferent", "ComputedNameWithHost",
+		"DataPlaneAuditLogID",
 	}
 	if have := fieldsOf(reflect.TypeOf(Node{})); !reflect.DeepEqual(have, nodeHandles) {
 		t.Errorf("Node.Equal check might be out of sync\nfields: %q\nhandled: %q\n",

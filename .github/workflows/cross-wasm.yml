@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - '*'
+      - 'release-branch/*'
 
 concurrency:
   group: ${{ github.workflow }}-$${{ github.head_ref || github.run_id }}
@@ -39,7 +40,7 @@ jobs:
       # that depend on it.
       run: |
         ./tool/go run ./cmd/tsconnect --fast-compression build
-        ./tool/go run ./cmd/tsconnect build-pkg
+        ./tool/go run ./cmd/tsconnect --fast-compression build-pkg
 
     - uses: k0kubun/action-slack@v2.0.0
       with:

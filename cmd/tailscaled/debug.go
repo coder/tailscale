@@ -3,7 +3,6 @@
 // license that can be found in the LICENSE file.
 
 //go:build go1.19
-// +build go1.19
 
 package main
 
@@ -15,7 +14,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -89,6 +87,8 @@ func runMonitor(ctx context.Context, loop bool) error {
 	if err != nil {
 		return err
 	}
+	defer mon.Close()
+
 	mon.RegisterChangeCallback(func(changed bool, st *interfaces.State) {
 		if !changed {
 			log.Printf("Link monitor fired; no change")
@@ -163,7 +163,7 @@ func getURL(ctx context.Context, urlStr string) error {
 	return res.Write(os.Stdout)
 }
 
-func checkDerp(ctx context.Context, derpRegion string) error {
+func checkDerp(ctx context.Context, derpRegion string) (err error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", ipn.DefaultControlURL+"/derpmap/default", nil)
 	if err != nil {
 		return fmt.Errorf("create derp map request: %w", err)
@@ -173,7 +173,7 @@ func checkDerp(ctx context.Context, derpRegion string) error {
 		return fmt.Errorf("fetch derp map failed: %w", err)
 	}
 	defer res.Body.Close()
-	b, err := ioutil.ReadAll(io.LimitReader(res.Body, 1<<20))
+	b, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
 		return fmt.Errorf("fetch derp map failed: %w", err)
 	}
@@ -202,6 +202,12 @@ func checkDerp(ctx context.Context, derpRegion string) error {
 
 	c1 := derphttp.NewRegionClient(priv1, log.Printf, getRegion)
 	c2 := derphttp.NewRegionClient(priv2, log.Printf, getRegion)
+	defer func() {
+		if err != nil {
+			c1.Close()
+			c2.Close()
+		}
+	}()
 
 	c2.NotePreferred(true) // just to open it
 

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"io/ioutil"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
@@ -87,7 +86,7 @@ func fileHasContents(name string, want string) check {
 			return
 		}
 		path := filepath.Join(root, name)
-		got, err := ioutil.ReadFile(path)
+		got, err := os.ReadFile(path)
 		if err != nil {
 			t.Errorf("fileHasContents: %v", err)
 			return
@@ -110,7 +109,7 @@ func TestHandlePeerAPI(t *testing.T) {
 	tests := []struct {
 		name       string
 		isSelf     bool // the peer sending the request is owned by us
-		capSharing bool // self node has file sharing capabilty
+		capSharing bool // self node has file sharing capability
 		omitRoot   bool // don't configure
 		req        *http.Request
 		checks     []check
@@ -517,7 +516,7 @@ func TestDeletedMarkers(t *testing.T) {
 	}
 	wantEmptyTempDir := func() {
 		t.Helper()
-		if fis, err := ioutil.ReadDir(dir); err != nil {
+		if fis, err := os.ReadDir(dir); err != nil {
 			t.Fatal(err)
 		} else if len(fis) > 0 && runtime.GOOS != "windows" {
 			for _, fi := range fis {
@@ -594,12 +593,12 @@ func TestPeerAPIReplyToDNSQueries(t *testing.T) {
 	if h.ps.b.OfferingExitNode() {
 		t.Fatal("unexpectedly offering exit node")
 	}
-	h.ps.b.prefs = &ipn.Prefs{
+	h.ps.b.prefs = (&ipn.Prefs{
 		AdvertiseRoutes: []netip.Prefix{
 			netip.MustParsePrefix("0.0.0.0/0"),
 			netip.MustParsePrefix("::/0"),
 		},
-	}
+	}).View()
 	if !h.ps.b.OfferingExitNode() {
 		t.Fatal("unexpectedly not offering exit node")
 	}

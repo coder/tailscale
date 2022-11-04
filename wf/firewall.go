@@ -3,7 +3,6 @@
 // license that can be found in the LICENSE file.
 
 //go:build windows
-// +build windows
 
 package wf
 
@@ -88,7 +87,7 @@ type Firewall struct {
 	permittedRoutes map[netip.Prefix][]*wf.Rule
 }
 
-// New returns a new Firewall for the provdied interface ID.
+// New returns a new Firewall for the provided interface ID.
 func New(luid uint64) (*Firewall, error) {
 	session, err := wf.New(&wf.Options{
 		Name:    "Tailscale firewall",

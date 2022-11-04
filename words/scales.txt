@@ -118,8 +118,20 @@ hen
 rooster
 quail
 grouse
-
-# Musical scales
+universe
+galaxy
+atlas
+wyvern
+hydra
+gorgon
+chimera
+ladon
+scylla
+mermaid
+nessie
+hippocampus
+typhon
+qilin
 acoustic
 alpha
 altered
@@ -163,4 +175,6 @@ tet
 tone
 tritone
 yo
-
+beaver
+hops
+salak

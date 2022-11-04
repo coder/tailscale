@@ -9,6 +9,8 @@ package wgcfg
 import (
 	"net/netip"
 
+	"tailscale.com/logtail"
+	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 )
 
@@ -31,12 +33,17 @@ func (src *Config) Clone() *Config {
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _ConfigCloneNeedsRegeneration = Config(struct {
-	Name       string
-	PrivateKey key.NodePrivate
-	Addresses  []netip.Prefix
-	MTU        uint16
-	DNS        []netip.Addr
-	Peers      []Peer
+	Name           string
+	NodeID         tailcfg.StableNodeID
+	PrivateKey     key.NodePrivate
+	Addresses      []netip.Prefix
+	MTU            uint16
+	DNS            []netip.Addr
+	Peers          []Peer
+	NetworkLogging struct {
+		NodeID   logtail.PrivateID
+		DomainID logtail.PrivateID
+	}
 }{})
 
 // Clone makes a deep copy of Peer.
