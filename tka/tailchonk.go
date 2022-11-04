@@ -7,7 +7,6 @@ package tka
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sync"
@@ -215,6 +214,9 @@ func (c *FS) AUM(hash AUMHash) (AUM, error) {
 
 	info, err := c.get(hash)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return AUM{}, os.ErrNotExist
+		}
 		return AUM{}, err
 	}
 	if info.AUM == nil {
@@ -345,7 +347,7 @@ func (c *FS) LastActiveAncestor() (*AUMHash, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	hash, err := ioutil.ReadFile(filepath.Join(c.base, "last_active_ancestor"))
+	hash, err := os.ReadFile(filepath.Join(c.base, "last_active_ancestor"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil // Not exist == none set.

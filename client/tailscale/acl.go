@@ -3,7 +3,6 @@
 // license that can be found in the LICENSE file.
 
 //go:build go1.19
-// +build go1.19
 
 package tailscale
 
@@ -459,7 +458,7 @@ func (c *Client) ValidateACLJSON(ctx context.Context, source, dest string) (test
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("control api responsed with %d status code", resp.StatusCode)
+		return nil, fmt.Errorf("control api responded with %d status code", resp.StatusCode)
 	}
 
 	// The test ran without fail

@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -20,6 +21,8 @@ import (
 	"tailscale.com/envknob"
 	"tailscale.com/net/netns"
 	"tailscale.com/types/key"
+	"tailscale.com/types/logger"
+	"tailscale.com/types/nettype"
 )
 
 const (
@@ -28,7 +31,7 @@ const (
 )
 
 // Enable/disable using raw sockets to receive disco traffic.
-var debugDisableRawDisco = envknob.Bool("TS_DEBUG_DISABLE_RAW_DISCO")
+var debugDisableRawDisco = envknob.RegisterBool("TS_DEBUG_DISABLE_RAW_DISCO")
 
 // These are our BPF filters that we use for testing packets.
 var (
@@ -125,7 +128,7 @@ var (
 // and BPF filter.
 // https://github.com/tailscale/tailscale/issues/3824
 func (c *Conn) listenRawDisco(family string) (io.Closer, error) {
-	if debugDisableRawDisco {
+	if debugDisableRawDisco() {
 		return nil, errors.New("raw disco listening disabled by debug flag")
 	}
 
@@ -234,12 +237,12 @@ func (c *Conn) receiveDisco(pc net.PacketConn, isIPV6 bool) {
 		if acceptPort == 0 {
 			// This should only typically happen if the receiving address family
 			// was recently disabled.
-			c.logf("[v1] disco raw: dropping packet for port %d as acceptPort=0", dstPort)
+			c.dlogf("[v1] disco raw: dropping packet for port %d as acceptPort=0", dstPort)
 			continue
 		}
 
 		if dstPort != acceptPort {
-			c.logf("[v1] disco raw: dropping packet for port %d", dstPort)
+			c.dlogf("[v1] disco raw: dropping packet for port %d", dstPort)
 			continue
 		}
 
@@ -287,4 +290,31 @@ func setBPF(conn net.PacketConn, filter []bpf.RawInstruction) error {
 		return err
 	}
 	return nil
+}
+
+// trySetSocketBuffer attempts to set SO_SNDBUFFORCE and SO_RECVBUFFORCE which
+// can overcome the limit of net.core.{r,w}mem_max, but require CAP_NET_ADMIN.
+// It falls back to the portable implementation if that fails, which may be
+// silently capped to net.core.{r,w}mem_max.
+func trySetSocketBuffer(pconn nettype.PacketConn, logf logger.Logf) {
+	if c, ok := pconn.(*net.UDPConn); ok {
+		var errRcv, errSnd error
+		rc, err := c.SyscallConn()
+		if err == nil {
+			rc.Control(func(fd uintptr) {
+				errRcv = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUFFORCE, socketBufferSize)
+				if errRcv != nil {
+					logf("magicsock: failed to force-set UDP read buffer size to %d: %v", socketBufferSize, errRcv)
+				}
+				errSnd = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUFFORCE, socketBufferSize)
+				if errSnd != nil {
+					logf("magicsock: failed to force-set UDP write buffer size to %d: %v", socketBufferSize, errSnd)
+				}
+			})
+		}
+
+		if err != nil || errRcv != nil || errSnd != nil {
+			portableTrySetSocketBuffer(pconn, logf)
+		}
+	}
 }

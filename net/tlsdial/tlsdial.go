@@ -32,7 +32,7 @@ var counterFallbackOK int32 // atomic
 // See https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/Key_Log_Format
 var sslKeyLogFile = os.Getenv("SSLKEYLOGFILE")
 
-var debug = envknob.Bool("TS_DEBUG_TLS_DIAL")
+var debug = envknob.RegisterBool("TS_DEBUG_TLS_DIAL")
 
 // Config returns a tls.Config for connecting to a server.
 // If base is non-nil, it's cloned as the base config before
@@ -83,7 +83,7 @@ func Config(host string, base *tls.Config) *tls.Config {
 			opts.Intermediates.AddCert(cert)
 		}
 		_, errSys := cs.PeerCertificates[0].Verify(opts)
-		if debug {
+		if debug() {
 			log.Printf("tlsdial(sys %q): %v", host, errSys)
 		}
 		if errSys == nil {
@@ -94,7 +94,7 @@ func Config(host string, base *tls.Config) *tls.Config {
 		// or broken, fall back to trying LetsEncrypt at least.
 		opts.Roots = bakedInRoots()
 		_, err := cs.PeerCertificates[0].Verify(opts)
-		if debug {
+		if debug() {
 			log.Printf("tlsdial(bake %q): %v", host, err)
 		}
 		if err == nil {
@@ -148,7 +148,7 @@ func SetConfigExpectedCert(c *tls.Config, certDNSName string) {
 			opts.Intermediates.AddCert(cert)
 		}
 		_, errSys := certs[0].Verify(opts)
-		if debug {
+		if debug() {
 			log.Printf("tlsdial(sys %q/%q): %v", c.ServerName, certDNSName, errSys)
 		}
 		if errSys == nil {
@@ -156,7 +156,7 @@ func SetConfigExpectedCert(c *tls.Config, certDNSName string) {
 		}
 		opts.Roots = bakedInRoots()
 		_, err := certs[0].Verify(opts)
-		if debug {
+		if debug() {
 			log.Printf("tlsdial(bake %q/%q): %v", c.ServerName, certDNSName, err)
 		}
 		if err == nil {

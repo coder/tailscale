@@ -18,7 +18,6 @@ import (
 	"expvar"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"math"
 	"math/big"
@@ -43,11 +42,8 @@ import (
 	"tailscale.com/metrics"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
-	"tailscale.com/types/pad32"
 	"tailscale.com/version"
 )
-
-var debug = envknob.Bool("DERP_DEBUG_LOGS")
 
 // verboseDropKeys is the set of destination public keys that should
 // verbosely log whenever DERP drops a packet.
@@ -92,6 +88,8 @@ const (
 	disableFighters
 )
 
+type align64 [0]atomic.Int64 // for side effect of its 64-bit alignment
+
 // Server is a DERP server.
 type Server struct {
 	// WriteTimeout, if non-zero, specifies how long to wait
@@ -106,6 +104,7 @@ type Server struct {
 	limitedLogf logger.Logf
 	metaCert    []byte // the encoded x509 cert to send after LetsEncrypt cert+intermediate
 	dupPolicy   dupPolicy
+	debug       bool
 
 	// Counters:
 	packetsSent, bytesSent       expvar.Int
@@ -113,14 +112,14 @@ type Server struct {
 	packetsRecvByKind            metrics.LabelMap
 	packetsRecvDisco             *expvar.Int
 	packetsRecvOther             *expvar.Int
-	_                            pad32.Four
+	_                            align64
 	packetsDropped               expvar.Int
 	packetsDroppedReason         metrics.LabelMap
 	packetsDroppedReasonCounters []*expvar.Int // indexed by dropReason
 	packetsDroppedType           metrics.LabelMap
 	packetsDroppedTypeDisco      *expvar.Int
 	packetsDroppedTypeOther      *expvar.Int
-	_                            pad32.Four
+	_                            align64
 	packetsForwardedOut          expvar.Int
 	packetsForwardedIn           expvar.Int
 	peerGoneFrames               expvar.Int // number of peer gone frames sent
@@ -138,7 +137,8 @@ type Server struct {
 	multiForwarderCreated        expvar.Int
 	multiForwarderDeleted        expvar.Int
 	removePktForwardOther        expvar.Int
-	avgQueueDuration             *uint64 // In milliseconds; accessed atomically
+	avgQueueDuration             *uint64          // In milliseconds; accessed atomically
+	tcpRtt                       metrics.LabelMap // histogram
 
 	// verifyClients only accepts client connections to the DERP server if the clientKey is a
 	// known peer in the network, as specified by a running tailscaled's client's local api.
@@ -299,6 +299,7 @@ func NewServer(privateKey key.NodePrivate, logf logger.Logf) *Server {
 	runtime.ReadMemStats(&ms)
 
 	s := &Server{
+		debug:                envknob.Bool("DERP_DEBUG_LOGS"),
 		privateKey:           privateKey,
 		publicKey:            privateKey.Public(),
 		logf:                 logf,
@@ -313,6 +314,7 @@ func NewServer(privateKey key.NodePrivate, logf logger.Logf) *Server {
 		watchers:             map[*sclient]bool{},
 		sentTo:               map[key.NodePublic]map[key.NodePublic]int64{},
 		avgQueueDuration:     new(uint64),
+		tcpRtt:               metrics.LabelMap{Label: "le"},
 		keyOfAddr:            map[netip.AddrPort]key.NodePublic{},
 	}
 	s.initMetacert()
@@ -714,6 +716,7 @@ func (c *sclient) run(ctx context.Context) error {
 	var grp errgroup.Group
 	sendCtx, cancelSender := context.WithCancel(ctx)
 	grp.Go(func() error { return c.sendLoop(sendCtx) })
+	grp.Go(func() error { return c.statsLoop(sendCtx) })
 	defer func() {
 		cancelSender()
 		if err := grp.Wait(); err != nil && !c.s.isClosed() {
@@ -758,7 +761,7 @@ func (c *sclient) run(ctx context.Context) error {
 }
 
 func (c *sclient) handleUnknownFrame(ft frameType, fl uint32) error {
-	_, err := io.CopyN(ioutil.Discard, c.br, int64(fl))
+	_, err := io.CopyN(io.Discard, c.br, int64(fl))
 	return err
 }
 
@@ -801,7 +804,7 @@ func (c *sclient) handleFramePing(ft frameType, fl uint32) error {
 		return err
 	}
 	if extra := int64(fl) - int64(len(m)); extra > 0 {
-		_, err = io.CopyN(ioutil.Discard, c.br, extra)
+		_, err = io.CopyN(io.Discard, c.br, extra)
 	}
 	select {
 	case c.sendPongCh <- [8]byte(m):
@@ -980,7 +983,7 @@ func (s *Server) recordDrop(packetBytes []byte, srcKey, dstKey key.NodePublic, r
 		msg := fmt.Sprintf("drop (%s) %s -> %s", srcKey.ShortString(), reason, dstKey.ShortString())
 		s.limitedLogf(msg)
 	}
-	if debug {
+	if s.debug {
 		s.logf("dropping packet reason=%s dst=%s disco=%v", reason, dstKey, disco.LooksLikeDiscoWrapper(packetBytes))
 	}
 }
@@ -1700,6 +1703,7 @@ func (s *Server) ExpVar() expvar.Var {
 	m.Set("average_queue_duration_ms", expvar.Func(func() any {
 		return math.Float64frombits(atomic.LoadUint64(s.avgQueueDuration))
 	}))
+	m.Set("counter_tcp_rtt", &s.tcpRtt)
 	var expvarVersion expvar.String
 	expvarVersion.Set(version.Long)
 	m.Set("version", &expvarVersion)
@@ -1828,7 +1832,7 @@ func (s *Server) ServeDebugTraffic(w http.ResponseWriter, r *http.Request) {
 
 var bufioWriterPool = &sync.Pool{
 	New: func() any {
-		return bufio.NewWriterSize(ioutil.Discard, 2<<10)
+		return bufio.NewWriterSize(io.Discard, 2<<10)
 	},
 }
 
@@ -1861,7 +1865,7 @@ func (w *lazyBufioWriter) Flush() error {
 	}
 	err := w.lbw.Flush()
 
-	w.lbw.Reset(ioutil.Discard)
+	w.lbw.Reset(io.Discard)
 	bufioWriterPool.Put(w.lbw)
 	w.lbw = nil
 

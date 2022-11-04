@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/netip"
@@ -97,7 +96,7 @@ func NewRegionClient(privateKey key.NodePrivate, logf logger.Logf, getRegion fun
 	return c
 }
 
-// NewNetcheckClient returns a Client that's only able to have its DialRegion method called.
+// NewNetcheckClient returns a Client that's only able to have its DialRegionTLS method called.
 // It's used by the netcheck package.
 func NewNetcheckClient(logf logger.Logf) *Client {
 	return &Client{logf: logf}
@@ -203,7 +202,7 @@ func (c *Client) urlString(node *tailcfg.DERPNode) string {
 	return fmt.Sprintf("https://%s/derp", node.HostName)
 }
 
-// AddressFamilySelector decides whethers IPv6 is preferred for
+// AddressFamilySelector decides whether IPv6 is preferred for
 // outbound dials.
 type AddressFamilySelector interface {
 	// PreferIPv6 reports whether IPv4 dials should be slightly
@@ -435,7 +434,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 			return nil, 0, err
 		}
 		if resp.StatusCode != http.StatusSwitchingProtocols {
-			b, _ := ioutil.ReadAll(resp.Body)
+			b, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			return nil, 0, fmt.Errorf("GET failed: %v: %s", err, b)
 		}
@@ -989,7 +988,9 @@ func (c *Client) isClosed() bool {
 // Close closes the client. It will not automatically reconnect after
 // being closed.
 func (c *Client) Close() error {
-	c.cancelCtx() // not in lock, so it can cancel Connect, which holds mu
+	if c.cancelCtx != nil {
+		c.cancelCtx() // not in lock, so it can cancel Connect, which holds mu
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()

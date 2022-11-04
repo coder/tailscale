@@ -15,9 +15,9 @@ import (
 	"expvar"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
+	"os"
 	"reflect"
 	"sync"
 	"testing"
@@ -232,7 +232,7 @@ func TestSendFreeze(t *testing.T) {
 	//	alice --> bob
 	//	alice --> cathy
 	//
-	// Then cathy stops processing messsages.
+	// Then cathy stops processing messages.
 	// That should not interfere with alice talking to bob.
 
 	newClient := func(ctx context.Context, name string, k key.NodePrivate) (c *Client, clientConn nettest.Conn) {
@@ -772,7 +772,7 @@ func TestForwarderRegistration(t *testing.T) {
 	})
 
 	// Now pretend u1 was already connected locally (so clientsMesh[u1] is nil), and then we heard
-	// that they're also connected to a peer of ours. That sholdn't transition the forwarder
+	// that they're also connected to a peer of ours. That shouldn't transition the forwarder
 	// from nil to the new one, not a multiForwarder.
 	s.clients[u1] = singleClient{u1c}
 	s.clientsMesh[u1] = nil
@@ -1240,7 +1240,7 @@ func benchmarkSendRecvSize(b *testing.B, packetSize int) {
 }
 
 func BenchmarkWriteUint32(b *testing.B) {
-	w := bufio.NewWriter(ioutil.Discard)
+	w := bufio.NewWriter(io.Discard)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -1279,9 +1279,9 @@ func waitConnect(t testing.TB, c *Client) {
 }
 
 func TestParseSSOutput(t *testing.T) {
-	contents, err := ioutil.ReadFile("testdata/example_ss.txt")
+	contents, err := os.ReadFile("testdata/example_ss.txt")
 	if err != nil {
-		t.Errorf("ioutil.Readfile(example_ss.txt) failed: %v", err)
+		t.Errorf("os.ReadFile(example_ss.txt) failed: %v", err)
 	}
 	seen := parseSSOutput(string(contents))
 	if len(seen) == 0 {

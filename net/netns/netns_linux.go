@@ -3,7 +3,6 @@
 // license that can be found in the LICENSE file.
 
 //go:build linux && !android
-// +build linux,!android
 
 package netns
 
@@ -63,12 +62,12 @@ func socketMarkWorks() bool {
 	return true
 }
 
-var forceBindToDevice = envknob.Bool("TS_FORCE_LINUX_BIND_TO_DEVICE")
+var forceBindToDevice = envknob.RegisterBool("TS_FORCE_LINUX_BIND_TO_DEVICE")
 
 // UseSocketMark reports whether SO_MARK is in use.
 // If it doesn't, we have to use SO_BINDTODEVICE on our sockets instead.
 func UseSocketMark() bool {
-	if forceBindToDevice {
+	if forceBindToDevice() {
 		return false
 	}
 	socketMarkWorksOnce.Do(func() {

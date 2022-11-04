@@ -3,7 +3,6 @@
 // license that can be found in the LICENSE file.
 
 //go:build go1.19
-// +build go1.19
 
 package tailscale
 
@@ -15,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -37,6 +35,7 @@ import (
 	"tailscale.com/safesocket"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tka"
+	"tailscale.com/types/key"
 )
 
 // defaultLocalClient is the default LocalClient when using the legacy
@@ -137,7 +136,7 @@ func (lc *LocalClient) doLocalRequestNiceError(req *http.Request) (*http.Respons
 			onVersionMismatch(ipn.IPCVersion(), server)
 		}
 		if res.StatusCode == 403 {
-			all, _ := ioutil.ReadAll(res.Body)
+			all, _ := io.ReadAll(res.Body)
 			return nil, &AccessDeniedError{errors.New(errorMessageFromBody(all))}
 		}
 		return res, nil
@@ -207,7 +206,7 @@ func (lc *LocalClient) send(ctx context.Context, method, path string, wantStatus
 		return nil, err
 	}
 	defer res.Body.Close()
-	slurp, err := ioutil.ReadAll(res.Body)
+	slurp, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -268,13 +267,75 @@ func (lc *LocalClient) Profile(ctx context.Context, pprofType string, sec int) (
 	return lc.get200(ctx, fmt.Sprintf("/localapi/v0/profile?name=%s&seconds=%v", url.QueryEscape(pprofType), secArg))
 }
 
-// BugReport logs and returns a log marker that can be shared by the user with support.
-func (lc *LocalClient) BugReport(ctx context.Context, note string) (string, error) {
-	body, err := lc.send(ctx, "POST", "/localapi/v0/bugreport?note="+url.QueryEscape(note), 200, nil)
+// BugReportOpts contains options to pass to the Tailscale daemon when
+// generating a bug report.
+type BugReportOpts struct {
+	// Note contains an optional user-provided note to add to the logs.
+	Note string
+
+	// Diagnose specifies whether to print additional diagnostic information to
+	// the logs when generating this bugreport.
+	Diagnose bool
+
+	// Record specifies, if non-nil, whether to perform a bugreport
+	// "recording"–generating an initial log marker, then waiting for
+	// this channel to be closed before finishing the request, which
+	// generates another log marker.
+	Record <-chan struct{}
+}
+
+// BugReportWithOpts logs and returns a log marker that can be shared by the
+// user with support.
+//
+// The opts type specifies options to pass to the Tailscale daemon when
+// generating this bug report.
+func (lc *LocalClient) BugReportWithOpts(ctx context.Context, opts BugReportOpts) (string, error) {
+	qparams := make(url.Values)
+	if opts.Note != "" {
+		qparams.Set("note", opts.Note)
+	}
+	if opts.Diagnose {
+		qparams.Set("diagnose", "true")
+	}
+	if opts.Record != nil {
+		qparams.Set("record", "true")
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var requestBody io.Reader
+	if opts.Record != nil {
+		pr, pw := io.Pipe()
+		requestBody = pr
+
+		// This goroutine waits for the 'Record' channel to be closed,
+		// and then closes the write end of our pipe to unblock the
+		// reader.
+		go func() {
+			defer pw.Close()
+			select {
+			case <-opts.Record:
+			case <-ctx.Done():
+			}
+		}()
+	}
+
+	// lc.send might block if opts.Record != nil; see above.
+	uri := fmt.Sprintf("/localapi/v0/bugreport?%s", qparams.Encode())
+	body, err := lc.send(ctx, "POST", uri, 200, requestBody)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(body)), nil
+}
+
+// BugReport logs and returns a log marker that can be shared by the user with support.
+//
+// This is the same as calling BugReportWithOpts and only specifying the Note
+// field.
+func (lc *LocalClient) BugReport(ctx context.Context, note string) (string, error) {
+	return lc.BugReportWithOpts(ctx, BugReportOpts{Note: note})
 }
 
 // DebugAction invokes a debug action, such as "rebind" or "restun".
@@ -283,6 +344,28 @@ func (lc *LocalClient) DebugAction(ctx context.Context, action string) error {
 	body, err := lc.send(ctx, "POST", "/localapi/v0/debug?action="+url.QueryEscape(action), 200, nil)
 	if err != nil {
 		return fmt.Errorf("error %w: %s", err, body)
+	}
+	return nil
+}
+
+// SetComponentDebugLogging sets component's debug logging enabled for
+// the provided duration. If the duration is in the past, the debug logging
+// is disabled.
+func (lc *LocalClient) SetComponentDebugLogging(ctx context.Context, component string, d time.Duration) error {
+	body, err := lc.send(ctx, "POST",
+		fmt.Sprintf("/localapi/v0/component-debug-logging?component=%s&secs=%d",
+			url.QueryEscape(component), int64(d.Seconds())), 200, nil)
+	if err != nil {
+		return fmt.Errorf("error %w: %s", err, body)
+	}
+	var res struct {
+		Error string
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return err
+	}
+	if res.Error != "" {
+		return errors.New(res.Error)
 	}
 	return nil
 }
@@ -365,7 +448,7 @@ func (lc *LocalClient) GetWaitingFile(ctx context.Context, baseName string) (rc 
 		return nil, 0, fmt.Errorf("unexpected chunking")
 	}
 	if res.StatusCode != 200 {
-		body, _ := ioutil.ReadAll(res.Body)
+		body, _ := io.ReadAll(res.Body)
 		res.Body.Close()
 		return nil, 0, fmt.Errorf("HTTP %s: %s", res.Status, body)
 	}
@@ -643,14 +726,14 @@ func (lc *LocalClient) GetCertificate(hi *tls.ClientHelloInfo) (*tls.Certificate
 	return &cert, nil
 }
 
-// ExpandSNIName expands bare label name into the the most likely actual TLS cert name.
+// ExpandSNIName expands bare label name into the most likely actual TLS cert name.
 //
 // Deprecated: use LocalClient.ExpandSNIName.
 func ExpandSNIName(ctx context.Context, name string) (fqdn string, ok bool) {
 	return defaultLocalClient.ExpandSNIName(ctx, name)
 }
 
-// ExpandSNIName expands bare label name into the the most likely actual TLS cert name.
+// ExpandSNIName expands bare label name into the most likely actual TLS cert name.
 func (lc *LocalClient) ExpandSNIName(ctx context.Context, name string) (fqdn string, ok bool) {
 	st, err := lc.StatusWithoutPeers(ctx)
 	if err != nil {
@@ -695,13 +778,16 @@ func (lc *LocalClient) NetworkLockStatus(ctx context.Context) (*ipnstate.Network
 }
 
 // NetworkLockInit initializes the tailnet key authority.
-func (lc *LocalClient) NetworkLockInit(ctx context.Context, keys []tka.Key) (*ipnstate.NetworkLockStatus, error) {
+//
+// TODO(tom): Plumb through disablement secrets.
+func (lc *LocalClient) NetworkLockInit(ctx context.Context, keys []tka.Key, disablementValues [][]byte) (*ipnstate.NetworkLockStatus, error) {
 	var b bytes.Buffer
 	type initRequest struct {
-		Keys []tka.Key
+		Keys              []tka.Key
+		DisablementValues [][]byte
 	}
 
-	if err := json.NewEncoder(&b).Encode(initRequest{Keys: keys}); err != nil {
+	if err := json.NewEncoder(&b).Encode(initRequest{Keys: keys, DisablementValues: disablementValues}); err != nil {
 		return nil, err
 	}
 
@@ -715,6 +801,49 @@ func (lc *LocalClient) NetworkLockInit(ctx context.Context, keys []tka.Key) (*ip
 		return nil, err
 	}
 	return pr, nil
+}
+
+// NetworkLockModify adds and/or removes key(s) to the tailnet key authority.
+func (lc *LocalClient) NetworkLockModify(ctx context.Context, addKeys, removeKeys []tka.Key) (*ipnstate.NetworkLockStatus, error) {
+	var b bytes.Buffer
+	type modifyRequest struct {
+		AddKeys    []tka.Key
+		RemoveKeys []tka.Key
+	}
+
+	if err := json.NewEncoder(&b).Encode(modifyRequest{AddKeys: addKeys, RemoveKeys: removeKeys}); err != nil {
+		return nil, err
+	}
+
+	body, err := lc.send(ctx, "POST", "/localapi/v0/tka/modify", 200, &b)
+	if err != nil {
+		return nil, fmt.Errorf("error: %w", err)
+	}
+
+	pr := new(ipnstate.NetworkLockStatus)
+	if err := json.Unmarshal(body, pr); err != nil {
+		return nil, err
+	}
+	return pr, nil
+}
+
+// NetworkLockSign signs the specified node-key and transmits that signature to the control plane.
+// rotationPublic, if specified, must be an ed25519 public key.
+func (lc *LocalClient) NetworkLockSign(ctx context.Context, nodeKey key.NodePublic, rotationPublic []byte) error {
+	var b bytes.Buffer
+	type signRequest struct {
+		NodeKey        key.NodePublic
+		RotationPublic []byte
+	}
+
+	if err := json.NewEncoder(&b).Encode(signRequest{NodeKey: nodeKey, RotationPublic: rotationPublic}); err != nil {
+		return err
+	}
+
+	if _, err := lc.send(ctx, "POST", "/localapi/v0/tka/sign", 200, &b); err != nil {
+		return fmt.Errorf("error: %w", err)
+	}
+	return nil
 }
 
 // tailscaledConnectHint gives a little thing about why tailscaled (or

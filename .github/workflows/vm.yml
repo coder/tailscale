@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - '*'
+      - 'release-branch/*'
 
 concurrency:
   group: ${{ github.workflow }}-$${{ github.head_ref || github.run_id }}
@@ -13,7 +14,7 @@ jobs:
   ubuntu2004-LTS-cloud-base:
     runs-on: [ self-hosted, linux, vm ]
 
-    if: "!contains(github.event.head_commit.message, '[ci skip]')"
+    if: "(github.repository == 'tailscale/tailscale') && !contains(github.event.head_commit.message, '[ci skip]')"
 
     steps:
       - name: Set GOPATH

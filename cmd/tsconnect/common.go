@@ -6,7 +6,6 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"os"
@@ -183,12 +182,17 @@ func setupEsbuildWasm(build esbuild.PluginBuild, dev bool) {
 
 func buildWasm(dev bool) ([]byte, error) {
 	start := time.Now()
-	outputFile, err := ioutil.TempFile("", "main.*.wasm")
+	outputFile, err := os.CreateTemp("", "main.*.wasm")
 	if err != nil {
 		return nil, fmt.Errorf("Cannot create main.wasm output file: %w", err)
 	}
 	outputPath := outputFile.Name()
+
 	defer os.Remove(outputPath)
+	// Running defer (*os.File).Close() in defer order before os.Remove
+	// because on some systems like Windows, it is possible for os.Remove
+	// to fail for unclosed files.
+	defer outputFile.Close()
 
 	args := []string{"build", "-tags", "tailscale_go,osusergo,netgo,nethttpomithttp2,omitidna,omitpemdecrypt"}
 	if !dev {
@@ -212,8 +216,39 @@ func buildWasm(dev bool) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("Cannot build main.wasm: %w", err)
 	}
-	log.Printf("Built wasm in %v\n", time.Since(start))
+	log.Printf("Built wasm in %v\n", time.Since(start).Round(time.Millisecond))
+
+	if !dev {
+		err := runWasmOpt(outputPath)
+		if err != nil {
+			return nil, fmt.Errorf("Cannot run wasm-opt: %w", err)
+		}
+	}
+
 	return os.ReadFile(outputPath)
+}
+
+func runWasmOpt(path string) error {
+	start := time.Now()
+	stat, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("Cannot stat %v: %w", path, err)
+	}
+	startSize := stat.Size()
+	cmd := exec.Command("../../tool/wasm-opt", "-Oz", path, "-o", path)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err = cmd.Run()
+	if err != nil {
+		return fmt.Errorf("Cannot run wasm-opt: %w", err)
+	}
+	stat, err = os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("Cannot stat %v: %w", path, err)
+	}
+	endSize := stat.Size()
+	log.Printf("Ran wasm-opt in %v, size dropped by %dK\n", time.Since(start).Round(time.Millisecond), (startSize-endSize)/1024)
+	return nil
 }
 
 // installJSDeps installs the JavaScript dependencies specified by package.json
@@ -252,7 +287,7 @@ func setupEsbuildTailwind(build esbuild.PluginBuild, dev bool) {
 		}
 		cmd := exec.Command(*yarnPath, yarnArgs...)
 		tailwindOutput, err := cmd.Output()
-		log.Printf("Ran tailwind in %v\n", time.Since(start))
+		log.Printf("Ran tailwind in %v\n", time.Since(start).Round(time.Millisecond))
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				log.Printf("Tailwind stderr: %s", exitErr.Stderr)

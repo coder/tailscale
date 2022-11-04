@@ -2,14 +2,13 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// This file contains the code for the incubator process.  Taiscaled
+// This file contains the code for the incubator process.  Tailscaled
 // launches the incubator as the same user as it was launched as.  The
 // incubator then registers a new session with the OS, sets its UID
 // and groups to the specified `--uid`, `--gid` and `--groups`, and
-// then lauches the requested `--cmd`.
+// then launches the requested `--cmd`.
 
 //go:build linux || (darwin && !ios)
-// +build linux darwin,!ios
 
 package tailssh
 
@@ -86,11 +85,9 @@ func (ss *sshSession) newIncubatorCommand() *exec.Cmd {
 		// TODO(maisem): this doesn't work with sftp
 		return exec.CommandContext(ss.ctx, name, args...)
 	}
-	ss.conn.mu.Lock()
 	lu := ss.conn.localUser
 	ci := ss.conn.info
 	gids := strings.Join(ss.conn.userGroupIDs, ",")
-	ss.conn.mu.Unlock()
 	remoteUser := ci.uprof.LoginName
 	if len(ci.node.Tags) > 0 {
 		remoteUser = strings.Join(ci.node.Tags, ",")
@@ -285,7 +282,16 @@ func (ss *sshSession) launchProcess() error {
 	ss.cmd = ss.newIncubatorCommand()
 
 	cmd := ss.cmd
-	cmd.Dir = ss.conn.localUser.HomeDir
+	homeDir := ss.conn.localUser.HomeDir
+	if _, err := os.Stat(homeDir); err == nil {
+		cmd.Dir = homeDir
+	} else if os.IsNotExist(err) {
+		// If the home directory doesn't exist, we can't chdir to it.
+		// Instead, we'll chdir to the root directory.
+		cmd.Dir = "/"
+	} else {
+		return err
+	}
 	cmd.Env = append(cmd.Env, envForUser(ss.conn.localUser)...)
 	for _, kv := range ss.Environ() {
 		if acceptEnvPair(kv) {

@@ -16,7 +16,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -71,11 +70,24 @@ func getLogTarget() string {
 	return getLogTargetOnce.v
 }
 
+// LogURL is the base URL for the configured logtail server, or the default.
+// It is guaranteed to not terminate with any forward slashes.
+func LogURL() string {
+	if v := getLogTarget(); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	return "https://" + logtail.DefaultHost
+}
+
 // LogHost returns the hostname only (without port) of the configured
 // logtail server, or the default.
+//
+// Deprecated: Use LogURL instead.
 func LogHost() string {
 	if v := getLogTarget(); v != "" {
-		return v
+		if u, err := url.Parse(v); err == nil {
+			return u.Hostname()
+		}
 	}
 	return logtail.DefaultHost
 }
@@ -248,7 +260,7 @@ func logsDir(logf logger.Logf) string {
 	// No idea where to put stuff. Try to create a temp dir. It'll
 	// mean we might lose some logs and rotate through log IDs, but
 	// it's something.
-	tmp, err := ioutil.TempDir("", "tailscaled-log-*")
+	tmp, err := os.MkdirTemp("", "tailscaled-log-*")
 	if err != nil {
 		panic("no safe place found to store log state")
 	}
@@ -259,7 +271,7 @@ func logsDir(logf logger.Logf) string {
 // runningUnderSystemd reports whether we're running under systemd.
 func runningUnderSystemd() bool {
 	if runtime.GOOS == "linux" && os.Getppid() == 1 {
-		slurp, _ := ioutil.ReadFile("/proc/1/stat")
+		slurp, _ := os.ReadFile("/proc/1/stat")
 		return bytes.HasPrefix(slurp, []byte("1 (systemd) "))
 	}
 	return false
@@ -597,7 +609,7 @@ func NewWithConfigPath(collection, dir, cmdName string) *Policy {
 		}
 	}
 
-	log.SetFlags(0) // other logflags are set on console, not here
+	log.SetFlags(0) // other log flags are set on console, not here
 	log.SetOutput(logOutput)
 
 	log.Printf("Program starting: v%v, Go %v: %#v",

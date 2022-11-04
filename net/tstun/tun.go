@@ -3,7 +3,6 @@
 // license that can be found in the LICENSE file.
 
 //go:build !js
-// +build !js
 
 // Package tun creates a tuntap device, working around OS-specific
 // quirks if necessary.
@@ -19,14 +18,6 @@ import (
 	"tailscale.com/envknob"
 	"tailscale.com/types/logger"
 )
-
-var tunMTU = DefaultMTU
-
-func init() {
-	if mtu, ok := envknob.LookupInt("TS_DEBUG_MTU"); ok {
-		tunMTU = mtu
-	}
-}
 
 // createTAP is non-nil on Linux.
 var createTAP func(tapName, bridgeName string) (tun.Device, error)
@@ -52,6 +43,10 @@ func New(logf logger.Logf, tunName string) (tun.Device, string, error) {
 		}
 		dev, err = createTAP(tapName, bridgeName)
 	} else {
+		tunMTU := DefaultMTU
+		if mtu, ok := envknob.LookupInt("TS_DEBUG_MTU"); ok {
+			tunMTU = mtu
+		}
 		dev, err = tun.CreateTUN(tunName, tunMTU)
 	}
 	if err != nil {

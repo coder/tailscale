@@ -3,7 +3,6 @@
 // license that can be found in the LICENSE file.
 
 //go:build go1.19
-// +build go1.19
 
 package main // import "tailscale.com/cmd/tailscaled"
 
@@ -23,6 +22,7 @@ package main // import "tailscale.com/cmd/tailscaled"
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/netip"
@@ -192,11 +192,14 @@ func beWindowsSubprocess() bool {
 	}
 	logid := os.Args[2]
 
-	// Remove the date/time prefix; the logtail + file logggers add it.
+	// Remove the date/time prefix; the logtail + file loggers add it.
 	log.SetFlags(0)
 
 	log.Printf("Program starting: v%v: %#v", version.Long, os.Args)
 	log.Printf("subproc mode: logid=%v", logid)
+	if err := envknob.ApplyDiskConfigError(); err != nil {
+		log.Printf("Error reading environment config: %v", err)
+	}
 
 	go func() {
 		b := make([]byte, 16)
@@ -262,11 +265,17 @@ func startIPNServer(ctx context.Context, logid string) error {
 	if err != nil {
 		return fmt.Errorf("monitor: %w", err)
 	}
-	dialer := new(tsdial.Dialer)
+	dialer := &tsdial.Dialer{Logf: logf}
 
 	getEngineRaw := func() (wgengine.Engine, *netstack.Impl, error) {
 		dev, devName, err := tstun.New(logf, "Tailscale")
 		if err != nil {
+			if errors.Is(err, windows.ERROR_DEVICE_NOT_AVAILABLE) {
+				// Wintun is not installing correctly. Dump the state of NetSetupSvc
+				// (which is a user-mode service that must be active for network devices
+				// to install) and its dependencies to the log.
+				winutil.LogSvcState(logf, "NetSetupSvc")
+			}
 			return nil, nil, fmt.Errorf("TUN: %w", err)
 		}
 		r, err := router.New(logf, dev, nil)
@@ -274,7 +283,7 @@ func startIPNServer(ctx context.Context, logid string) error {
 			dev.Close()
 			return nil, nil, fmt.Errorf("router: %w", err)
 		}
-		if wrapNetstack {
+		if shouldWrapNetstack() {
 			r = netstack.NewSubnetRouterWrapper(r)
 		}
 		d, err := dns.NewOSConfigurator(logf, devName)
@@ -301,7 +310,7 @@ func startIPNServer(ctx context.Context, logid string) error {
 			return nil, nil, fmt.Errorf("newNetstack: %w", err)
 		}
 		ns.ProcessLocalIPs = false
-		ns.ProcessSubnets = wrapNetstack
+		ns.ProcessSubnets = shouldWrapNetstack()
 		if err := ns.Start(); err != nil {
 			return nil, nil, fmt.Errorf("failed to start netstack: %w", err)
 		}

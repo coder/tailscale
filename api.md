@@ -355,6 +355,13 @@ GET /api/v2/tailnet/alice@gmail.com/...
 curl https://api.tailscale.com/api/v2/tailnet/alice@gmail.com/...
 ```
 
+Alternatively, you can specify the value "-" to refer to the default tailnet of
+the authenticated user making the API call.  For example:
+```
+GET /api/v2/tailnet/-/...
+curl https://api.tailscale.com/api/v2/tailnet/-/...
+```
+
 Tailnets are a top-level resource. ACL is an example of a resource that is tied to a top-level tailnet.
 
 For more information on Tailscale networks/tailnets, click [here](https://tailscale.com/kb/1064/invite-team-members).
@@ -813,6 +820,10 @@ Supply the tailnet in the path.
 
 ###### POST Body
 `capabilities` - A mapping of resources to permissible actions.
+
+`expirySeconds` - (Optional) How long the key is valid for in seconds.
+                  Defaults to 90d.
+
 ```
 {
   "capabilities": {
@@ -826,7 +837,8 @@ Supply the tailnet in the path.
         ]
       }
     }
-  }
+  },
+  "expirySeconds": 1440
 }
 ```
 

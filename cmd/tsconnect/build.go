@@ -7,7 +7,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"path"
@@ -47,7 +46,7 @@ func runBuild() {
 	if err != nil {
 		log.Fatalf("Cannot fix esbuild metadata paths: %v", err)
 	}
-	if err := ioutil.WriteFile(path.Join(*distDir, "/esbuild-metadata.json"), metadataBytes, 0666); err != nil {
+	if err := os.WriteFile(path.Join(*distDir, "/esbuild-metadata.json"), metadataBytes, 0666); err != nil {
 		log.Fatalf("Cannot write metadata: %v", err)
 	}
 
@@ -58,7 +57,7 @@ func runBuild() {
 
 // fixEsbuildMetadataPaths re-keys the esbuild metadata file to use paths
 // relative to the dist directory (it normally uses paths relative to the cwd,
-// which are akward if we're running with a different cwd at serving time).
+// which are awkward if we're running with a different cwd at serving time).
 func fixEsbuildMetadataPaths(metadataStr string) ([]byte, error) {
 	var metadata EsbuildMetadata
 	if err := json.Unmarshal([]byte(metadataStr), &metadata); err != nil {

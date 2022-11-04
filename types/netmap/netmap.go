@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"tailscale.com/tailcfg"
+	"tailscale.com/tka"
 	"tailscale.com/types/key"
 	"tailscale.com/wgengine/filter"
 )
@@ -61,12 +62,24 @@ type NetworkMap struct {
 	// check problems.
 	ControlHealth []string
 
+	// TKAEnabled indicates whether the tailnet key authority should be
+	// enabled, from the perspective of the control plane.
+	TKAEnabled bool
+	// TKAHead indicates the control plane's understanding of 'head' (the
+	// hash of the latest update message to tick through TKA).
+	TKAHead tka.AUMHash
+
 	// ACLs
 
 	User tailcfg.UserID
 
 	// Domain is the current Tailnet name.
 	Domain string
+
+	// DomainAuditLogID is an audit log ID provided by control and
+	// only populated if the domain opts into data-plane audit logging.
+	// If this is empty, then data-plane audit logging is disabled.
+	DomainAuditLogID string
 
 	UserProfiles map[tailcfg.UserID]tailcfg.UserProfile
 }

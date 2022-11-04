@@ -35,7 +35,7 @@ type mapSession struct {
 	machinePubKey          key.MachinePublic
 	keepSharerAndUserSplit bool // see Options.KeepSharerAndUserSplit
 
-	// Fields storing state over the the coards of multiple MapResponses.
+	// Fields storing state over the course of multiple MapResponses.
 	lastNode               *tailcfg.Node
 	lastDNSConfig          *tailcfg.DNSConfig
 	lastDERPMap            *tailcfg.DERPMap
@@ -45,9 +45,11 @@ type mapSession struct {
 	collectServices        bool
 	previousPeers          []*tailcfg.Node // for delta-purposes
 	lastDomain             string
+	lastDomainAuditLogID   string
 	lastHealth             []string
 	lastPopBrowserURL      string
 	stickyDebug            tailcfg.Debug // accumulated opt.Bool values
+	lastTKAInfo            *tailcfg.TKAInfo
 
 	// netMapBuilding is non-nil during a netmapForResponse call,
 	// containing the value to be returned, once fully populated.
@@ -112,8 +114,14 @@ func (ms *mapSession) netmapForResponse(resp *tailcfg.MapResponse) *netmap.Netwo
 	if resp.Domain != "" {
 		ms.lastDomain = resp.Domain
 	}
+	if resp.DomainDataPlaneAuditLogID != "" {
+		ms.lastDomainAuditLogID = resp.DomainDataPlaneAuditLogID
+	}
 	if resp.Health != nil {
 		ms.lastHealth = resp.Health
+	}
+	if resp.TKAInfo != nil {
+		ms.lastTKAInfo = resp.TKAInfo
 	}
 
 	debug := resp.Debug
@@ -139,21 +147,30 @@ func (ms *mapSession) netmapForResponse(resp *tailcfg.MapResponse) *netmap.Netwo
 	}
 
 	nm := &netmap.NetworkMap{
-		NodeKey:         ms.privateNodeKey.Public(),
-		PrivateKey:      ms.privateNodeKey,
-		MachineKey:      ms.machinePubKey,
-		Peers:           resp.Peers,
-		UserProfiles:    make(map[tailcfg.UserID]tailcfg.UserProfile),
-		Domain:          ms.lastDomain,
-		DNS:             *ms.lastDNSConfig,
-		PacketFilter:    ms.lastParsedPacketFilter,
-		SSHPolicy:       ms.lastSSHPolicy,
-		CollectServices: ms.collectServices,
-		DERPMap:         ms.lastDERPMap,
-		Debug:           debug,
-		ControlHealth:   ms.lastHealth,
+		NodeKey:          ms.privateNodeKey.Public(),
+		PrivateKey:       ms.privateNodeKey,
+		MachineKey:       ms.machinePubKey,
+		Peers:            resp.Peers,
+		UserProfiles:     make(map[tailcfg.UserID]tailcfg.UserProfile),
+		Domain:           ms.lastDomain,
+		DomainAuditLogID: ms.lastDomainAuditLogID,
+		DNS:              *ms.lastDNSConfig,
+		PacketFilter:     ms.lastParsedPacketFilter,
+		SSHPolicy:        ms.lastSSHPolicy,
+		CollectServices:  ms.collectServices,
+		DERPMap:          ms.lastDERPMap,
+		Debug:            debug,
+		ControlHealth:    ms.lastHealth,
+		TKAEnabled:       ms.lastTKAInfo != nil && !ms.lastTKAInfo.Disabled,
 	}
 	ms.netMapBuilding = nm
+
+	if ms.lastTKAInfo != nil && ms.lastTKAInfo.Head != "" {
+		if err := nm.TKAHead.UnmarshalText([]byte(ms.lastTKAInfo.Head)); err != nil {
+			ms.logf("error unmarshalling TKAHead: %v", err)
+			nm.TKAEnabled = false
+		}
+	}
 
 	if resp.Node != nil {
 		ms.lastNode = resp.Node
@@ -190,7 +207,7 @@ func (ms *mapSession) netmapForResponse(resp *tailcfg.MapResponse) *netmap.Netwo
 		}
 		ms.addUserProfile(peer.User)
 	}
-	if DevKnob.ForceProxyDNS {
+	if DevKnob.ForceProxyDNS() {
 		nm.DNS.Proxied = true
 	}
 	ms.netMapBuilding = nil
@@ -356,13 +373,13 @@ func cloneNodes(v1 []*tailcfg.Node) []*tailcfg.Node {
 	return v2
 }
 
-var debugSelfIPv6Only = envknob.Bool("TS_DEBUG_SELF_V6_ONLY")
+var debugSelfIPv6Only = envknob.RegisterBool("TS_DEBUG_SELF_V6_ONLY")
 
 func filterSelfAddresses(in []netip.Prefix) (ret []netip.Prefix) {
 	switch {
 	default:
 		return in
-	case debugSelfIPv6Only:
+	case debugSelfIPv6Only():
 		for _, a := range in {
 			if a.Addr().Is6() {
 				ret = append(ret, a)

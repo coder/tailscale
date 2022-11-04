@@ -3,14 +3,12 @@
 // license that can be found in the LICENSE file.
 
 //go:build ignore
-// +build ignore
 
 package main
 
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -42,7 +40,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := ioutil.WriteFile("dns-fallback-servers.json", out, 0644); err != nil {
+	if err := os.WriteFile("dns-fallback-servers.json", out, 0644); err != nil {
 		log.Fatal(err)
 	}
 }

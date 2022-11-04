@@ -6,6 +6,7 @@ package wgengine
 
 import (
 	"bufio"
+	"context"
 	crand "crypto/rand"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/exp/maps"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
 	"tailscale.com/control/controlclient"
@@ -44,10 +46,10 @@ import (
 	"tailscale.com/util/clientmetric"
 	"tailscale.com/util/deephash"
 	"tailscale.com/util/mak"
-	"tailscale.com/version"
 	"tailscale.com/wgengine/filter"
 	"tailscale.com/wgengine/magicsock"
 	"tailscale.com/wgengine/monitor"
+	"tailscale.com/wgengine/netlog"
 	"tailscale.com/wgengine/router"
 	"tailscale.com/wgengine/wgcfg"
 	"tailscale.com/wgengine/wgint"
@@ -83,6 +85,10 @@ const (
 // statusPollInterval is how often we ask wireguard-go for its engine
 // status (as long as there's activity). See docs on its use below.
 const statusPollInterval = 1 * time.Minute
+
+// networkLoggerUploadTimeout is the maximum timeout to wait when
+// shutting down the network logger as it uploads the last network log messages.
+const networkLoggerUploadTimeout = 5 * time.Second
 
 type userspaceEngine struct {
 	logf              logger.Logf
@@ -144,6 +150,9 @@ type userspaceEngine struct {
 	// echo responses. The map key is a random uint32 that is the little endian
 	// value of the ICMP identifer and sequence number concatenated.
 	icmpEchoResponseCallback map[uint32]func()
+
+	// networkLogger logs statistics about network connections.
+	networkLogger netlog.Logger
 
 	// Lock ordering: magicsock.Conn.mu, wgLock, then mu.
 }
@@ -283,7 +292,7 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		conf.DNS = d
 	}
 	if conf.Dialer == nil {
-		conf.Dialer = new(tsdial.Dialer)
+		conf.Dialer = &tsdial.Dialer{Logf: logf}
 	}
 
 	var tsTUNDev *tstun.Wrapper
@@ -535,28 +544,27 @@ func (e *userspaceEngine) pollResolver() {
 	}
 }
 
-var debugTrimWireguard = envknob.OptBool("TS_DEBUG_TRIM_WIREGUARD")
+var debugTrimWireguard = envknob.RegisterOptBool("TS_DEBUG_TRIM_WIREGUARD")
 
-// forceFullWireguardConfig reports whether we should give wireguard
-// our full network map, even for inactive peers
+// forceFullWireguardConfig reports whether we should give wireguard our full
+// network map, even for inactive peers.
 //
-// TODO(bradfitz): remove this after our 1.0 launch; we don't want to
-// enable wireguard config trimming quite yet because it just landed
-// and we haven't got enough time testing it.
+// TODO(bradfitz): remove this at some point. We had a TODO to do it before 1.0
+// but it's still there as of 1.30. Really we should not do this wireguard lazy
+// peer config at all and just fix wireguard-go to not have so much extra memory
+// usage per peer. That would simplify a lot of Tailscale code. OTOH, we have 50
+// MB of memory on iOS now instead of 15 MB, so the other option is to just give
+// up on lazy wireguard config and blow the memory and hope for the best on iOS.
+// That's sad too. Or we get rid of these knobs (lazy wireguard config has been
+// stable!) but I'm worried that a future regression would be easier to debug
+// with these knobs in place.
 func forceFullWireguardConfig(numPeers int) bool {
-	// Did the user explicitly enable trimmming via the environment variable knob?
-	if b, ok := debugTrimWireguard.Get(); ok {
+	// Did the user explicitly enable trimming via the environment variable knob?
+	if b, ok := debugTrimWireguard().Get(); ok {
 		return !b
 	}
 	if opt := controlclient.TrimWGConfig(); opt != "" {
 		return !opt.EqualBool(true)
-	}
-
-	// On iOS with large networks, it's critical, so turn on trimming.
-	// Otherwise we run out of memory from wireguard-go goroutine stacks+buffers.
-	// This will be the default later for all platforms and network sizes.
-	if numPeers > 50 && version.OS() == "iOS" {
-		return false
 	}
 	return false
 }
@@ -564,7 +572,7 @@ func forceFullWireguardConfig(numPeers int) bool {
 // isTrimmablePeer reports whether p is a peer that we can trim out of the
 // network map.
 //
-// For implementation simplificy, we can only trim peers that have
+// For implementation simplicity, we can only trim peers that have
 // only non-subnet AllowedIPs (an IPv4 /32 or IPv6 /128), which is the
 // common case for most peers. Subnet router nodes will just always be
 // created in the wireguard-go config.
@@ -666,14 +674,20 @@ func (e *userspaceEngine) maybeReconfigWireguardLocked(discoChanged map[key.Node
 	activeCutoff := e.timeNow().Add(-lazyPeerIdleThreshold)
 
 	// Not all peers can be trimmed from the network map (see
-	// isTrimmablePeer).  For those are are trimmable, keep track of
-	// their NodeKey and Tailscale IPs.  These are the ones we'll need
+	// isTrimmablePeer). For those that are trimmable, keep track of
+	// their NodeKey and Tailscale IPs. These are the ones we'll need
 	// to install tracking hooks for to watch their send/receive
 	// activity.
 	trackNodes := make([]key.NodePublic, 0, len(full.Peers))
 	trackIPs := make([]netip.Addr, 0, len(full.Peers))
 
-	trimmedNodes := map[key.NodePublic]bool{} // TODO: don't re-alloc this map each time
+	// Don't re-alloc the map; the Go compiler optimizes map clears as of
+	// Go 1.11, so we can re-use the existing + allocated map.
+	if e.trimmedNodes != nil {
+		maps.Clear(e.trimmedNodes)
+	} else {
+		e.trimmedNodes = make(map[key.NodePublic]bool)
+	}
 
 	needRemoveStep := false
 	for i := range full.Peers {
@@ -698,7 +712,7 @@ func (e *userspaceEngine) maybeReconfigWireguardLocked(discoChanged map[key.Node
 				needRemoveStep = true
 			}
 		} else {
-			trimmedNodes[nk] = true
+			e.trimmedNodes[nk] = true
 		}
 	}
 	e.lastNMinPeers = len(min.Peers)
@@ -708,11 +722,9 @@ func (e *userspaceEngine) maybeReconfigWireguardLocked(discoChanged map[key.Node
 		TrimmedNodes map[key.NodePublic]bool
 		TrackNodes   []key.NodePublic
 		TrackIPs     []netip.Addr
-	}{&min, trimmedNodes, trackNodes, trackIPs}); !changed {
+	}{&min, e.trimmedNodes, trackNodes, trackIPs}); !changed {
 		return nil
 	}
-
-	e.trimmedNodes = trimmedNodes
 
 	e.updateActivityMapsLocked(trackNodes, trackIPs)
 
@@ -855,6 +867,9 @@ func (e *userspaceEngine) Reconfig(cfg *wgcfg.Config, routerCfg *router.Config, 
 	isSubnetRouter := false
 	if e.birdClient != nil && nm != nil && nm.SelfNode != nil {
 		isSubnetRouter = hasOverlap(nm.SelfNode.PrimaryRoutes, nm.Hostinfo.RoutableIPs)
+		e.logf("[v1] Reconfig: hasOverlap(%v, %v) = %v; isSubnetRouter=%v lastIsSubnetRouter=%v",
+			nm.SelfNode.PrimaryRoutes, nm.Hostinfo.RoutableIPs,
+			isSubnetRouter, isSubnetRouter, e.lastIsSubnetRouter)
 	}
 	isSubnetRouterChanged := isSubnetRouter != e.lastIsSubnetRouter
 
@@ -865,6 +880,15 @@ func (e *userspaceEngine) Reconfig(cfg *wgcfg.Config, routerCfg *router.Config, 
 	}{routerCfg, dnsCfg})
 	if !engineChanged && !routerChanged && listenPort == e.magicConn.LocalPort() && !isSubnetRouterChanged {
 		return ErrNoChanges
+	}
+	newLogIDs := cfg.NetworkLogging
+	oldLogIDs := e.lastCfgFull.NetworkLogging
+	netLogIDsNowValid := !newLogIDs.NodeID.IsZero() && !newLogIDs.DomainID.IsZero()
+	netLogIDsWasValid := !oldLogIDs.NodeID.IsZero() && !oldLogIDs.DomainID.IsZero()
+	netLogIDsChanged := netLogIDsNowValid && netLogIDsWasValid && newLogIDs != oldLogIDs
+	netLogRunning := netLogIDsNowValid && !routerCfg.Equal(&router.Config{})
+	if envknob.NoLogsNoSupport() {
+		netLogRunning = false
 	}
 
 	// TODO(bradfitz,danderson): maybe delete this isDNSIPOverTailscale
@@ -915,8 +939,32 @@ func (e *userspaceEngine) Reconfig(cfg *wgcfg.Config, routerCfg *router.Config, 
 		return err
 	}
 
+	// Shutdown the network logger because the IDs changed.
+	// Let it be started back up by subsequent logic.
+	if netLogIDsChanged && e.networkLogger.Running() {
+		e.logf("wgengine: Reconfig: shutting down network logger")
+		ctx, cancel := context.WithTimeout(context.Background(), networkLoggerUploadTimeout)
+		defer cancel()
+		if err := e.networkLogger.Shutdown(ctx); err != nil {
+			e.logf("wgengine: Reconfig: error shutting down network logger: %v", err)
+		}
+	}
+
+	// Startup the network logger.
+	// Do this before configuring the router so that we capture initial packets.
+	if netLogRunning && !e.networkLogger.Running() {
+		nid := cfg.NetworkLogging.NodeID
+		tid := cfg.NetworkLogging.DomainID
+		e.logf("wgengine: Reconfig: starting up network logger (node:%s tailnet:%s)", nid.Public(), tid.Public())
+		if err := e.networkLogger.Startup(cfg.NodeID, nid, tid, e.tundev, e.magicConn); err != nil {
+			e.logf("wgengine: Reconfig: error starting up network logger: %v", err)
+		}
+		e.networkLogger.ReconfigRoutes(routerCfg)
+	}
+
 	if routerChanged {
 		e.logf("wgengine: Reconfig: configuring router")
+		e.networkLogger.ReconfigRoutes(routerCfg)
 		err := e.router.Set(routerCfg)
 		health.SetRouterHealth(err)
 		if err != nil {
@@ -930,6 +978,18 @@ func (e *userspaceEngine) Reconfig(cfg *wgcfg.Config, routerCfg *router.Config, 
 		health.SetDNSHealth(err)
 		if err != nil {
 			return err
+		}
+	}
+
+	// Shutdown the network logger.
+	// Do this after configuring the router so that we capture final packets.
+	// This attempts to flush out any log messages and may block.
+	if !netLogRunning && e.networkLogger.Running() {
+		e.logf("wgengine: Reconfig: shutting down network logger")
+		ctx, cancel := context.WithTimeout(context.Background(), networkLoggerUploadTimeout)
+		defer cancel()
+		if err := e.networkLogger.Shutdown(ctx); err != nil {
+			e.logf("wgengine: Reconfig: error shutting down network logger: %v", err)
 		}
 	}
 
@@ -1086,6 +1146,12 @@ func (e *userspaceEngine) Close() {
 		e.birdClient.Close()
 	}
 	close(e.waitCh)
+
+	ctx, cancel := context.WithTimeout(context.Background(), networkLoggerUploadTimeout)
+	defer cancel()
+	if err := e.networkLogger.Shutdown(ctx); err != nil {
+		e.logf("wgengine: Close: error shutting down network logger: %v", err)
+	}
 }
 
 func (e *userspaceEngine) Wait() {
@@ -1125,15 +1191,18 @@ func (e *userspaceEngine) linkChange(changed bool, cur *interfaces.State) {
 	// suspend/resume or whenever NetworkManager is started, it
 	// nukes all systemd-resolved configs. So reapply our DNS
 	// config on major link change.
-	if (runtime.GOOS == "linux" || runtime.GOOS == "android") && changed {
-		e.wgLock.Lock()
-		dnsCfg := e.lastDNSConfig
-		e.wgLock.Unlock()
-		if dnsCfg != nil {
-			if err := e.dns.Set(*dnsCfg); err != nil {
-				e.logf("wgengine: error setting DNS config after major link change: %v", err)
-			} else {
-				e.logf("wgengine: set DNS config again after major link change")
+	if changed {
+		switch runtime.GOOS {
+		case "linux", "android", "ios", "darwin":
+			e.wgLock.Lock()
+			dnsCfg := e.lastDNSConfig
+			e.wgLock.Unlock()
+			if dnsCfg != nil {
+				if err := e.dns.Set(*dnsCfg); err != nil {
+					e.logf("wgengine: error setting DNS config after major link change: %v", err)
+				} else {
+					e.logf("wgengine: set DNS config again after major link change")
+				}
 			}
 		}
 	}

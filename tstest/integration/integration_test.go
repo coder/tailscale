@@ -14,7 +14,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -653,7 +652,7 @@ func newTestNode(t *testing.T, env *testEnv) *testNode {
 func (n *testNode) diskPrefs() *ipn.Prefs {
 	t := n.env.t
 	t.Helper()
-	if _, err := ioutil.ReadFile(n.stateFile); err != nil {
+	if _, err := os.ReadFile(n.stateFile); err != nil {
 		t.Fatalf("reading prefs: %v", err)
 	}
 	fs, err := store.NewFileStore(nil, n.stateFile)
@@ -768,7 +767,7 @@ func (op *nodeOutputParser) parseLines() {
 	if len(buf) == 0 {
 		op.buf.Reset()
 	} else {
-		io.CopyN(ioutil.Discard, &op.buf, int64(op.buf.Len()-len(buf)))
+		io.CopyN(io.Discard, &op.buf, int64(op.buf.Len()-len(buf)))
 	}
 }
 
@@ -811,6 +810,7 @@ func (n *testNode) StartDaemonAsIPNGOOS(ipnGOOS string) *Daemon {
 		"HTTPS_PROXY="+n.env.TrafficTrapServer.URL,
 		"TS_DEBUG_TAILSCALED_IPN_GOOS="+ipnGOOS,
 		"TS_LOGS_DIR="+t.TempDir(),
+		"TS_NETCHECK_GENERATE_204_URL="+n.env.ControlServer.URL+"/generate_204",
 	)
 	cmd.Stderr = &nodeOutputParser{n: n}
 	if *verboseTailscaled {

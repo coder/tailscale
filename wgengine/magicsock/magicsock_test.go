@@ -12,7 +12,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"math/rand"
 	"net"
 	"net/http"
@@ -28,6 +28,7 @@ import (
 	"unsafe"
 
 	"go4.org/mem"
+	"golang.org/x/exp/maps"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun/tuntest"
 	"tailscale.com/derp"
@@ -42,6 +43,7 @@ import (
 	"tailscale.com/tstest/natlab"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
+	"tailscale.com/types/netlogtype"
 	"tailscale.com/types/netmap"
 	"tailscale.com/types/nettype"
 	"tailscale.com/util/cibuild"
@@ -1093,17 +1095,45 @@ func testTwoDevicePing(t *testing.T, d *devices) {
 		}
 	}
 
+	m1.conn.SetStatisticsEnabled(true)
+	m2.conn.SetStatisticsEnabled(true)
+
+	checkStats := func(t *testing.T, m *magicStack, wantConns []netlogtype.Connection) {
+		stats := m.conn.ExtractStatistics()
+		for _, conn := range wantConns {
+			if _, ok := stats[conn]; ok {
+				return
+			}
+		}
+		t.Helper()
+		t.Errorf("missing any connection to %s from %s", wantConns, maps.Keys(stats))
+	}
+
+	addrPort := netip.MustParseAddrPort
+	m1Conns := []netlogtype.Connection{
+		{Src: addrPort("1.0.0.2:0"), Dst: m2.conn.pconn4.LocalAddr().AddrPort()},
+		{Src: addrPort("1.0.0.2:0"), Dst: addrPort("127.3.3.40:1")},
+	}
+	m2Conns := []netlogtype.Connection{
+		{Src: addrPort("1.0.0.1:0"), Dst: m1.conn.pconn4.LocalAddr().AddrPort()},
+		{Src: addrPort("1.0.0.1:0"), Dst: addrPort("127.3.3.40:1")},
+	}
+
 	outerT := t
 	t.Run("ping 1.0.0.1", func(t *testing.T) {
 		setT(t)
 		defer setT(outerT)
 		ping1(t)
+		checkStats(t, m1, m1Conns)
+		checkStats(t, m2, m2Conns)
 	})
 
 	t.Run("ping 1.0.0.2", func(t *testing.T) {
 		setT(t)
 		defer setT(outerT)
 		ping2(t)
+		checkStats(t, m1, m1Conns)
+		checkStats(t, m2, m2Conns)
 	})
 
 	t.Run("ping 1.0.0.2 via SendPacket", func(t *testing.T) {
@@ -1120,6 +1150,8 @@ func testTwoDevicePing(t *testing.T, d *devices) {
 		if err := sendWithTimeout(msg1to2, in, send); err != nil {
 			t.Error(err)
 		}
+		checkStats(t, m1, m1Conns)
+		checkStats(t, m2, m2Conns)
 	})
 
 	t.Run("no-op dev1 reconfig", func(t *testing.T) {
@@ -1130,6 +1162,8 @@ func testTwoDevicePing(t *testing.T, d *devices) {
 		}
 		ping1(t)
 		ping2(t)
+		checkStats(t, m1, m1Conns)
+		checkStats(t, m2, m2Conns)
 	})
 }
 
@@ -1174,7 +1208,7 @@ func TestDiscoStringLogRace(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		fmt.Fprintf(ioutil.Discard, "%v", de)
+		fmt.Fprintf(io.Discard, "%v", de)
 	}()
 	go func() {
 		defer wg.Done()
@@ -1730,9 +1764,6 @@ func (m *peerMap) validate() error {
 	for pub, pi := range m.byNodeKey {
 		if got := pi.ep.publicKey; got != pub {
 			return fmt.Errorf("byNodeKey[%v].publicKey = %v", pub, got)
-		}
-		if got, want := pi.ep.wgEndpoint, pub.UntypedHexString(); got != want {
-			return fmt.Errorf("byNodeKey[%v].wgEndpoint = %q, want %q", pub, got, want)
 		}
 		if _, ok := seenEps[pi.ep]; ok {
 			return fmt.Errorf("duplicate endpoint present: %v", pi.ep.publicKey)

@@ -265,22 +265,40 @@ func (m *Manager) compileConfig(cfg Config) (rcfg resolver.Config, ocfg OSConfig
 	rcfg.Routes = routes
 	ocfg.Nameservers = []netip.Addr{cfg.serviceIP()}
 
-	if m.os.SupportsSplitDNS() {
-		ocfg.MatchDomains = cfg.matchDomains()
-	} else {
+	var baseCfg *OSConfig // base config; non-nil if/when known
+
+	// Even though Apple devices can do split DNS, they don't provide a way to
+	// selectively answer ExtraRecords, and ignore other DNS traffic. As a
+	// workaround, we read the existing default resolver configuration and use
+	// that as the forwarder for all DNS traffic that quad-100 doesn't handle.
+	const isApple = runtime.GOOS == "darwin" || runtime.GOOS == "ios"
+
+	if isApple || !m.os.SupportsSplitDNS() {
 		// If the OS can't do native split-dns, read out the underlying
 		// resolver config and blend it into our config.
-		bcfg, err := m.os.GetBaseConfig()
-		if err != nil {
+		cfg, err := m.os.GetBaseConfig()
+		if err == nil {
+			baseCfg = &cfg
+		} else if isApple && err == ErrGetBaseConfigNotSupported {
+			// This is currently (2022-10-13) expected on certain iOS and macOS
+			// builds.
+		} else {
 			health.SetDNSOSHealth(err)
 			return resolver.Config{}, OSConfig{}, err
 		}
+	}
+
+	if baseCfg == nil || isApple && len(baseCfg.Nameservers) == 0 {
+		// If there was no base config, or if we're on Apple and the base
+		// config is empty, then we need to fallback to SplitDNS mode.
+		ocfg.MatchDomains = cfg.matchDomains()
+	} else {
 		var defaultRoutes []*dnstype.Resolver
-		for _, ip := range bcfg.Nameservers {
+		for _, ip := range baseCfg.Nameservers {
 			defaultRoutes = append(defaultRoutes, &dnstype.Resolver{Addr: ip.String()})
 		}
 		rcfg.Routes["."] = defaultRoutes
-		ocfg.SearchDomains = append(ocfg.SearchDomains, bcfg.SearchDomains...)
+		ocfg.SearchDomains = append(ocfg.SearchDomains, baseCfg.SearchDomains...)
 	}
 
 	return rcfg, ocfg, nil
@@ -381,7 +399,7 @@ func (m *Manager) NextPacket() ([]byte, error) {
 	return buf, nil
 }
 
-// Query executes a DNS query recieved from the given address. The query is
+// Query executes a DNS query received from the given address. The query is
 // provided in bs as a wire-encoded DNS query without any transport header.
 // This method is called for requests arriving over UDP and TCP.
 func (m *Manager) Query(ctx context.Context, bs []byte, from netip.AddrPort) ([]byte, error) {
@@ -540,7 +558,7 @@ func Cleanup(logf logger.Logf, interfaceName string) {
 		logf("creating dns cleanup: %v", err)
 		return
 	}
-	dns := NewManager(logf, oscfg, nil, new(tsdial.Dialer), nil)
+	dns := NewManager(logf, oscfg, nil, &tsdial.Dialer{Logf: logf}, nil)
 	if err := dns.Down(); err != nil {
 		logf("dns down: %v", err)
 	}

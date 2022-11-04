@@ -106,7 +106,18 @@ func (s1 *Sum) xor(s2 Sum) {
 }
 
 func (s Sum) String() string {
+	// Note: if we change this, keep in sync with AppendTo
 	return hex.EncodeToString(s.sum[:])
+}
+
+// AppendTo appends the string encoding of this sum (as returned by the String
+// method) to the provided byte slice and returns the extended buffer.
+func (s Sum) AppendTo(b []byte) []byte {
+	// TODO: switch to upstream implementation if accepted:
+	// https://github.com/golang/go/issues/53693
+	var lb [len(s.sum) * 2]byte
+	hex.Encode(lb[:], s.sum[:])
+	return append(b, lb[:]...)
 }
 
 var (
@@ -423,7 +434,7 @@ func makeMapHasher(t reflect.Type) typeHasherFunc {
 		mh := mapHasherPool.Get().(*mapHasher)
 		defer mapHasherPool.Put(mh)
 
-		// Hash a map in a sort-free mannar.
+		// Hash a map in a sort-free manner.
 		// It relies on a map being a an unordered set of KV entries.
 		// So long as we hash each KV entry together, we can XOR all the
 		// individual hashes to produce a unique hash for the entire map.

@@ -4,7 +4,7 @@
 
 package tailcfg
 
-//go:generate go run tailscale.com/cmd/viewer --type=User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPRegion,DERPMap,DERPNode,SSHRule,SSHPrincipal --clonefunc
+//go:generate go run tailscale.com/cmd/viewer --type=User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPRegion,DERPMap,DERPNode,SSHRule,SSHPrincipal,ControlDialPlan --clonefunc
 
 import (
 	"bytes"
@@ -79,7 +79,14 @@ type CapabilityVersion int
 //   - 40: 2022-08-22: added Node.KeySignature, PeersChangedPatch.KeySignature
 //   - 41: 2022-08-30: uses 100.100.100.100 for route-less ExtraRecords if global nameservers is set
 //   - 42: 2022-09-06: NextDNS DoH support; see https://github.com/tailscale/tailscale/pull/5556
-const CurrentCapabilityVersion CapabilityVersion = 42
+//   - 43: 2022-09-21: clients can return usernames for SSH
+//   - 44: 2022-09-22: MapResponse.ControlDialPlan
+//   - 45: 2022-09-26: c2n /debug/{goroutines,prefs,metrics}
+//   - 46: 2022-10-04: c2n /debug/component-logging
+//   - 47: 2022-10-11: Register{Request,Response}.NodeKeySignature
+//   - 48: 2022-11-02: Node.UnsignedPeerAPIOnly
+//   - 49: 2022-11-03: Client understands EarlyNoise
+const CurrentCapabilityVersion CapabilityVersion = 49
 
 type StableID string
 
@@ -114,7 +121,7 @@ func (u StableNodeID) IsZero() bool {
 // A user can have multiple logins associated with it (e.g. gmail and github oauth).
 // (Note: none of our UIs support this yet.)
 //
-// Some properties are inhereted from the logins and can be overridden, such as
+// Some properties are inherited from the logins and can be overridden, such as
 // display name and profile picture.
 //
 // Other properties must be the same for all logins associated with a user.
@@ -226,6 +233,14 @@ type Node struct {
 	//    "https://tailscale.com/cap/file-sharing"
 	Capabilities []string `json:",omitempty"`
 
+	// UnsignedPeerAPIOnly means that this node is not signed nor subject to TKA
+	// restrictions. However, in exchange for that privilege, it does not get
+	// network access. It can only access this node's peerapi, which may not let
+	// it do anything. It is the tailscaled client's job to double-check the
+	// MapResponse's PacketFilter to verify that its AllowedIPs will not be
+	// accepted by the packet filter.
+	UnsignedPeerAPIOnly bool `json:",omitempty"`
+
 	// The following three computed fields hold the various names that can
 	// be used for this node in UIs. They are populated from controlclient
 	// (not from control) by calling node.InitDisplayNames. These can be
@@ -234,6 +249,9 @@ type Node struct {
 	ComputedName            string `json:",omitempty"` // MagicDNS base name (for normal non-shared-in nodes), FQDN (without trailing dot, for shared-in nodes), or Hostname (if no MagicDNS)
 	computedHostIfDifferent string // hostname, if different than ComputedName, otherwise empty
 	ComputedNameWithHost    string `json:",omitempty"` // either "ComputedName" or "ComputedName (computedHostIfDifferent)", if computedHostIfDifferent is set
+
+	// DataPlaneAuditLogID is the per-node logtail ID used for data plane audit logging.
+	DataPlaneAuditLogID string `json:",omitempty"`
 }
 
 // DisplayName returns the user-facing name for a node which should
@@ -243,7 +261,7 @@ type Node struct {
 // the owner of the node. When forOwner is false, the hostname is
 // never included in the return value.
 //
-// Return value is either either "Name" or "Name (Hostname)", where
+// Return value is either "Name" or "Name (Hostname)", where
 // Name is the node's MagicDNS base name (for normal non-shared-in
 // nodes), FQDN (without trailing dot, for shared-in nodes), or
 // Hostname (if no MagicDNS). Hostname is only included in the
@@ -589,11 +607,10 @@ func (ni *NetInfo) String() string {
 	if ni == nil {
 		return "NetInfo(nil)"
 	}
-	return fmt.Sprintf("NetInfo{varies=%v hairpin=%v ipv6=%v udp=%v icmpv4=%v derp=#%v portmap=%v link=%q}",
+	return fmt.Sprintf("NetInfo{varies=%v hairpin=%v ipv6=%v ipv6os=%v udp=%v icmpv4=%v derp=#%v portmap=%v link=%q}",
 		ni.MappingVariesByDestIP, ni.HairPinning, ni.WorkingIPv6,
-		ni.WorkingUDP, ni.WorkingICMPv4, ni.PreferredDERP,
-		ni.portMapSummary(),
-		ni.LinkType)
+		ni.OSHasIPv6, ni.WorkingUDP, ni.WorkingICMPv4,
+		ni.PreferredDERP, ni.portMapSummary(), ni.LinkType)
 }
 
 func (ni *NetInfo) portMapSummary() string {
@@ -820,6 +837,13 @@ type RegisterRequest struct {
 	// when it stops being active.
 	Ephemeral bool `json:",omitempty"`
 
+	// NodeKeySignature is the node's own node-key signature, re-signed
+	// for its new node key using its network-lock key.
+	//
+	// This field is set when the client retries registration after learning
+	// its NodeKeySignature (which is in need of rotation).
+	NodeKeySignature tkatype.MarshaledSignature
+
 	// The following fields are not used for SignatureNone and are required for
 	// SignatureV1:
 	SignatureType SignatureType `json:",omitempty"`
@@ -847,6 +871,7 @@ func (req *RegisterRequest) Clone() *RegisterRequest {
 	}
 	res.DeviceCert = append(res.DeviceCert[:0:0], res.DeviceCert...)
 	res.Signature = append(res.Signature[:0:0], res.Signature...)
+	res.NodeKeySignature = append(res.NodeKeySignature[:0:0], res.NodeKeySignature...)
 	return res
 }
 
@@ -858,7 +883,11 @@ type RegisterResponse struct {
 	MachineAuthorized bool   // TODO(crawshaw): move to using MachineStatus
 	AuthURL           string // if set, authorization pending
 
-	// Error indiciates that authorization failed. If this is non-empty,
+	// If set, this is the current node-key signature that needs to be
+	// re-signed for the node's new node-key.
+	NodeKeySignature tkatype.MarshaledSignature
+
+	// Error indicates that authorization failed. If this is non-empty,
 	// other status fields should be ignored.
 	Error string
 }
@@ -928,6 +957,11 @@ type MapRequest struct {
 	// EndpointTypes are the types of the corresponding endpoints in Endpoints.
 	EndpointTypes []EndpointType `json:",omitempty"`
 
+	// TKAHead describes the hash of the latest AUM applied to the local
+	// tailnet key authority, if one is operating.
+	// It is encoded as tka.AUMHash.MarshalText.
+	TKAHead string `json:",omitempty"`
+
 	// ReadOnly is whether the client just wants to fetch the
 	// MapResponse, without updating their Endpoints. The
 	// Endpoints field will be ignored and LastSeen will not be
@@ -986,7 +1020,7 @@ type NetPortRange struct {
 
 // CapGrant grants capabilities in a FilterRule.
 type CapGrant struct {
-	// Dsts are the destination IP ranges that this capabilty
+	// Dsts are the destination IP ranges that this capability
 	// grant matches.
 	Dsts []netip.Prefix
 
@@ -1000,7 +1034,7 @@ type CapGrant struct {
 //
 // A rule is logically a set of source CIDRs to match (described by
 // SrcIPs and SrcBits), and a set of destination targets that are then
-// allowed if a source IP is mathces of those CIDRs.
+// allowed if a source IP is matches of those CIDRs.
 type FilterRule struct {
 	// SrcIPs are the source IPs/networks to match.
 	//
@@ -1103,9 +1137,6 @@ type DNSConfig struct {
 	// Nameservers are the IP addresses of the nameservers to use.
 	Nameservers []netip.Addr `json:",omitempty"`
 
-	// PerDomain is not set by the control server, and does nothing.
-	PerDomain bool `json:",omitempty"`
-
 	// CertDomains are the set of DNS names for which the control
 	// plane server will assist with provisioning TLS
 	// certificates. See SetDNSRequest, which can be used to
@@ -1118,7 +1149,7 @@ type DNSConfig struct {
 	// MagicDNS config.
 	ExtraRecords []DNSRecord `json:",omitempty"`
 
-	// ExitNodeFilteredSuffixes are the the DNS suffixes that the
+	// ExitNodeFilteredSuffixes are the DNS suffixes that the
 	// node, when being an exit node DNS proxy, should not answer.
 	//
 	// The entries do not contain trailing periods and are always
@@ -1372,9 +1403,47 @@ type MapResponse struct {
 	// indicates no change from the value sent earlier.
 	TKAInfo *TKAInfo `json:",omitempty"`
 
+	// DomainDataPlaneAuditLogID, if non-empty, is the per-tailnet log ID to be
+	// used when writing data plane audit logs.
+	DomainDataPlaneAuditLogID string `json:",omitempty"`
+
 	// Debug is normally nil, except for when the control server
 	// is setting debug settings on a node.
 	Debug *Debug `json:",omitempty"`
+
+	// ControlDialPlan tells the client how to connect to the control
+	// server. An initial nil is equivalent to new(ControlDialPlan).
+	// A subsequent streamed nil means no change.
+	ControlDialPlan *ControlDialPlan `json:",omitempty"`
+}
+
+// ControlDialPlan is instructions from the control server to the client on how
+// to connect to the control server; this is useful for maintaining connection
+// if the client's network state changes after the initial connection, or due
+// to the configuration that the control server pushes.
+type ControlDialPlan struct {
+	// An empty list means the default: use DNS (unspecified which DNS).
+	Candidates []ControlIPCandidate
+}
+
+// ControlIPCandidate represents a single candidate address to use when
+// connecting to the control server.
+type ControlIPCandidate struct {
+	// IP is the address to attempt connecting to.
+	IP netip.Addr
+
+	// DialStartSec is the number of seconds after the beginning of the
+	// connection process to wait before trying this candidate.
+	DialStartDelaySec float64 `json:",omitempty"`
+
+	// DialTimeoutSec is the timeout for a connection to this candidate,
+	// starting after DialStartDelaySec.
+	DialTimeoutSec float64 `json:",omitempty"`
+
+	// Priority is the relative priority of this candidate; candidates with
+	// a higher priority are preferred over candidates with a lower
+	// priority.
+	Priority int `json:",omitempty"`
 }
 
 // Debug are instructions from the control server to the client
@@ -1456,6 +1525,10 @@ type Debug struct {
 	// re-enabled for the lifetime of the process.
 	DisableLogTail bool `json:",omitempty"`
 
+	// EnableSilentDisco disables the use of heartBeatTimer in magicsock and attempts to
+	// handle disco silently. See issue #540 for details.
+	EnableSilentDisco bool `json:",omitempty"`
+
 	// Exit optionally specifies that the client should os.Exit
 	// with this code.
 	Exit *int `json:",omitempty"`
@@ -1489,6 +1562,7 @@ func (n *Node) Equal(n2 *Node) bool {
 		n.Name == n2.Name &&
 		n.User == n2.User &&
 		n.Sharer == n2.Sharer &&
+		n.UnsignedPeerAPIOnly == n2.UnsignedPeerAPIOnly &&
 		n.Key == n2.Key &&
 		n.KeyExpiry.Equal(n2.KeyExpiry) &&
 		bytes.Equal(n.KeySignature, n2.KeySignature) &&
@@ -1585,15 +1659,11 @@ const (
 	CapabilitySSHRuleIn          = "https://tailscale.com/cap/ssh-rule-in"           // some SSH rule reach this node
 	CapabilityDataPlaneAuditLogs = "https://tailscale.com/cap/data-plane-audit-logs" // feature enabled
 
-	// These are the capabilities that the peer nodes have as listed in
-	// MapResponse.Peers[].Capabilities.
+	// Inter-node capabilities as specified in the MapResponse.PacketFilter[].CapGrants.
 
 	// CapabilityFileSharingTarget grants the current node the ability to send
 	// files to the peer which has this capability.
 	CapabilityFileSharingTarget = "https://tailscale.com/cap/file-sharing-target"
-
-	// Inter-node capabilities as specified in the MapResponse.PacketFilter[].CapGrants.
-
 	// CapabilityFileSharingSend grants the ability to receive files from a
 	// node that's owned by a different user.
 	CapabilityFileSharingSend = "https://tailscale.com/cap/file-send"
@@ -1640,6 +1710,13 @@ type SetDNSRequest struct {
 
 // SetDNSResponse is the response to a SetDNSRequest.
 type SetDNSResponse struct{}
+
+// HealthChangeRequest is the JSON request body type used to report
+// node health changes to https://<control>/machine/<mkey hex>/update-health.
+type HealthChangeRequest struct {
+	Subsys string // a health.Subsystem value in string form
+	Error  string // or empty if cleared
+}
 
 // SSHPolicy is the policy for how to handle incoming SSH connections
 // over Tailscale.
@@ -1777,7 +1854,7 @@ type SSHAction struct {
 //
 // The "OverTLS" prefix is to loudly declare that this exchange
 // doesn't happen over Noise and can be intercepted/MITM'ed by
-// enterprise/corp proxies where the orgnanization can put TLS roots
+// enterprise/corp proxies where the organization can put TLS roots
 // on devices.
 type OverTLSPublicKeyResponse struct {
 	// LegacyPublic specifies the control plane server's original
@@ -1880,3 +1957,15 @@ type PeerChange struct {
 //
 // Mnemonic: 3.3.40 are numbers above the keys D, E, R, P.
 const DerpMagicIP = "127.3.3.40"
+
+// EarlyNoise is the early payload that's sent over Noise but before the HTTP/2
+// handshake when connecting to the coordination server.
+//
+// This exists to let the server push some early info to client for that
+// stateful HTTP/2+Noise connection without incurring an extra round trip. (This
+// would've used HTTP/2 server push, had Go's client-side APIs been available)
+type EarlyNoise struct {
+	// NodeKeyChallenge is a random per-connection public key to be used by
+	// the client to prove possession of a wireguard private key.
+	NodeKeyChallenge key.ChallengePublic `json:"nodeKeyChallenge"`
+}

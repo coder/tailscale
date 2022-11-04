@@ -14,7 +14,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"math"
 	"net"
@@ -99,7 +98,7 @@ func loadConfig() config {
 		}
 		log.Printf("no config path specified; using %s", *configPath)
 	}
-	b, err := ioutil.ReadFile(*configPath)
+	b, err := os.ReadFile(*configPath)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return writeNewConfig()
@@ -155,7 +154,7 @@ func main() {
 	s.SetVerifyClient(*verifyClients)
 
 	if *meshPSKFile != "" {
-		b, err := ioutil.ReadFile(*meshPSKFile)
+		b, err := os.ReadFile(*meshPSKFile)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -326,9 +325,29 @@ func main() {
 	}
 }
 
+const (
+	noContentChallengeHeader = "X-Tailscale-Challenge"
+	noContentResponseHeader  = "X-Tailscale-Response"
+)
+
 // For captive portal detection
 func serveNoContent(w http.ResponseWriter, r *http.Request) {
+	if challenge := r.Header.Get(noContentChallengeHeader); challenge != "" {
+		badChar := strings.IndexFunc(challenge, func(r rune) bool {
+			return !isChallengeChar(r)
+		}) != -1
+		if len(challenge) <= 64 && !badChar {
+			w.Header().Set(noContentResponseHeader, "response "+challenge)
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func isChallengeChar(c rune) bool {
+	// Semi-randomly chosen as a limited set of valid characters
+	return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') ||
+		('0' <= c && c <= '9') ||
+		c == '.' || c == '-' || c == '_'
 }
 
 // probeHandler is the endpoint that js/wasm clients hit to measure

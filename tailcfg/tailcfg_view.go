@@ -21,7 +21,7 @@ import (
 	"tailscale.com/types/views"
 )
 
-//go:generate go run tailscale.com/cmd/cloner  -clonefunc=true -type=User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPRegion,DERPMap,DERPNode,SSHRule,SSHPrincipal
+//go:generate go run tailscale.com/cmd/cloner  -clonefunc=true -type=User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPRegion,DERPMap,DERPNode,SSHRule,SSHPrincipal,ControlDialPlan
 
 // View returns a readonly view of User.
 func (p *User) View() UserView {
@@ -171,8 +171,10 @@ func (v NodeView) Online() *bool {
 func (v NodeView) KeepAlive() bool                   { return v.ж.KeepAlive }
 func (v NodeView) MachineAuthorized() bool           { return v.ж.MachineAuthorized }
 func (v NodeView) Capabilities() views.Slice[string] { return views.SliceOf(v.ж.Capabilities) }
+func (v NodeView) UnsignedPeerAPIOnly() bool         { return v.ж.UnsignedPeerAPIOnly }
 func (v NodeView) ComputedName() string              { return v.ж.ComputedName }
 func (v NodeView) ComputedNameWithHost() string      { return v.ж.ComputedNameWithHost }
+func (v NodeView) DataPlaneAuditLogID() string       { return v.ж.DataPlaneAuditLogID }
 func (v NodeView) Equal(v2 NodeView) bool            { return v.ж.Equal(v2.ж) }
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
@@ -200,9 +202,11 @@ var _NodeViewNeedsRegeneration = Node(struct {
 	KeepAlive               bool
 	MachineAuthorized       bool
 	Capabilities            []string
+	UnsignedPeerAPIOnly     bool
 	ComputedName            string
 	computedHostIfDifferent string
 	ComputedNameWithHost    string
+	DataPlaneAuditLogID     string
 }{})
 
 // View returns a readonly view of Hostinfo.
@@ -513,7 +517,6 @@ func (v DNSConfigView) FallbackResolvers() views.SliceView[*dnstype.Resolver, dn
 func (v DNSConfigView) Domains() views.Slice[string]         { return views.SliceOf(v.ж.Domains) }
 func (v DNSConfigView) Proxied() bool                        { return v.ж.Proxied }
 func (v DNSConfigView) Nameservers() views.Slice[netip.Addr] { return views.SliceOf(v.ж.Nameservers) }
-func (v DNSConfigView) PerDomain() bool                      { return v.ж.PerDomain }
 func (v DNSConfigView) CertDomains() views.Slice[string]     { return views.SliceOf(v.ж.CertDomains) }
 func (v DNSConfigView) ExtraRecords() views.Slice[DNSRecord] { return views.SliceOf(v.ж.ExtraRecords) }
 func (v DNSConfigView) ExitNodeFilteredSet() views.Slice[string] {
@@ -528,7 +531,6 @@ var _DNSConfigViewNeedsRegeneration = DNSConfig(struct {
 	Domains             []string
 	Proxied             bool
 	Nameservers         []netip.Addr
-	PerDomain           bool
 	CertDomains         []string
 	ExtraRecords        []DNSRecord
 	ExitNodeFilteredSet []string
@@ -579,12 +581,13 @@ func (v *RegisterResponseView) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-func (v RegisterResponseView) User() UserView          { return v.ж.User.View() }
-func (v RegisterResponseView) Login() Login            { return v.ж.Login }
-func (v RegisterResponseView) NodeKeyExpired() bool    { return v.ж.NodeKeyExpired }
-func (v RegisterResponseView) MachineAuthorized() bool { return v.ж.MachineAuthorized }
-func (v RegisterResponseView) AuthURL() string         { return v.ж.AuthURL }
-func (v RegisterResponseView) Error() string           { return v.ж.Error }
+func (v RegisterResponseView) User() UserView           { return v.ж.User.View() }
+func (v RegisterResponseView) Login() Login             { return v.ж.Login }
+func (v RegisterResponseView) NodeKeyExpired() bool     { return v.ж.NodeKeyExpired }
+func (v RegisterResponseView) MachineAuthorized() bool  { return v.ж.MachineAuthorized }
+func (v RegisterResponseView) AuthURL() string          { return v.ж.AuthURL }
+func (v RegisterResponseView) NodeKeySignature() mem.RO { return mem.B(v.ж.NodeKeySignature) }
+func (v RegisterResponseView) Error() string            { return v.ж.Error }
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _RegisterResponseViewNeedsRegeneration = RegisterResponse(struct {
@@ -593,6 +596,7 @@ var _RegisterResponseViewNeedsRegeneration = RegisterResponse(struct {
 	NodeKeyExpired    bool
 	MachineAuthorized bool
 	AuthURL           string
+	NodeKeySignature  tkatype.MarshaledSignature
 	Error             string
 }{})
 
@@ -924,4 +928,58 @@ var _SSHPrincipalViewNeedsRegeneration = SSHPrincipal(struct {
 	UserLogin string
 	Any       bool
 	PubKeys   []string
+}{})
+
+// View returns a readonly view of ControlDialPlan.
+func (p *ControlDialPlan) View() ControlDialPlanView {
+	return ControlDialPlanView{ж: p}
+}
+
+// ControlDialPlanView provides a read-only view over ControlDialPlan.
+//
+// Its methods should only be called if `Valid()` returns true.
+type ControlDialPlanView struct {
+	// ж is the underlying mutable value, named with a hard-to-type
+	// character that looks pointy like a pointer.
+	// It is named distinctively to make you think of how dangerous it is to escape
+	// to callers. You must not let callers be able to mutate it.
+	ж *ControlDialPlan
+}
+
+// Valid reports whether underlying value is non-nil.
+func (v ControlDialPlanView) Valid() bool { return v.ж != nil }
+
+// AsStruct returns a clone of the underlying value which aliases no memory with
+// the original.
+func (v ControlDialPlanView) AsStruct() *ControlDialPlan {
+	if v.ж == nil {
+		return nil
+	}
+	return v.ж.Clone()
+}
+
+func (v ControlDialPlanView) MarshalJSON() ([]byte, error) { return json.Marshal(v.ж) }
+
+func (v *ControlDialPlanView) UnmarshalJSON(b []byte) error {
+	if v.ж != nil {
+		return errors.New("already initialized")
+	}
+	if len(b) == 0 {
+		return nil
+	}
+	var x ControlDialPlan
+	if err := json.Unmarshal(b, &x); err != nil {
+		return err
+	}
+	v.ж = &x
+	return nil
+}
+
+func (v ControlDialPlanView) Candidates() views.Slice[ControlIPCandidate] {
+	return views.SliceOf(v.ж.Candidates)
+}
+
+// A compilation failure here means this code must be regenerated, with the command at the top of this file.
+var _ControlDialPlanViewNeedsRegeneration = ControlDialPlan(struct {
+	Candidates []ControlIPCandidate
 }{})

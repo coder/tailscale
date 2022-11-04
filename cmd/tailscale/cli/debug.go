@@ -42,7 +42,7 @@ var debugCmd = &ffcli.Command{
 	FlagSet: (func() *flag.FlagSet {
 		fs := newFlagSet("debug")
 		fs.StringVar(&debugArgs.file, "file", "", "get, delete:NAME, or NAME")
-		fs.StringVar(&debugArgs.cpuFile, "cpu-profile", "", "if non-empty, grab a CPU profile for --profile-sec seconds and write it to this file; - for stdout")
+		fs.StringVar(&debugArgs.cpuFile, "cpu-profile", "", "if non-empty, grab a CPU profile for --profile-seconds seconds and write it to this file; - for stdout")
 		fs.StringVar(&debugArgs.memFile, "mem-profile", "", "if non-empty, grab a memory profile and write it to this file; - for stdout")
 		fs.IntVar(&debugArgs.cpuSec, "profile-seconds", 15, "number of seconds to run a CPU profile for, when --cpu-profile is non-empty")
 		return fs
@@ -52,6 +52,16 @@ var debugCmd = &ffcli.Command{
 			Name:      "derp-map",
 			Exec:      runDERPMap,
 			ShortHelp: "print DERP map",
+		},
+		{
+			Name:      "component-logs",
+			Exec:      runDebugComponentLogs,
+			ShortHelp: "enable/disable debug logs for a component",
+			FlagSet: (func() *flag.FlagSet {
+				fs := newFlagSet("component-logs")
+				fs.DurationVar(&debugComponentLogsArgs.forDur, "for", time.Hour, "how long to enable debug logs for; zero or negative means to disable")
+				return fs
+			})(),
 		},
 		{
 			Name:      "daemon-goroutines",
@@ -489,7 +499,15 @@ func runTS2021(ctx context.Context, args []string) error {
 		return c, err
 	}
 
-	conn, err := controlhttp.Dial(ctx, ts2021Args.host, "80", "443", machinePrivate, keys.PublicKey, uint16(ts2021Args.version), dialFunc)
+	conn, err := (&controlhttp.Dialer{
+		Hostname:        ts2021Args.host,
+		HTTPPort:        "80",
+		HTTPSPort:       "443",
+		MachineKey:      machinePrivate,
+		ControlKey:      keys.PublicKey,
+		ProtocolVersion: uint16(ts2021Args.version),
+		Dialer:          dialFunc,
+	}).Dial(ctx)
 	log.Printf("controlhttp.Dial = %p, %v", conn, err)
 	if err != nil {
 		return err
@@ -503,5 +521,28 @@ func runTS2021(ctx context.Context, args []string) error {
 	}
 
 	log.Printf("final underlying conn: %v / %v", conn.LocalAddr(), conn.RemoteAddr())
+	return nil
+}
+
+var debugComponentLogsArgs struct {
+	forDur time.Duration
+}
+
+func runDebugComponentLogs(ctx context.Context, args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: debug component-logs <component>")
+	}
+	component := args[0]
+	dur := debugComponentLogsArgs.forDur
+
+	err := localClient.SetComponentDebugLogging(ctx, component, dur)
+	if err != nil {
+		return err
+	}
+	if debugComponentLogsArgs.forDur <= 0 {
+		fmt.Printf("Disabled debug logs for component %q\n", component)
+	} else {
+		fmt.Printf("Enabled debug logs for component %q for %v\n", component, dur)
+	}
 	return nil
 }

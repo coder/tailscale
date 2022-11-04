@@ -3,7 +3,6 @@
 // license that can be found in the LICENSE file.
 
 //go:build ignore
-// +build ignore
 
 package main
 
@@ -11,7 +10,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -54,7 +52,7 @@ import (
 `)
 	for _, dep := range x.Imports {
 		if !strings.Contains(dep, ".") {
-			// Omit stanard library deps.
+			// Omit standard library deps.
 			continue
 		}
 		fmt.Fprintf(&out, "\t_ %q\n", dep)
@@ -62,7 +60,7 @@ import (
 	fmt.Fprintf(&out, ")\n")
 
 	filename := fmt.Sprintf("tailscaled_deps_test_%s.go", goos)
-	err = ioutil.WriteFile(filename, out.Bytes(), 0644)
+	err = os.WriteFile(filename, out.Bytes(), 0644)
 	if err != nil {
 		log.Fatal(err)
 	}

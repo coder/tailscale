@@ -33,7 +33,7 @@ const (
 	// SigRotation signature and sign it again with their rotation key. That
 	// way, SigRotation nesting should only be 2 deep in the common case.
 	SigRotation
-	// SigCredential describes a signature over a specifi public key, signed
+	// SigCredential describes a signature over a specific public key, signed
 	// by a key in the tailnet key authority referenced by the specified keyID.
 	// In effect, SigCredential delegates the ability to make a signature to
 	// a different public/private key pair.
@@ -113,6 +113,27 @@ func (s NodeKeySignature) wrappingPublic() (pub ed25519.PublicKey, ok bool) {
 
 	default:
 		return nil, false
+	}
+}
+
+// authorizingKeyID returns the KeyID of the key trusted by network-lock which authorizes
+// this signature.
+func (s NodeKeySignature) authorizingKeyID() (tkatype.KeyID, error) {
+	switch s.SigKind {
+	case SigDirect, SigCredential:
+		if len(s.KeyID) == 0 {
+			return tkatype.KeyID{}, errors.New("invalid signature: no keyID present")
+		}
+		return tkatype.KeyID(s.KeyID), nil
+
+	case SigRotation:
+		if s.Nested == nil {
+			return tkatype.KeyID{}, errors.New("invalid signature: rotation signature missing nested signature")
+		}
+		return s.Nested.authorizingKeyID()
+
+	default:
+		return tkatype.KeyID{}, fmt.Errorf("unhandled signature type: %v", s.SigKind)
 	}
 }
 

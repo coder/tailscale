@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"net"
 	"net/http"
@@ -181,7 +180,7 @@ type resolverAndDelay struct {
 type forwarder struct {
 	logf    logger.Logf
 	linkMon *monitor.Mon
-	linkSel ForwardLinkSelector // TODO(bradfitz): remove this when tsdial.Dialer absords it
+	linkSel ForwardLinkSelector // TODO(bradfitz): remove this when tsdial.Dialer absorbs it
 	dialer  *tsdial.Dialer
 	dohSem  chan struct{}
 
@@ -474,7 +473,7 @@ func (f *forwarder) sendDoH(ctx context.Context, urlBase string, c *http.Client,
 		metricDNSFwdDoHErrorCT.Add(1)
 		return nil, fmt.Errorf("unexpected response Content-Type %q", ct)
 	}
-	res, err := ioutil.ReadAll(hres.Body)
+	res, err := io.ReadAll(hres.Body)
 	if err != nil {
 		metricDNSFwdDoHErrorBody.Add(1)
 	}
@@ -484,13 +483,13 @@ func (f *forwarder) sendDoH(ctx context.Context, urlBase string, c *http.Client,
 	return res, err
 }
 
-var verboseDNSForward = envknob.Bool("TS_DEBUG_DNS_FORWARD_SEND")
+var verboseDNSForward = envknob.RegisterBool("TS_DEBUG_DNS_FORWARD_SEND")
 
 // send sends packet to dst. It is best effort.
 //
 // send expects the reply to have the same txid as txidOut.
 func (f *forwarder) send(ctx context.Context, fq *forwardQuery, rr resolverAndDelay) (ret []byte, err error) {
-	if verboseDNSForward {
+	if verboseDNSForward() {
 		f.logf("forwarder.send(%q) ...", rr.name.Addr)
 		defer func() {
 			f.logf("forwarder.send(%q) = %v, %v", rr.name.Addr, len(ret), err)
@@ -503,7 +502,7 @@ func (f *forwarder) send(ctx context.Context, fq *forwardQuery, rr resolverAndDe
 		// Only known DoH providers are supported currently. Specifically, we
 		// only support DoH providers where we can TCP connect to them on port
 		// 443 at the same IP address they serve normal UDP DNS from (1.1.1.1,
-		// 8.8.8.8, 9.9.9.9, etc.) That's why OpenDNS and custon DoH providers
+		// 8.8.8.8, 9.9.9.9, etc.) That's why OpenDNS and custom DoH providers
 		// aren't currently supported. There's no backup DNS resolution path for
 		// them.
 		urlBase := rr.name.Addr
