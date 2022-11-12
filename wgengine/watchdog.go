@@ -178,6 +178,10 @@ func (e *watchdogEngine) WhoIsIPPort(ipp netip.AddrPort) (tsIP netip.Addr, ok bo
 	e.watchdog("UnregisterIPPortIdentity", func() { tsIP, ok = e.wrap.WhoIsIPPort(ipp) })
 	return tsIP, ok
 }
+func (e *watchdogEngine) SendHandshakeInitiation(pk key.NodePublic) (ok bool, err error) {
+	e.watchdog("SendHandshakeInitiation", func() { ok, err = e.wrap.SendHandshakeInitiation(pk) })
+	return
+}
 func (e *watchdogEngine) Close() {
 	e.watchdog("Close", e.wrap.Close)
 }

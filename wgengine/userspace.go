@@ -1055,6 +1055,20 @@ func (e *userspaceEngine) getPeerStatusLite(pk key.NodePublic) (status ipnstate.
 	return status, true
 }
 
+func (e *userspaceEngine) SendHandshakeInitiation(pk key.NodePublic) (bool, error) {
+	e.wgLock.Lock()
+	if e.wgdev == nil {
+		e.wgLock.Unlock()
+		return false, nil
+	}
+	peer := e.wgdev.LookupPeer(pk.Raw32())
+	e.wgLock.Unlock()
+	if peer == nil {
+		return false, nil
+	}
+	return true, peer.SendHandshakeInitiation(false)
+}
+
 func (e *userspaceEngine) getStatus() (*Status, error) {
 	// Grab derpConns before acquiring wgLock to not violate lock ordering;
 	// the DERPs method acquires magicsock.Conn.mu.

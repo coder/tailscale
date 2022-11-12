@@ -172,4 +172,7 @@ type Engine interface {
 	// WhoIsIPPort looks up an IP:port in the temporary registrations,
 	// and returns a matching Tailscale IP, if it exists.
 	WhoIsIPPort(netip.AddrPort) (netip.Addr, bool)
+
+	// Send
+	SendHandshakeInitiation(pk key.NodePublic) (bool, error)
 }
