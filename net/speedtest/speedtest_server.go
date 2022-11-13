@@ -82,7 +82,7 @@ func doTest(conn net.Conn, conf config) ([]Result, error) {
 	var results []Result
 
 	if conf.Direction == Download {
-		conn.SetReadDeadline(time.Now().Add(conf.TestDuration).Add(5 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(conf.TestDuration).Add(3 * conf.TestDuration))
 	} else {
 		_, err := rand.Read(bufferData)
 		if err != nil {
