@@ -465,7 +465,9 @@ func makeProbePlanInitial(dm *tailcfg.DERPMap, ifState *interfaces.State) (plan 
 		var p6 []probe
 		for try := 0; try < 3; try++ {
 			n := reg.Nodes[try%len(reg.Nodes)]
-			delay := time.Duration(try) * defaultInitialRetransmitTime
+			// Disable delays, because we want to initialize a
+			// connection as soon as possible.
+			delay := time.Duration(0)
 			if ifState.HaveV4 && nodeMight4(n) {
 				p4 = append(p4, probe{delay: delay, node: n.Name, proto: probeIPv4})
 			}
@@ -957,6 +959,10 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap) (_ *Report,
 			// and close the signal channel.
 		}
 	}
+
+	// Never perform the captive portal check. We don't use
+	// this in Coder, so it just adds time to the initial connect.
+	captivePortalStop()
 
 	wg := syncs.NewWaitGroupChan()
 	wg.Add(len(plan))

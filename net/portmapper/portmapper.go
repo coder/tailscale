@@ -48,7 +48,7 @@ var (
 // decide that they're not there. Since these services are on the
 // same LAN as this machine and a single L3 hop away, we don't
 // give them much time to respond.
-const portMapServiceTimeout = 250 * time.Millisecond
+const portMapServiceTimeout = 50 * time.Millisecond
 
 // trustServiceStillAvailableDuration is how often we re-verify a port
 // mapping service is available.
@@ -697,7 +697,9 @@ func (c *Client) Probe(ctx context.Context) (res ProbeResult, err error) {
 		return res, err
 	}
 	defer uc.Close()
-	ctx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	// Coder needs to optimize for low initial connection times, so
+	// punching the correct hole immediately isn't required.
+	ctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
 	defer closeCloserOnContextDone(ctx, uc)()
 
