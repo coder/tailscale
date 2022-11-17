@@ -665,6 +665,11 @@ func (t *Wrapper) filterIn(buf []byte) filter.Response {
 
 	if t.PostFilterIn != nil {
 		if res := t.PostFilterIn(p, t); res.IsDrop() {
+			if res == filter.DropSilently {
+				if t.stats.enabled.Load() {
+					t.stats.UpdateRx(buf)
+				}
+			}
 			return res
 		}
 	}
