@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"context"
 	crand "crypto/rand"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -337,6 +338,9 @@ type Conn struct {
 
 	// port is the preferred port from opts.Port; 0 means auto.
 	port atomic.Uint32
+
+	// tlsConfig is the config to use for DERP
+	tlsConfig atomic.Pointer[tls.Config]
 
 	// stats maintains per-connection counters.
 	// See SetStatisticsEnabled and ExtractStatistics for details.
@@ -1436,6 +1440,7 @@ func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) cha
 	dc.NotePreferred(c.myDerp == regionID)
 	dc.SetAddressFamilySelector(derpAddrFamSelector{c})
 	dc.DNSCache = dnscache.Get()
+	dc.TLSConfig = c.tlsConfig.Load()
 
 	ctx, cancel := context.WithCancel(c.connCtx)
 	ch := make(chan derpWriteRequest, bufferedDerpWritesBeforeDrop)
@@ -2247,6 +2252,11 @@ func (c *Conn) SetPreferredPort(port uint16) {
 		return
 	}
 	c.resetEndpointStates()
+}
+
+// SetTLSConfig sets the TLS config for new DERP connections.
+func (c *Conn) SetTLSConfig(config *tls.Config) {
+	c.tlsConfig.Store(config)
 }
 
 // SetPrivateKey sets the connection's private key.
