@@ -1,6 +1,5 @@
-// Copyright (c) 2021 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package portmapper
 
@@ -18,7 +17,7 @@ import (
 // https://www.rfc-editor.org/rfc/pdfrfc/rfc6887.txt.pdf
 // https://tools.ietf.org/html/rfc6887
 
-//go:generate go run tailscale.com/cmd/addlicense -year 2021 -file pcpresultcode_string.go go run golang.org/x/tools/cmd/stringer -type=pcpResultCode -trimprefix=pcpCode
+//go:generate go run tailscale.com/cmd/addlicense -file pcpresultcode_string.go go run golang.org/x/tools/cmd/stringer -type=pcpResultCode -trimprefix=pcpCode
 
 type pcpResultCode uint8
 

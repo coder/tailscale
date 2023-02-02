@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package netmap contains the netmap.NetworkMap type.
 package netmap
@@ -16,6 +15,7 @@ import (
 	"tailscale.com/tailcfg"
 	"tailscale.com/tka"
 	"tailscale.com/types/key"
+	"tailscale.com/types/views"
 	"tailscale.com/wgengine/filter"
 )
 
@@ -38,9 +38,10 @@ type NetworkMap struct {
 	Peers         []*tailcfg.Node // sorted by Node.ID
 	DNS           tailcfg.DNSConfig
 	// TODO(maisem) : replace with View.
-	Hostinfo     tailcfg.Hostinfo
-	PacketFilter []filter.Match
-	SSHPolicy    *tailcfg.SSHPolicy // or nil, if not enabled/allowed
+	Hostinfo          tailcfg.Hostinfo
+	PacketFilter      []filter.Match
+	PacketFilterRules views.Slice[tailcfg.FilterRule]
+	SSHPolicy         *tailcfg.SSHPolicy // or nil, if not enabled/allowed
 
 	// CollectServices reports whether this node's Tailnet has
 	// requested that info about services be included in HostInfo.
@@ -82,6 +83,16 @@ type NetworkMap struct {
 	DomainAuditLogID string
 
 	UserProfiles map[tailcfg.UserID]tailcfg.UserProfile
+}
+
+// AnyPeersAdvertiseRoutes reports whether any peer is advertising non-exit node routes.
+func (nm *NetworkMap) AnyPeersAdvertiseRoutes() bool {
+	for _, p := range nm.Peers {
+		if len(p.PrimaryRoutes) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // PeerByTailscaleIP returns a peer's Node based on its Tailscale IP.

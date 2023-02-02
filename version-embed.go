@@ -1,6 +1,5 @@
-// Copyright (c) 2021 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package tailscaleroot embeds VERSION.txt into the binary.
 package tailscaleroot
@@ -18,3 +17,9 @@ var AlpineDockerTag string
 //
 //go:embed go.toolchain.rev
 var GoToolchainRev string
+
+// GoToolchainSRI is the Nix SRI hash of the Go toolchain identified
+// by GoToolchainRev. It may end in a newline.
+//
+//go:embed go.toolchain.sri
+var GoToolchainSRI string

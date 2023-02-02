@@ -1,6 +1,5 @@
-# Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-# Use of this source code is governed by a BSD-style
-# license that can be found in the LICENSE file.
+# Copyright (c) Tailscale Inc & AUTHORS
+# SPDX-License-Identifier: BSD-3-Clause
 apiVersion: v1
 kind: Pod
 metadata:
@@ -19,11 +18,11 @@ spec:
       value: "{{TS_KUBE_SECRET}}"
     - name: TS_USERSPACE
       value: "false"
-    - name: TS_AUTH_KEY
+    - name: TS_AUTHKEY
       valueFrom:
         secretKeyRef:
           name: tailscale-auth
-          key: TS_AUTH_KEY
+          key: TS_AUTHKEY
           optional: true
     securityContext:
       capabilities:

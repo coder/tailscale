@@ -23,26 +23,52 @@ set -eu
 export PATH=$PWD/tool:$PATH
 
 eval $(./build_dist.sh shellvars)
+
+DEFAULT_TARGET="client"
 DEFAULT_TAGS="v${VERSION_SHORT},v${VERSION_MINOR}"
-DEFAULT_REPOS="tailscale/tailscale,ghcr.io/tailscale/tailscale"
-DEFAULT_BASE="ghcr.io/tailscale/alpine-base:3.16"
+DEFAULT_BASE="tailscale/alpine-base:3.16"
 
 PUSH="${PUSH:-false}"
-REPOS="${REPOS:-${DEFAULT_REPOS}}"
+TARGET="${TARGET:-${DEFAULT_TARGET}}"
 TAGS="${TAGS:-${DEFAULT_TAGS}}"
 BASE="${BASE:-${DEFAULT_BASE}}"
 
-go run github.com/tailscale/mkctr \
-  --gopaths="\
-    tailscale.com/cmd/tailscale:/usr/local/bin/tailscale, \
-    tailscale.com/cmd/tailscaled:/usr/local/bin/tailscaled, \
-    tailscale.com/cmd/containerboot:/usr/local/bin/containerboot" \
-  --ldflags="\
-    -X tailscale.com/version.Long=${VERSION_LONG} \
-    -X tailscale.com/version.Short=${VERSION_SHORT} \
-    -X tailscale.com/version.GitCommit=${VERSION_GIT_HASH}" \
-  --base="${BASE}" \
-  --tags="${TAGS}" \
-  --repos="${REPOS}" \
-  --push="${PUSH}" \
-  /usr/local/bin/containerboot
+case "$TARGET" in
+  client)
+    DEFAULT_REPOS="tailscale/tailscale"
+    REPOS="${REPOS:-${DEFAULT_REPOS}}"
+    go run github.com/tailscale/mkctr \
+      --gopaths="\
+        tailscale.com/cmd/tailscale:/usr/local/bin/tailscale, \
+        tailscale.com/cmd/tailscaled:/usr/local/bin/tailscaled, \
+        tailscale.com/cmd/containerboot:/usr/local/bin/containerboot" \
+      --ldflags="\
+        -X tailscale.com/version.Long=${VERSION_LONG} \
+        -X tailscale.com/version.Short=${VERSION_SHORT} \
+        -X tailscale.com/version.GitCommit=${VERSION_GIT_HASH}" \
+      --base="${BASE}" \
+      --tags="${TAGS}" \
+      --repos="${REPOS}" \
+      --push="${PUSH}" \
+      /usr/local/bin/containerboot
+    ;;
+  operator)
+    DEFAULT_REPOS="tailscale/k8s-operator"
+    REPOS="${REPOS:-${DEFAULT_REPOS}}"
+    go run github.com/tailscale/mkctr \
+      --gopaths="tailscale.com/cmd/k8s-operator:/usr/local/bin/operator" \
+      --ldflags="\
+        -X tailscale.com/version.Long=${VERSION_LONG} \
+        -X tailscale.com/version.Short=${VERSION_SHORT} \
+        -X tailscale.com/version.GitCommit=${VERSION_GIT_HASH}" \
+      --base="${BASE}" \
+      --tags="${TAGS}" \
+      --repos="${REPOS}" \
+      --push="${PUSH}" \
+      /usr/local/bin/operator
+    ;;
+  *)
+    echo "unknown target: $TARGET"
+    exit 1
+    ;;
+esac

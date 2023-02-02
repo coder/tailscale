@@ -1,6 +1,5 @@
-// Copyright (c) 2021 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // The tshello server demonstrates how to use Tailscale as a library.
 package main
@@ -14,7 +13,6 @@ import (
 	"net/http"
 	"strings"
 
-	"tailscale.com/client/tailscale"
 	"tailscale.com/tsnet"
 )
 
@@ -39,7 +37,7 @@ func main() {
 
 	if *addr == ":443" {
 		ln = tls.NewListener(ln, &tls.Config{
-			GetCertificate: tailscale.GetCertificate,
+			GetCertificate: lc.GetCertificate,
 		})
 	}
 	log.Fatal(http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -57,8 +55,6 @@ func main() {
 }
 
 func firstLabel(s string) string {
-	if i := strings.Index(s, "."); i != -1 {
-		return s[:i]
-	}
+	s, _, _ = strings.Cut(s, ".")
 	return s
 }

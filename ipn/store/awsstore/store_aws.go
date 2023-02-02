@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 //go:build linux && !ts_omit_aws
 
@@ -105,7 +104,7 @@ func (s *awsStore) LoadState() error {
 		context.TODO(),
 		&ssm.GetParameterInput{
 			Name:           aws.String(s.ParameterName()),
-			WithDecryption: true,
+			WithDecryption: aws.Bool(true),
 		},
 	)
 
@@ -167,7 +166,7 @@ func (s *awsStore) persistState() error {
 		&ssm.PutParameterInput{
 			Name:      aws.String(s.ParameterName()),
 			Value:     aws.String(string(bs)),
-			Overwrite: true,
+			Overwrite: aws.Bool(true),
 			Tier:      ssmTypes.ParameterTierStandard,
 			Type:      ssmTypes.ParameterTypeSecureString,
 		},

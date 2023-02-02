@@ -1,8 +1,7 @@
-// Copyright (c) 2021 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
-//go:build linux || (darwin && !ios)
+//go:build linux || (darwin && !ios) || freebsd || openbsd
 
 // Package tailssh is an SSH server integrated into Tailscale.
 package tailssh
@@ -28,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	gossh "github.com/tailscale/golang-x-crypto/ssh"
@@ -367,8 +367,8 @@ func (c *conn) doPolicyAuth(ctx ssh.Context, pubKey ssh.PublicKey) error {
 		}
 		lu, err := user.Lookup(localUser)
 		if err != nil {
-			c.logf("failed to lookup %v: %v", localUser, err)
-			ctx.SendAuthBanner(fmt.Sprintf("failed to lookup %v\r\n", localUser))
+			c.logf("failed to look up %v: %v", localUser, err)
+			ctx.SendAuthBanner(fmt.Sprintf("failed to look up %v\r\n", localUser))
 			return err
 		}
 		gids, err := lu.GroupIds()
@@ -1069,13 +1069,20 @@ func (ss *sshSession) run() {
 			ss.ctx.CloseWithError(err)
 		}
 	}()
+	var openOutputStreams atomic.Int32
+	if ss.stderr != nil {
+		openOutputStreams.Store(2)
+	} else {
+		openOutputStreams.Store(1)
+	}
 	go func() {
 		defer ss.stdout.Close()
 		_, err := io.Copy(rec.writer("o", ss), ss.stdout)
 		if err != nil && !errors.Is(err, io.EOF) {
 			logf("stdout copy: %v", err)
 			ss.ctx.CloseWithError(err)
-		} else {
+		}
+		if openOutputStreams.Add(-1) == 0 {
 			ss.CloseWrite()
 		}
 	}()
@@ -1085,6 +1092,9 @@ func (ss *sshSession) run() {
 			_, err := io.Copy(ss.Stderr(), ss.stderr)
 			if err != nil {
 				logf("stderr copy: %v", err)
+			}
+			if openOutputStreams.Add(-1) == 0 {
+				ss.CloseWrite()
 			}
 		}()
 	}

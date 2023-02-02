@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package tka
 
@@ -60,7 +59,12 @@ func (b *UpdateBuilder) mkUpdate(update AUM) error {
 
 // AddKey adds a new key to the authority.
 func (b *UpdateBuilder) AddKey(key Key) error {
-	if _, err := b.state.GetKey(key.ID()); err == nil {
+	keyID, err := key.ID()
+	if err != nil {
+		return err
+	}
+
+	if _, err := b.state.GetKey(keyID); err == nil {
 		return fmt.Errorf("cannot add key %v: already exists", key)
 	}
 	return b.mkUpdate(AUM{MessageKind: AUMAddKey, Key: &key})

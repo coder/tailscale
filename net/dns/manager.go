@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package dns
 
@@ -19,12 +18,8 @@ import (
 	"golang.org/x/exp/slices"
 	"tailscale.com/health"
 	"tailscale.com/net/dns/resolver"
-	"tailscale.com/net/packet"
-	"tailscale.com/net/tsaddr"
 	"tailscale.com/net/tsdial"
-	"tailscale.com/net/tstun"
 	"tailscale.com/types/dnstype"
-	"tailscale.com/types/ipproto"
 	"tailscale.com/types/logger"
 	"tailscale.com/util/clientmetric"
 	"tailscale.com/util/dnsname"
@@ -32,28 +27,12 @@ import (
 )
 
 var (
-	magicDNSIP   = tsaddr.TailscaleServiceIP()
-	magicDNSIPv6 = tsaddr.TailscaleServiceIPv6()
-)
-
-var (
 	errFullQueue = errors.New("request queue full")
 )
 
-// maxActiveQueries returns the maximal number of DNS requests that be
-// can running.
-// If EnqueueRequest is called when this many requests are already pending,
-// the request will be dropped to avoid blocking the caller.
-func maxActiveQueries() int32 {
-	if runtime.GOOS == "ios" {
-		// For memory paranoia reasons on iOS, match the
-		// historical Tailscale 1.x..1.8 behavior for now
-		// (just before the 1.10 release).
-		return 64
-	}
-	// But for other platforms, allow more burstiness:
-	return 256
-}
+// maxActiveQueries returns the maximal number of DNS requests that can
+// be running.
+const maxActiveQueries = 256
 
 // We use file-ignore below instead of ignore because on some platforms,
 // the lint exception is necessary and on others it is not,
@@ -75,13 +54,6 @@ type response struct {
 type Manager struct {
 	logf logger.Logf
 
-	// When netstack is not used, Manager implements magic DNS.
-	// In this case, responses tracks completed DNS requests
-	// which need a response, and NextPacket() synthesizes a
-	// fake IP+UDP header to finish assembling the response.
-	//
-	// TODO(tom): Rip out once all platforms use netstack.
-	responses           chan response
 	activeQueriesAtomic int32
 
 	ctx       context.Context    // good until Down
@@ -98,10 +70,9 @@ func NewManager(logf logger.Logf, oscfg OSConfigurator, linkMon *monitor.Mon, di
 	}
 	logf = logger.WithPrefix(logf, "dns: ")
 	m := &Manager{
-		logf:      logf,
-		resolver:  resolver.New(logf, linkMon, linkSel, dialer),
-		os:        oscfg,
-		responses: make(chan response),
+		logf:     logf,
+		resolver: resolver.New(logf, linkMon, linkSel, dialer),
+		os:       oscfg,
 	}
 	m.ctx, m.ctxCancel = context.WithCancel(context.Background())
 	m.logf("using %T", m.os)
@@ -316,89 +287,6 @@ func toIPsOnly(resolvers []*dnstype.Resolver) (ret []netip.Addr) {
 	return ret
 }
 
-// EnqueuePacket is the legacy path for handling magic DNS traffic, and is
-// called with a DNS request payload.
-//
-// TODO(tom): Rip out once all platforms use netstack.
-func (m *Manager) EnqueuePacket(bs []byte, proto ipproto.Proto, from, to netip.AddrPort) error {
-	if to.Port() != 53 || proto != ipproto.UDP {
-		return nil
-	}
-
-	if n := atomic.AddInt32(&m.activeQueriesAtomic, 1); n > maxActiveQueries() {
-		atomic.AddInt32(&m.activeQueriesAtomic, -1)
-		metricDNSQueryErrorQueue.Add(1)
-		return errFullQueue
-	}
-
-	go func() {
-		resp, err := m.resolver.Query(m.ctx, bs, from)
-		if err != nil {
-			atomic.AddInt32(&m.activeQueriesAtomic, -1)
-			m.logf("dns query: %v", err)
-			return
-		}
-
-		select {
-		case <-m.ctx.Done():
-			return
-		case m.responses <- response{resp, from}:
-		}
-	}()
-	return nil
-}
-
-// NextPacket is the legacy path for obtaining DNS results in response to
-// magic DNS queries. It blocks until a response is available.
-//
-// TODO(tom): Rip out once all platforms use netstack.
-func (m *Manager) NextPacket() ([]byte, error) {
-	var resp response
-	select {
-	case <-m.ctx.Done():
-		return nil, net.ErrClosed
-	case resp = <-m.responses:
-		// continue
-	}
-
-	// Unused space is needed further down the stack. To avoid extra
-	// allocations/copying later on, we allocate such space here.
-	const offset = tstun.PacketStartOffset
-
-	var buf []byte
-	switch {
-	case resp.to.Addr().Is4():
-		h := packet.UDP4Header{
-			IP4Header: packet.IP4Header{
-				Src: magicDNSIP,
-				Dst: resp.to.Addr(),
-			},
-			SrcPort: 53,
-			DstPort: resp.to.Port(),
-		}
-		hlen := h.Len()
-		buf = make([]byte, offset+hlen+len(resp.pkt))
-		copy(buf[offset+hlen:], resp.pkt)
-		h.Marshal(buf[offset:])
-	case resp.to.Addr().Is6():
-		h := packet.UDP6Header{
-			IP6Header: packet.IP6Header{
-				Src: magicDNSIPv6,
-				Dst: resp.to.Addr(),
-			},
-			SrcPort: 53,
-			DstPort: resp.to.Port(),
-		}
-		hlen := h.Len()
-		buf = make([]byte, offset+hlen+len(resp.pkt))
-		copy(buf[offset+hlen:], resp.pkt)
-		h.Marshal(buf[offset:])
-	}
-
-	atomic.AddInt32(&m.activeQueriesAtomic, -1)
-	return buf, nil
-}
-
 // Query executes a DNS query received from the given address. The query is
 // provided in bs as a wire-encoded DNS query without any transport header.
 // This method is called for requests arriving over UDP and TCP.
@@ -410,7 +298,7 @@ func (m *Manager) Query(ctx context.Context, bs []byte, from netip.AddrPort) ([]
 		// continue
 	}
 
-	if n := atomic.AddInt32(&m.activeQueriesAtomic, 1); n > maxActiveQueries() {
+	if n := atomic.AddInt32(&m.activeQueriesAtomic, 1); n > maxActiveQueries {
 		atomic.AddInt32(&m.activeQueriesAtomic, -1)
 		metricDNSQueryErrorQueue.Add(1)
 		return nil, errFullQueue
@@ -427,8 +315,8 @@ const (
 	// The RFCs don't specify the max size of a TCP-based DNS query,
 	// but we want to keep this reasonable. Given payloads are typically
 	// much larger and all known client send a single query, I've arbitrarily
-	// chosen 2k.
-	maxReqSizeTCP = 2048
+	// chosen 4k.
+	maxReqSizeTCP = 4096
 )
 
 // dnsTCPSession services DNS requests sent over TCP.
@@ -447,8 +335,16 @@ type dnsTCPSession struct {
 
 func (s *dnsTCPSession) handleWrites() {
 	defer s.conn.Close()
-	defer close(s.responses)
 	defer s.closeCtx()
+
+	// NOTE(andrew): we explicitly do not close the 'responses' channel
+	// when this function exits. If we hit an error and return, we could
+	// still have outstanding 'handleQuery' goroutines running, and if we
+	// closed this channel they'd end up trying to send on a closed channel
+	// when they finish.
+	//
+	// Because we call closeCtx, those goroutines will not hang since they
+	// select on <-s.ctx.Done() as well as s.responses.
 
 	for {
 		select {
@@ -476,6 +372,7 @@ func (s *dnsTCPSession) handleQuery(q []byte) {
 		return
 	}
 
+	// See note in handleWrites (above) regarding this select{}
 	select {
 	case <-s.ctx.Done():
 	case s.responses <- resp:
@@ -483,6 +380,7 @@ func (s *dnsTCPSession) handleQuery(q []byte) {
 }
 
 func (s *dnsTCPSession) handleReads() {
+	defer s.conn.Close()
 	defer close(s.readClosing)
 
 	for {
@@ -515,6 +413,11 @@ func (s *dnsTCPSession) handleReads() {
 			case <-s.ctx.Done():
 				return
 			default:
+				// NOTE: by kicking off the query handling in a
+				// new goroutine, it is possible that we'll
+				// deliver responses out-of-order. This is
+				// explicitly allowed by RFC7766, Section
+				// 6.2.1.1 ("Query Pipelining").
 				go s.handleQuery(buf)
 			}
 		}

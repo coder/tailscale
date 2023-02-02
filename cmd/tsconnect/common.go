@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package main
 
@@ -235,7 +234,7 @@ func runWasmOpt(path string) error {
 		return fmt.Errorf("Cannot stat %v: %w", path, err)
 	}
 	startSize := stat.Size()
-	cmd := exec.Command("../../tool/wasm-opt", "-Oz", path, "-o", path)
+	cmd := exec.Command("../../tool/wasm-opt", "--enable-bulk-memory", "-Oz", path, "-o", path)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	err = cmd.Run()

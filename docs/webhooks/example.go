@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package webhooks provides example consumer code for Tailscale
 // webhooks.
@@ -9,6 +8,7 @@ package webhooks
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -95,7 +95,7 @@ func verifyWebhookSignature(req *http.Request, secret string) (events []event, e
 	// Verify that the signatures match.
 	var match bool
 	for _, signature := range signatures[currentVersion] {
-		if signature == want {
+		if subtle.ConstantTimeCompare([]byte(signature), []byte(want)) == 1 {
 			match = true
 			break
 		}

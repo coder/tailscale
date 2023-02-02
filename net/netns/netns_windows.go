@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package netns
 
@@ -9,11 +8,11 @@ import (
 	"strings"
 	"syscall"
 
+	"golang.org/x/sys/cpu"
 	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 	"tailscale.com/net/interfaces"
 	"tailscale.com/types/logger"
-	"tailscale.com/util/endian"
 )
 
 func interfaceIndex(iface *winipcfg.IPAdapterAddresses) uint32 {
@@ -119,7 +118,7 @@ func bindSocket6(c syscall.RawConn, ifidx uint32) error {
 // representation, suitable for passing to Windows APIs that require a
 // mangled uint32.
 func nativeToBigEndian(i uint32) uint32 {
-	if endian.Big {
+	if cpu.IsBigEndian {
 		return i
 	}
 	return bits.ReverseBytes32(i)

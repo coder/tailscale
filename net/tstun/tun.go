@@ -1,6 +1,5 @@
-// Copyright (c) 2021 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 //go:build !js
 
@@ -14,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"golang.zx2c4.com/wireguard/tun"
+	"github.com/tailscale/wireguard-go/tun"
 	"tailscale.com/envknob"
 	"tailscale.com/types/logger"
 )
@@ -25,11 +24,15 @@ var createTAP func(tapName, bridgeName string) (tun.Device, error)
 // New returns a tun.Device for the requested device name, along with
 // the OS-dependent name that was allocated to the device.
 func New(logf logger.Logf, tunName string) (tun.Device, string, error) {
+	var disableTUNOffload = envknob.Bool("TS_DISABLE_TUN_OFFLOAD")
 	var dev tun.Device
 	var err error
 	if strings.HasPrefix(tunName, "tap:") {
 		if runtime.GOOS != "linux" {
 			return nil, "", errors.New("tap only works on Linux")
+		}
+		if createTAP == nil { // if the ts_omit_tap tag is used
+			return nil, "", errors.New("tap is not supported in this build")
 		}
 		f := strings.Split(tunName, ":")
 		var tapName, bridgeName string
@@ -48,6 +51,11 @@ func New(logf logger.Logf, tunName string) (tun.Device, string, error) {
 			tunMTU = mtu
 		}
 		dev, err = tun.CreateTUN(tunName, tunMTU)
+		if err == nil && disableTUNOffload {
+			if do, ok := dev.(tun.DisableOffloader); ok {
+				do.DisableOffload()
+			}
+		}
 	}
 	if err != nil {
 		return nil, "", err

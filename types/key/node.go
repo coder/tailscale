@@ -1,6 +1,5 @@
-// Copyright (c) 2021 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package key
 
@@ -191,6 +190,23 @@ func NodePublicFromRaw32(raw mem.RO) NodePublic {
 	var ret NodePublic
 	raw.Copy(ret.k[:])
 	return ret
+}
+
+// badOldPrefix is a nodekey/discokey prefix that, when base64'd, serializes
+// with a "bad01" ("bad ol'", ~"bad old") prefix. It's used for expired node
+// keys so when we debug a customer issue, the "bad01" can jump out to us. See:
+//
+//	https://github.com/tailscale/tailscale/issues/6932
+var badOldPrefix = []byte{109, 167, 116, 213, 215, 116}
+
+// NodePublicWithBadOldPrefix returns a copy of k with its leading public key
+// bytes mutated such that it base64's to a ShortString of [bad01] ("bad ol'"
+// [expired node key]).
+func NodePublicWithBadOldPrefix(k NodePublic) NodePublic {
+	var buf [32]byte
+	k.AppendTo(buf[:0])
+	copy(buf[:], badOldPrefix)
+	return NodePublicFromRaw32(mem.B(buf[:]))
 }
 
 // IsZero reports whether k is the zero value.

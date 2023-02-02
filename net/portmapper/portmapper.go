@@ -1,6 +1,5 @@
-// Copyright (c) 2021 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package portmapper is a UDP port mapping client. It currently allows for mapping over
 // NAT-PMP, UPnP, and PCP.
@@ -100,11 +99,11 @@ type mapping interface {
 	// but can be called asynchronously. Release should be idempotent, and thus even if called
 	// multiple times should not cause additional side-effects.
 	Release(context.Context)
-	// goodUntil will return the lease time that the mapping is valid for.
+	// GoodUntil will return the lease time that the mapping is valid for.
 	GoodUntil() time.Time
-	// renewAfter returns the earliest time that the mapping should be renewed.
+	// RenewAfter returns the earliest time that the mapping should be renewed.
 	RenewAfter() time.Time
-	// externalIPPort indicates what port the mapping can be reached from on the outside.
+	// External indicates what port the mapping can be reached from on the outside.
 	External() netip.AddrPort
 }
 
@@ -587,7 +586,7 @@ func (c *Client) createOrGetMapping(ctx context.Context) (external netip.AddrPor
 	}
 }
 
-//go:generate go run tailscale.com/cmd/addlicense -year 2021 -file pmpresultcode_string.go go run golang.org/x/tools/cmd/stringer -type=pmpResultCode -trimprefix=pmpCode
+//go:generate go run tailscale.com/cmd/addlicense -file pmpresultcode_string.go go run golang.org/x/tools/cmd/stringer -type=pmpResultCode -trimprefix=pmpCode
 
 type pmpResultCode uint16
 
@@ -799,7 +798,11 @@ func (c *Client) Probe(ctx context.Context) (res ProbeResult, err error) {
 		switch port {
 		case c.upnpPort():
 			metricUPnPResponse.Add(1)
-			if ip == gw && mem.Contains(mem.B(buf[:n]), mem.S(":InternetGatewayDevice:")) {
+			if mem.Contains(mem.B(buf[:n]), mem.S(":InternetGatewayDevice:")) {
+				if ip != gw {
+					// https://github.com/tailscale/tailscale/issues/5502
+					c.logf("UPnP discovery response from %v, but gateway IP is %v", ip, gw)
+				}
 				meta, err := parseUPnPDiscoResponse(buf[:n])
 				if err != nil {
 					metricUPnPParseErr.Add(1)

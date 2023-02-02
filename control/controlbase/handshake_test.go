@@ -1,6 +1,5 @@
-// Copyright (c) 2021 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package controlbase
 
@@ -12,13 +11,13 @@ import (
 	"testing"
 	"time"
 
-	tsnettest "tailscale.com/net/nettest"
+	"tailscale.com/net/memnet"
 	"tailscale.com/types/key"
 )
 
 func TestHandshake(t *testing.T) {
 	var (
-		clientConn, serverConn = tsnettest.NewConn("noise", 128000)
+		clientConn, serverConn = memnet.NewConn("noise", 128000)
 		serverKey              = key.NewMachine()
 		clientKey              = key.NewMachine()
 		server                 *Conn
@@ -67,7 +66,7 @@ func TestNoReuse(t *testing.T) {
 	)
 	for i := 0; i < 10; i++ {
 		var (
-			clientRaw, serverRaw = tsnettest.NewConn("noise", 128000)
+			clientRaw, serverRaw = memnet.NewConn("noise", 128000)
 			clientBuf, serverBuf bytes.Buffer
 			clientConn           = &readerConn{clientRaw, io.TeeReader(clientRaw, &clientBuf)}
 			serverConn           = &readerConn{serverRaw, io.TeeReader(serverRaw, &serverBuf)}
@@ -165,7 +164,7 @@ func TestTampering(t *testing.T) {
 	// Tamper with every byte of the client initiation message.
 	for i := 0; i < 101; i++ {
 		var (
-			clientConn, serverRaw = tsnettest.NewConn("noise", 128000)
+			clientConn, serverRaw = memnet.NewConn("noise", 128000)
 			serverConn            = &readerConn{serverRaw, &tamperReader{serverRaw, i, 0}}
 			serverKey             = key.NewMachine()
 			clientKey             = key.NewMachine()
@@ -193,7 +192,7 @@ func TestTampering(t *testing.T) {
 	// Tamper with every byte of the server response message.
 	for i := 0; i < 51; i++ {
 		var (
-			clientRaw, serverConn = tsnettest.NewConn("noise", 128000)
+			clientRaw, serverConn = memnet.NewConn("noise", 128000)
 			clientConn            = &readerConn{clientRaw, &tamperReader{clientRaw, i, 0}}
 			serverKey             = key.NewMachine()
 			clientKey             = key.NewMachine()
@@ -218,7 +217,7 @@ func TestTampering(t *testing.T) {
 	// Tamper with every byte of the first server>client transport message.
 	for i := 0; i < 30; i++ {
 		var (
-			clientRaw, serverConn = tsnettest.NewConn("noise", 128000)
+			clientRaw, serverConn = memnet.NewConn("noise", 128000)
 			clientConn            = &readerConn{clientRaw, &tamperReader{clientRaw, 51 + i, 0}}
 			serverKey             = key.NewMachine()
 			clientKey             = key.NewMachine()
@@ -259,7 +258,7 @@ func TestTampering(t *testing.T) {
 	// Tamper with every byte of the first client>server transport message.
 	for i := 0; i < 30; i++ {
 		var (
-			clientConn, serverRaw = tsnettest.NewConn("noise", 128000)
+			clientConn, serverRaw = memnet.NewConn("noise", 128000)
 			serverConn            = &readerConn{serverRaw, &tamperReader{serverRaw, 101 + i, 0}}
 			serverKey             = key.NewMachine()
 			clientKey             = key.NewMachine()

@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package resolvconffile
 
@@ -57,6 +56,31 @@ func TestParse(t *testing.T) {
 		},
 		{in: `searchtailsacle.com`, wantErr: true},
 		{in: `search`, wantErr: true},
+
+		// Issue 6875: there can be multiple search domains, and even if they're
+		// over 253 bytes long total.
+		{
+			in: "search search-01.example search-02.example search-03.example search-04.example search-05.example search-06.example search-07.example search-08.example search-09.example search-10.example search-11.example search-12.example search-13.example search-14.example search-15.example\n",
+			want: &Config{
+				SearchDomains: []dnsname.FQDN{
+					"search-01.example.",
+					"search-02.example.",
+					"search-03.example.",
+					"search-04.example.",
+					"search-05.example.",
+					"search-06.example.",
+					"search-07.example.",
+					"search-08.example.",
+					"search-09.example.",
+					"search-10.example.",
+					"search-11.example.",
+					"search-12.example.",
+					"search-13.example.",
+					"search-14.example.",
+					"search-15.example.",
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {

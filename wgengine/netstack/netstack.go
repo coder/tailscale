@@ -1,11 +1,11 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package netstack wires up gVisor's netstack into Tailscale.
 package netstack
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -63,17 +63,14 @@ var (
 )
 
 func init() {
-	var debugNetstackLeakMode = envknob.String("TS_DEBUG_NETSTACK_LEAK_MODE")
-	// Note: netstacks refsvfs2 package that will eventually replace refs
-	// consumes the refs.LeakMode setting, but enables some checks when set to
-	// UninitializedLeakChecking which is what empty string becomes. This mode
-	// is largely un-useful, so it is explicitly disabled here, and more useful
-	// modes can be set via the envknob. See #4309 for more references.
-	if debugNetstackLeakMode == "" {
-		debugNetstackLeakMode = "disabled"
+	mode := envknob.String("TS_DEBUG_NETSTACK_LEAK_MODE")
+	if mode == "" {
+		return
 	}
 	var lm refs.LeakMode
-	lm.Set(debugNetstackLeakMode)
+	if err := lm.Set(mode); err != nil {
+		panic(err)
+	}
 	refs.SetLeakMode(lm)
 }
 
@@ -110,8 +107,8 @@ type Impl struct {
 	lb        *ipnlocal.LocalBackend // or nil
 	dns       *dns.Manager
 
-	peerapiPort4Atomic uint32 // uint16 port number for IPv4 peerapi
-	peerapiPort6Atomic uint32 // uint16 port number for IPv6 peerapi
+	peerapiPort4Atomic atomic.Uint32 // uint16 port number for IPv4 peerapi
+	peerapiPort6Atomic atomic.Uint32 // uint16 port number for IPv6 peerapi
 
 	// atomicIsLocalIPFunc holds a func that reports whether an IP
 	// is a local (non-subnet) Tailscale IP address of this
@@ -207,17 +204,11 @@ func (ns *Impl) Close() error {
 	return nil
 }
 
-// SetLocalBackend sets the LocalBackend; it should only be run before
-// the Start method is called.
-func (ns *Impl) SetLocalBackend(lb *ipnlocal.LocalBackend) {
-	ns.lb = lb
-}
-
 // wrapProtoHandler returns protocol handler h wrapped in a version
 // that dynamically reconfigures ns's subnet addresses as needed for
 // outbound traffic.
-func (ns *Impl) wrapProtoHandler(h func(stack.TransportEndpointID, *stack.PacketBuffer) bool) func(stack.TransportEndpointID, *stack.PacketBuffer) bool {
-	return func(tei stack.TransportEndpointID, pb *stack.PacketBuffer) bool {
+func (ns *Impl) wrapProtoHandler(h func(stack.TransportEndpointID, stack.PacketBufferPtr) bool) func(stack.TransportEndpointID, stack.PacketBufferPtr) bool {
+	return func(tei stack.TransportEndpointID, pb stack.PacketBufferPtr) bool {
 		addr := tei.LocalAddress
 		ip, ok := netip.AddrFromSlice(net.IP(addr))
 		if !ok {
@@ -234,7 +225,11 @@ func (ns *Impl) wrapProtoHandler(h func(stack.TransportEndpointID, *stack.Packet
 
 // Start sets up all the handlers so netstack can start working. Implements
 // wgengine.FakeImpl.
-func (ns *Impl) Start() error {
+func (ns *Impl) Start(lb *ipnlocal.LocalBackend) error {
+	if lb == nil {
+		panic("nil LocalBackend")
+	}
+	ns.lb = lb
 	ns.e.AddNetworkMapCallback(ns.updateIPs)
 	// size = 0 means use default buffer size
 	const tcpReceiveBufferSize = 0
@@ -407,7 +402,7 @@ func (ns *Impl) handleLocalPackets(p *packet.Parsed, t *tstun.Wrapper) filter.Re
 	}
 
 	packetBuf := stack.NewPacketBuffer(stack.PacketBufferOptions{
-		Payload: bufferv2.MakeWithData(append([]byte(nil), p.Buffer()...)),
+		Payload: bufferv2.MakeWithData(bytes.Clone(p.Buffer())),
 	})
 	ns.linkEP.InjectInbound(pn, packetBuf)
 	packetBuf.DecRef()
@@ -451,7 +446,7 @@ func (ns *Impl) DialContextUDP(ctx context.Context, ipp netip.AddrPort) (*gonet.
 func (ns *Impl) inject() {
 	for {
 		pkt := ns.linkEP.ReadContext(ns.ctx)
-		if pkt == nil {
+		if pkt.IsNil() {
 			if ns.ctx.Err() != nil {
 				// Return without logging.
 				return
@@ -521,7 +516,7 @@ func (ns *Impl) processSSH() bool {
 	return ns.lb != nil && ns.lb.ShouldRunSSH()
 }
 
-func (ns *Impl) peerAPIPortAtomic(ip netip.Addr) *uint32 {
+func (ns *Impl) peerAPIPortAtomic(ip netip.Addr) *atomic.Uint32 {
 	if ip.Is4() {
 		return &ns.peerapiPort4Atomic
 	} else {
@@ -535,33 +530,33 @@ var viaRange = tsaddr.TailscaleViaRange()
 // WireGuard peer) should be handled by netstack.
 func (ns *Impl) shouldProcessInbound(p *packet.Parsed, t *tstun.Wrapper) bool {
 	// Handle incoming peerapi connections in netstack.
-	if ns.lb != nil && p.IPProto == ipproto.TCP {
+	dstIP := p.Dst.Addr()
+	isLocal := ns.isLocalIP(dstIP)
+
+	// Handle TCP connection to the Tailscale IP(s) in some cases:
+	if ns.lb != nil && p.IPProto == ipproto.TCP && isLocal {
 		var peerAPIPort uint16
-		dstIP := p.Dst.Addr()
-		if p.TCPFlags&packet.TCPSynAck == packet.TCPSyn && ns.isLocalIP(dstIP) {
-			if port, ok := ns.lb.GetPeerAPIPort(p.Dst.Addr()); ok {
+
+		if p.TCPFlags&packet.TCPSynAck == packet.TCPSyn {
+			if port, ok := ns.lb.GetPeerAPIPort(dstIP); ok {
 				peerAPIPort = port
-				atomic.StoreUint32(ns.peerAPIPortAtomic(dstIP), uint32(port))
+				ns.peerAPIPortAtomic(dstIP).Store(uint32(port))
 			}
 		} else {
-			peerAPIPort = uint16(atomic.LoadUint32(ns.peerAPIPortAtomic(dstIP)))
+			peerAPIPort = uint16(ns.peerAPIPortAtomic(dstIP).Load())
 		}
-		if p.IPProto == ipproto.TCP && p.Dst.Port() == peerAPIPort {
+		dport := p.Dst.Port()
+		if dport == peerAPIPort {
+			return true
+		}
+		// Also handle SSH connections, webserver, etc, if enabled:
+		if ns.lb.ShouldInterceptTCPPort(dport) {
 			return true
 		}
 	}
-	if ns.isInboundTSSH(p) && ns.processSSH() {
-		return true
+	if p.IPVersion == 6 && !isLocal && viaRange.Contains(dstIP) {
+		return ns.lb != nil && ns.lb.ShouldHandleViaIP(dstIP)
 	}
-	if p.IPVersion == 6 && viaRange.Contains(p.Dst.Addr()) {
-		return ns.lb != nil && ns.lb.ShouldHandleViaIP(p.Dst.Addr())
-	}
-	if !ns.ProcessLocalIPs && !ns.ProcessSubnets {
-		// Fast path for common case (e.g. Linux server in TUN mode) where
-		// netstack isn't used at all; don't even do an isLocalIP lookup.
-		return false
-	}
-	isLocal := ns.isLocalIP(p.Dst.Addr())
 	if ns.ProcessLocalIPs && isLocal {
 		return true
 	}
@@ -647,12 +642,6 @@ func (ns *Impl) userPing(dstIP netip.Addr, pingResPkt []byte) {
 	}
 }
 
-func (ns *Impl) isInboundTSSH(p *packet.Parsed) bool {
-	return p.IPProto == ipproto.TCP &&
-		p.Dst.Port() == 22 &&
-		ns.isLocalIP(p.Dst.Addr())
-}
-
 // injectInbound is installed as a packet hook on the 'inbound' (from a
 // WireGuard peer) path. Returning filter.Accept releases the packet to
 // continue normally (typically being delivered to the host networking stack),
@@ -695,7 +684,7 @@ func (ns *Impl) injectInbound(p *packet.Parsed, t *tstun.Wrapper) filter.Respons
 		ns.logf("[v2] packet in (from %v): % x", p.Src, p.Buffer())
 	}
 	packetBuf := stack.NewPacketBuffer(stack.PacketBufferOptions{
-		Payload: bufferv2.MakeWithData(append([]byte(nil), p.Buffer()...)),
+		Payload: bufferv2.MakeWithData(bytes.Clone(p.Buffer())),
 	})
 	ns.linkEP.InjectInbound(pn, packetBuf)
 	packetBuf.DecRef()
@@ -785,6 +774,8 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 		r.Complete(true) // sends a RST
 		return
 	}
+	clientRemotePort := reqDetails.RemotePort
+	clientRemoteAddrPort := netip.AddrPortFrom(clientRemoteIP, clientRemotePort)
 
 	dialIP := netaddrIPFromNetstackIP(reqDetails.LocalAddress)
 	isTailscaleIP := tsaddr.IsTailscaleIP(dialIP)
@@ -892,6 +883,17 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 				return
 			}
 			ns.lb.HandleQuad100Port80Conn(c)
+			return
+		}
+		if ns.lb.ShouldInterceptTCPPort(reqDetails.LocalPort) && ns.isLocalIP(dialIP) {
+			getTCPConn := func() (_ net.Conn, ok bool) {
+				c := createConn()
+				return c, c != nil
+			}
+			sendRST := func() {
+				r.Complete(true)
+			}
+			ns.lb.HandleInterceptedTCPConn(reqDetails.LocalPort, clientRemoteAddrPort, getTCPConn, sendRST)
 			return
 		}
 	}

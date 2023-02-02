@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package persist
 
@@ -8,6 +7,7 @@ import (
 	"reflect"
 	"testing"
 
+	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 )
 
@@ -21,7 +21,7 @@ func fieldsOf(t reflect.Type) (fields []string) {
 }
 
 func TestPersistEqual(t *testing.T) {
-	persistHandles := []string{"LegacyFrontendPrivateMachineKey", "PrivateNodeKey", "OldPrivateNodeKey", "Provider", "LoginName"}
+	persistHandles := []string{"LegacyFrontendPrivateMachineKey", "PrivateNodeKey", "OldPrivateNodeKey", "Provider", "LoginName", "UserProfile", "NetworkLockKey", "NodeID", "DisallowedTKAStateIDs"}
 	if have := fieldsOf(reflect.TypeOf(Persist{})); !reflect.DeepEqual(have, persistHandles) {
 		t.Errorf("Persist.Equal check might be out of sync\nfields: %q\nhandled: %q\n",
 			have, persistHandles)
@@ -29,6 +29,7 @@ func TestPersistEqual(t *testing.T) {
 
 	m1 := key.NewMachine()
 	k1 := key.NewNode()
+	nl1 := key.NewNLPrivate()
 	tests := []struct {
 		a, b *Persist
 		want bool
@@ -90,6 +91,60 @@ func TestPersistEqual(t *testing.T) {
 		{
 			&Persist{LoginName: "foo@tailscale.com"},
 			&Persist{LoginName: "foo@tailscale.com"},
+			true,
+		},
+		{
+			&Persist{UserProfile: tailcfg.UserProfile{
+				ID: tailcfg.UserID(3),
+			}},
+			&Persist{UserProfile: tailcfg.UserProfile{
+				ID: tailcfg.UserID(3),
+			}},
+			true,
+		},
+		{
+			&Persist{UserProfile: tailcfg.UserProfile{
+				ID: tailcfg.UserID(3),
+			}},
+			&Persist{UserProfile: tailcfg.UserProfile{
+				ID:          tailcfg.UserID(3),
+				DisplayName: "foo",
+			}},
+			false,
+		},
+		{
+			&Persist{NetworkLockKey: nl1},
+			&Persist{NetworkLockKey: nl1},
+			true,
+		},
+		{
+			&Persist{NetworkLockKey: nl1},
+			&Persist{NetworkLockKey: key.NewNLPrivate()},
+			false,
+		},
+		{
+			&Persist{NodeID: "abc"},
+			&Persist{NodeID: "abc"},
+			true,
+		},
+		{
+			&Persist{NodeID: ""},
+			&Persist{NodeID: "abc"},
+			false,
+		},
+		{
+			&Persist{DisallowedTKAStateIDs: nil},
+			&Persist{DisallowedTKAStateIDs: []string{"0:0"}},
+			false,
+		},
+		{
+			&Persist{DisallowedTKAStateIDs: []string{"0:1"}},
+			&Persist{DisallowedTKAStateIDs: []string{"0:1"}},
+			true,
+		},
+		{
+			&Persist{DisallowedTKAStateIDs: []string{}},
+			&Persist{DisallowedTKAStateIDs: nil},
 			true,
 		},
 	}

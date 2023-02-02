@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package iosdeps is a just a list of the packages we import on iOS, to let us
 // test that our transitive closure of dependencies on iOS doesn't accidentally
@@ -35,10 +34,10 @@ import (
 	_ "time"
 	_ "unsafe"
 
+	_ "github.com/tailscale/wireguard-go/device"
+	_ "github.com/tailscale/wireguard-go/tun"
 	_ "go4.org/mem"
 	_ "golang.org/x/sys/unix"
-	_ "golang.zx2c4.com/wireguard/device"
-	_ "golang.zx2c4.com/wireguard/tun"
 	_ "tailscale.com/hostinfo"
 	_ "tailscale.com/ipn"
 	_ "tailscale.com/ipn/ipnlocal"

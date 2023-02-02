@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package key
 
@@ -36,5 +35,14 @@ func TestNLPrivate(t *testing.T) {
 	}
 	if !bytes.Equal(decodedPub.k[:], pub.k[:]) {
 		t.Error("decoded and generated NLPublic bytes differ")
+	}
+
+	// Test decoding with CLI prefix: 'nlpub:' => 'tlpub:'
+	decodedPub = NLPublic{}
+	if err := decodedPub.UnmarshalText([]byte(pub.CLIString())); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decodedPub.k[:], pub.k[:]) {
+		t.Error("decoded and generated NLPublic bytes differ (CLI prefix)")
 	}
 }

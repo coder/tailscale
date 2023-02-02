@@ -1,6 +1,5 @@
-// Copyright (c) 2021 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package cli
 
@@ -17,7 +16,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/netip"
+	"net/url"
 	"os"
 	"runtime"
 	"strconv"
@@ -25,14 +26,19 @@ import (
 	"time"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
+	"golang.org/x/net/http/httpproxy"
+	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/control/controlhttp"
 	"tailscale.com/hostinfo"
 	"tailscale.com/ipn"
 	"tailscale.com/net/tsaddr"
+	"tailscale.com/net/tshttpproxy"
 	"tailscale.com/paths"
 	"tailscale.com/safesocket"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
+	"tailscale.com/types/logger"
+	"tailscale.com/util/must"
 )
 
 var debugCmd = &ffcli.Command{
@@ -69,6 +75,17 @@ var debugCmd = &ffcli.Command{
 			ShortHelp: "print tailscaled's goroutines",
 		},
 		{
+			Name:      "daemon-logs",
+			Exec:      runDaemonLogs,
+			ShortHelp: "watch tailscaled's server logs",
+			FlagSet: (func() *flag.FlagSet {
+				fs := newFlagSet("daemon-logs")
+				fs.IntVar(&daemonLogsArgs.verbose, "verbose", 0, "verbosity level")
+				fs.BoolVar(&daemonLogsArgs.time, "time", false, "include client time")
+				return fs
+			})(),
+		},
+		{
 			Name:      "metrics",
 			Exec:      runDaemonMetrics,
 			ShortHelp: "print tailscaled's metrics",
@@ -96,7 +113,7 @@ var debugCmd = &ffcli.Command{
 		{
 			Name:      "local-creds",
 			Exec:      runLocalCreds,
-			ShortHelp: "print how to access Tailscale local API",
+			ShortHelp: "print how to access Tailscale LocalAPI",
 		},
 		{
 			Name:      "restun",
@@ -125,6 +142,8 @@ var debugCmd = &ffcli.Command{
 			FlagSet: (func() *flag.FlagSet {
 				fs := newFlagSet("watch-ipn")
 				fs.BoolVar(&watchIPNArgs.netmap, "netmap", true, "include netmap in messages")
+				fs.BoolVar(&watchIPNArgs.initial, "initial", false, "include initial status")
+				fs.BoolVar(&watchIPNArgs.showPrivateKey, "show-private-key", false, "include node private key in printed netmap")
 				return fs
 			})(),
 		},
@@ -141,8 +160,34 @@ var debugCmd = &ffcli.Command{
 				fs := newFlagSet("ts2021")
 				fs.StringVar(&ts2021Args.host, "host", "controlplane.tailscale.com", "hostname of control plane")
 				fs.IntVar(&ts2021Args.version, "version", int(tailcfg.CurrentCapabilityVersion), "protocol version")
+				fs.BoolVar(&ts2021Args.verbose, "verbose", false, "be extra verbose")
 				return fs
 			})(),
+		},
+		{
+			Name:      "set-expire",
+			Exec:      runSetExpire,
+			ShortHelp: "manipulate node key expiry for testing",
+			FlagSet: (func() *flag.FlagSet {
+				fs := newFlagSet("set-expire")
+				fs.DurationVar(&setExpireArgs.in, "in", 0, "if non-zero, set node key to expire this duration from now")
+				return fs
+			})(),
+		},
+		{
+			Name:      "dev-store-set",
+			Exec:      runDevStoreSet,
+			ShortHelp: "set a key/value pair during development",
+			FlagSet: (func() *flag.FlagSet {
+				fs := newFlagSet("store-set")
+				fs.BoolVar(&devStoreSetArgs.danger, "danger", false, "accept danger")
+				return fs
+			})(),
+		},
+		{
+			Name:      "derp",
+			Exec:      runDebugDERP,
+			ShortHelp: "test a DERP configuration",
 		},
 	},
 }
@@ -178,9 +223,9 @@ func runDebug(ctx context.Context, args []string) error {
 	}
 	var usedFlag bool
 	if out := debugArgs.cpuFile; out != "" {
-		usedFlag = true // TODO(bradfitz): add "profile" subcommand
+		usedFlag = true // TODO(bradfitz): add "pprof" subcommand
 		log.Printf("Capturing CPU profile for %v seconds ...", debugArgs.cpuSec)
-		if v, err := localClient.Profile(ctx, "profile", debugArgs.cpuSec); err != nil {
+		if v, err := localClient.Pprof(ctx, "profile", debugArgs.cpuSec); err != nil {
 			return err
 		} else {
 			if err := writeProfile(out, v); err != nil {
@@ -190,9 +235,9 @@ func runDebug(ctx context.Context, args []string) error {
 		}
 	}
 	if out := debugArgs.memFile; out != "" {
-		usedFlag = true // TODO(bradfitz): add "profile" subcommand
+		usedFlag = true // TODO(bradfitz): add "pprof" subcommand
 		log.Printf("Capturing memory profile ...")
-		if v, err := localClient.Profile(ctx, "heap", 0); err != nil {
+		if v, err := localClient.Pprof(ctx, "heap", 0); err != nil {
 			return err
 		} else {
 			if err := writeProfile(out, v); err != nil {
@@ -213,9 +258,8 @@ func runDebug(ctx context.Context, args []string) error {
 			e.Encode(wfs)
 			return nil
 		}
-		delete := strings.HasPrefix(debugArgs.file, "delete:")
-		if delete {
-			return localClient.DeleteWaitingFile(ctx, strings.TrimPrefix(debugArgs.file, "delete:"))
+		if name, ok := strings.CutPrefix(debugArgs.file, "delete:"); ok {
+			return localClient.DeleteWaitingFile(ctx, name)
 		}
 		rc, size, err := localClient.GetWaitingFile(ctx, debugArgs.file)
 		if err != nil {
@@ -240,11 +284,40 @@ func runLocalCreds(ctx context.Context, args []string) error {
 		return nil
 	}
 	if runtime.GOOS == "windows" {
-		printf("curl http://localhost:%v/localapi/v0/status\n", safesocket.WindowsLocalPort)
+		runLocalAPIProxy()
 		return nil
 	}
-	printf("curl --unix-socket %s http://foo/localapi/v0/status\n", paths.DefaultTailscaledSocket())
+	printf("curl --unix-socket %s http://local-tailscaled.sock/localapi/v0/status\n", paths.DefaultTailscaledSocket())
 	return nil
+}
+
+type localClientRoundTripper struct{}
+
+func (localClientRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return localClient.DoLocalRequest(req)
+}
+
+func runLocalAPIProxy() {
+	rp := httputil.NewSingleHostReverseProxy(&url.URL{
+		Scheme: "http",
+		Host:   apitype.LocalAPIHost,
+		Path:   "/",
+	})
+	dir := rp.Director
+	rp.Director = func(req *http.Request) {
+		dir(req)
+		req.Host = ""
+		req.RequestURI = ""
+	}
+	rp.Transport = localClientRoundTripper{}
+	lc, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Serving LocalAPI proxy on http://%s\n", lc.Addr())
+	fmt.Printf("curl.exe http://%v/localapi/v0/status\n", lc.Addr())
+	fmt.Printf("Ctrl+C to stop")
+	http.Serve(lc, rp)
 }
 
 var prefsArgs struct {
@@ -266,23 +339,36 @@ func runPrefs(ctx context.Context, args []string) error {
 }
 
 var watchIPNArgs struct {
-	netmap bool
+	netmap         bool
+	initial        bool
+	showPrivateKey bool
 }
 
 func runWatchIPN(ctx context.Context, args []string) error {
-	c, bc, ctx, cancel := connect(ctx)
-	defer cancel()
-
-	bc.SetNotifyCallback(func(n ipn.Notify) {
+	var mask ipn.NotifyWatchOpt
+	if watchIPNArgs.initial {
+		mask = ipn.NotifyInitialState | ipn.NotifyInitialPrefs | ipn.NotifyInitialNetMap
+	}
+	if !watchIPNArgs.showPrivateKey {
+		mask |= ipn.NotifyNoPrivateKeys
+	}
+	watcher, err := localClient.WatchIPNBus(ctx, mask)
+	if err != nil {
+		return err
+	}
+	defer watcher.Close()
+	printf("Connected.\n")
+	for {
+		n, err := watcher.Next()
+		if err != nil {
+			return err
+		}
 		if !watchIPNArgs.netmap {
 			n.NetMap = nil
 		}
 		j, _ := json.MarshalIndent(n, "", "\t")
 		printf("%s\n", j)
-	})
-	bc.RequestEngineStatus()
-	pump(ctx, bc, c)
-	return errors.New("exit")
+	}
 }
 
 func runDERPMap(ctx context.Context, args []string) error {
@@ -350,6 +436,39 @@ func runDaemonGoroutines(ctx context.Context, args []string) error {
 	}
 	Stdout.Write(goroutines)
 	return nil
+}
+
+var daemonLogsArgs struct {
+	verbose int
+	time    bool
+}
+
+func runDaemonLogs(ctx context.Context, args []string) error {
+	logs, err := localClient.TailDaemonLogs(ctx)
+	if err != nil {
+		return err
+	}
+	d := json.NewDecoder(logs)
+	for {
+		var line struct {
+			Text    string `json:"text"`
+			Verbose int    `json:"v"`
+			Time    string `json:"client_time"`
+		}
+		err := d.Decode(&line)
+		if err != nil {
+			return err
+		}
+		line.Text = strings.TrimSpace(line.Text)
+		if line.Text == "" || line.Verbose > daemonLogsArgs.verbose {
+			continue
+		}
+		if daemonLogsArgs.time {
+			fmt.Printf("%s %s\n", line.Time, line.Text)
+		} else {
+			fmt.Println(line.Text)
+		}
+	}
 }
 
 var metricsArgs struct {
@@ -455,19 +574,35 @@ func runVia(ctx context.Context, args []string) error {
 var ts2021Args struct {
 	host    string // "controlplane.tailscale.com"
 	version int    // 27 or whatever
+	verbose bool
 }
 
 func runTS2021(ctx context.Context, args []string) error {
 	log.SetOutput(os.Stdout)
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 
+	keysURL := "https://" + ts2021Args.host + "/key?v=" + strconv.Itoa(ts2021Args.version)
+
+	if ts2021Args.verbose {
+		u, err := url.Parse(keysURL)
+		if err != nil {
+			return err
+		}
+		envConf := httpproxy.FromEnvironment()
+		if *envConf == (httpproxy.Config{}) {
+			log.Printf("HTTP proxy env: (none)")
+		} else {
+			log.Printf("HTTP proxy env: %+v", envConf)
+		}
+		proxy, err := tshttpproxy.ProxyFromEnvironment(&http.Request{URL: u})
+		log.Printf("tshttpproxy.ProxyFromEnvironment = (%v, %v)", proxy, err)
+	}
 	machinePrivate := key.NewMachine()
 	var dialer net.Dialer
 
 	var keys struct {
 		PublicKey key.MachinePublic
 	}
-	keysURL := "https://" + ts2021Args.host + "/key?v=" + strconv.Itoa(ts2021Args.version)
 	log.Printf("Fetching keys from %s ...", keysURL)
 	req, err := http.NewRequestWithContext(ctx, "GET", keysURL, nil)
 	if err != nil {
@@ -487,6 +622,9 @@ func runTS2021(ctx context.Context, args []string) error {
 		return fmt.Errorf("decoding /keys JSON: %w", err)
 	}
 	res.Body.Close()
+	if ts2021Args.verbose {
+		log.Printf("got public key: %v", keys.PublicKey)
+	}
 
 	dialFunc := func(ctx context.Context, network, address string) (net.Conn, error) {
 		log.Printf("Dial(%q, %q) ...", network, address)
@@ -498,7 +636,10 @@ func runTS2021(ctx context.Context, args []string) error {
 		}
 		return c, err
 	}
-
+	var logf logger.Logf
+	if ts2021Args.verbose {
+		logf = log.Printf
+	}
 	conn, err := (&controlhttp.Dialer{
 		Hostname:        ts2021Args.host,
 		HTTPPort:        "80",
@@ -507,6 +648,7 @@ func runTS2021(ctx context.Context, args []string) error {
 		ControlKey:      keys.PublicKey,
 		ProtocolVersion: uint16(ts2021Args.version),
 		Dialer:          dialFunc,
+		Logf:            logf,
 	}).Dial(ctx)
 	log.Printf("controlhttp.Dial = %p, %v", conn, err)
 	if err != nil {
@@ -545,4 +687,49 @@ func runDebugComponentLogs(ctx context.Context, args []string) error {
 		fmt.Printf("Enabled debug logs for component %q for %v\n", component, dur)
 	}
 	return nil
+}
+
+var devStoreSetArgs struct {
+	danger bool
+}
+
+func runDevStoreSet(ctx context.Context, args []string) error {
+	if len(args) != 2 {
+		return errors.New("usage: dev-store-set --danger <key> <value>")
+	}
+	if !devStoreSetArgs.danger {
+		return errors.New("this command is dangerous; use --danger to proceed")
+	}
+	key, val := args[0], args[1]
+	if val == "-" {
+		valb, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return err
+		}
+		val = string(valb)
+	}
+	return localClient.SetDevStoreKeyValue(ctx, key, val)
+}
+
+func runDebugDERP(ctx context.Context, args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: debug derp <region>")
+	}
+	st, err := localClient.DebugDERPRegion(ctx, args[0])
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s\n", must.Get(json.MarshalIndent(st, "", " ")))
+	return nil
+}
+
+var setExpireArgs struct {
+	in time.Duration
+}
+
+func runSetExpire(ctx context.Context, args []string) error {
+	if len(args) != 0 || setExpireArgs.in == 0 {
+		return errors.New("usage --in=<duration>")
+	}
+	return localClient.DebugSetExpireIn(ctx, setExpireArgs.in)
 }

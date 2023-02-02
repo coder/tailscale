@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package safesocket creates either a Unix socket, if possible, or
 // otherwise a localhost TCP connection.
@@ -12,10 +11,6 @@ import (
 	"runtime"
 	"time"
 )
-
-// WindowsLocalPort is the default localhost TCP port
-// used by safesocket on Windows.
-const WindowsLocalPort = 41112
 
 type closeable interface {
 	CloseRead() error
@@ -57,13 +52,19 @@ func tailscaledStillStarting() bool {
 	return tailscaledProcExists()
 }
 
-// A ConnectionStrategy is a plan for how to connect to tailscaled or equivalent (e.g. IPNExtension on macOS).
+// A ConnectionStrategy is a plan for how to connect to tailscaled or equivalent
+// (e.g. IPNExtension on macOS).
+//
+// This is a struct because prior to Tailscale 1.34.0 it was more complicated
+// and there were multiple protocols that could be used. See LocalClient's
+// dialer for what happens in practice these days (2022-11-28).
+//
+// TODO(bradfitz): we can remove this struct now and revert this package closer
+// to its original smaller API.
 type ConnectionStrategy struct {
-	// For now, a ConnectionStrategy is just a unix socket path, a TCP port,
-	// and a flag indicating whether to try fallback connections options.
-	path     string
-	port     uint16
-	fallback bool
+	path string // unix socket path
+	port uint16 // TCP port
+
 	// Longer term, a ConnectionStrategy should be an ordered list of things to attempt,
 	// with just the information required to connection for each.
 	//
@@ -71,7 +72,7 @@ type ConnectionStrategy struct {
 	//
 	//   tailscale sandbox | tailscaled sandbox | OS      | connection
 	//   ------------------|--------------------|---------|-----------
-	//   no                | no                 | unix    | unix socket
+	//   no                | no                 | unix*   | unix socket *includes tailscaled on darwin
 	//   no                | no                 | Windows | TCP/port
 	//   no                | no                 | wasm    | memconn
 	//   no                | Network Extension  | macOS   | TCP/port/token, port/token from lsof
@@ -90,26 +91,7 @@ type ConnectionStrategy struct {
 // It falls back to auto-discovery across sandbox boundaries on macOS.
 // TODO: maybe take no arguments, since path is irrelevant on Windows? Discussion in PR 3499.
 func DefaultConnectionStrategy(path string) *ConnectionStrategy {
-	return &ConnectionStrategy{path: path, port: WindowsLocalPort, fallback: true}
-}
-
-// UsePort modifies s to use port for the TCP port when applicable.
-// UsePort is only applicable on Windows, and only then
-// when not using the default for Windows.
-func (s *ConnectionStrategy) UsePort(port uint16) {
-	s.port = port
-}
-
-// UseFallback modifies s to set whether it should fall back
-// to connecting to the macOS GUI's tailscaled
-// if the Unix socket path wasn't reachable.
-func (s *ConnectionStrategy) UseFallback(b bool) {
-	s.fallback = b
-}
-
-// ExactPath returns a connection strategy that only attempts to connect via path.
-func ExactPath(path string) *ConnectionStrategy {
-	return &ConnectionStrategy{path: path, fallback: false}
+	return &ConnectionStrategy{path: path}
 }
 
 // Connect connects to tailscaled using s
@@ -125,10 +107,9 @@ func Connect(s *ConnectionStrategy) (net.Conn, error) {
 }
 
 // Listen returns a listener either on Unix socket path (on Unix), or
-// the localhost port (on Windows).
-// If port is 0, the returned gotPort says which port was selected on Windows.
-func Listen(path string, port uint16) (_ net.Listener, gotPort uint16, _ error) {
-	return listen(path, port)
+// the NamedPipe path (on Windows).
+func Listen(path string) (net.Listener, error) {
+	return listen(path)
 }
 
 var (

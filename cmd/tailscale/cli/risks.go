@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package cli
 
@@ -18,6 +17,7 @@ import (
 var (
 	riskTypes   []string
 	riskLoseSSH = registerRiskType("lose-ssh")
+	riskAll     = registerRiskType("all")
 )
 
 func registerRiskType(riskType string) string {
@@ -35,7 +35,7 @@ func registerAcceptRiskFlag(f *flag.FlagSet, acceptedRisks *string) {
 // risks in acceptedRisks.
 func isRiskAccepted(riskType, acceptedRisks string) bool {
 	for _, r := range strings.Split(acceptedRisks, ",") {
-		if r == riskType {
+		if r == riskType || r == riskAll {
 			return true
 		}
 	}

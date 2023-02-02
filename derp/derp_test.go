@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package derp
 
@@ -19,13 +18,14 @@ import (
 	"net"
 	"os"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"go4.org/mem"
 	"golang.org/x/time/rate"
-	"tailscale.com/net/nettest"
+	"tailscale.com/net/memnet"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 )
@@ -126,7 +126,7 @@ func TestSendRecv(t *testing.T) {
 					if m.Source.IsZero() {
 						t.Errorf("zero Source address in ReceivedPacket")
 					}
-					recvChs[i] <- append([]byte(nil), m.Data...)
+					recvChs[i] <- bytes.Clone(m.Data)
 				}
 			}
 		}(i)
@@ -235,9 +235,9 @@ func TestSendFreeze(t *testing.T) {
 	// Then cathy stops processing messages.
 	// That should not interfere with alice talking to bob.
 
-	newClient := func(ctx context.Context, name string, k key.NodePrivate) (c *Client, clientConn nettest.Conn) {
+	newClient := func(ctx context.Context, name string, k key.NodePrivate) (c *Client, clientConn memnet.Conn) {
 		t.Helper()
-		c1, c2 := nettest.NewConn(name, 1024)
+		c1, c2 := memnet.NewConn(name, 1024)
 		go s.Accept(ctx, c1, bufio.NewReadWriter(bufio.NewReader(c1), bufio.NewWriter(c1)), name)
 
 		brw := bufio.NewReadWriter(bufio.NewReader(c2), bufio.NewWriter(c2))
@@ -723,20 +723,14 @@ func TestForwarderRegistration(t *testing.T) {
 	s.AddPacketForwarder(u1, testFwd(100))
 	s.AddPacketForwarder(u1, testFwd(100)) // dup to trigger dup path
 	want(map[key.NodePublic]PacketForwarder{
-		u1: multiForwarder{
-			testFwd(1):   1,
-			testFwd(100): 2,
-		},
+		u1: newMultiForwarder(testFwd(1), testFwd(100)),
 	})
 	wantCounter(&s.multiForwarderCreated, 1)
 
 	// Removing a forwarder in a multi set that doesn't exist; does nothing.
 	s.RemovePacketForwarder(u1, testFwd(55))
 	want(map[key.NodePublic]PacketForwarder{
-		u1: multiForwarder{
-			testFwd(1):   1,
-			testFwd(100): 2,
-		},
+		u1: newMultiForwarder(testFwd(1), testFwd(100)),
 	})
 
 	// Removing a forwarder in a multi set that does exist should collapse it away
@@ -785,6 +779,76 @@ func TestForwarderRegistration(t *testing.T) {
 	})
 }
 
+type channelFwd struct {
+	// id is to ensure that different instances that reference the
+	// same channel are not equal, as they are used as keys in the
+	// multiForwarder map.
+	id int
+	c  chan []byte
+}
+
+func (f channelFwd) ForwardPacket(_ key.NodePublic, _ key.NodePublic, packet []byte) error {
+	f.c <- packet
+	return nil
+}
+
+func TestMultiForwarder(t *testing.T) {
+	received := 0
+	var wg sync.WaitGroup
+	ch := make(chan []byte)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	s := &Server{
+		clients:     make(map[key.NodePublic]clientSet),
+		clientsMesh: map[key.NodePublic]PacketForwarder{},
+	}
+	u := pubAll(1)
+	s.AddPacketForwarder(u, channelFwd{1, ch})
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-ch:
+				received += 1
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for {
+			s.AddPacketForwarder(u, channelFwd{2, ch})
+			s.AddPacketForwarder(u, channelFwd{3, ch})
+			s.RemovePacketForwarder(u, channelFwd{2, ch})
+			s.RemovePacketForwarder(u, channelFwd{1, ch})
+			s.AddPacketForwarder(u, channelFwd{1, ch})
+			s.RemovePacketForwarder(u, channelFwd{3, ch})
+			if ctx.Err() != nil {
+				return
+			}
+		}
+	}()
+
+	// Number of messages is chosen arbitrarily, just for this loop to
+	// run long enough concurrently with {Add,Remove}PacketForwarder loop above.
+	numMsgs := 5000
+	var fwd PacketForwarder
+	for i := 0; i < numMsgs; i++ {
+		s.mu.Lock()
+		fwd = s.clientsMesh[u]
+		s.mu.Unlock()
+		fwd.ForwardPacket(u, u, []byte(strconv.Itoa(i)))
+	}
+
+	cancel()
+	wg.Wait()
+	if received != numMsgs {
+		t.Errorf("expected %d messages to be forwarded; got %d", numMsgs, received)
+	}
+}
 func TestMetaCert(t *testing.T) {
 	priv := key.NewNode()
 	pub := priv.Public()

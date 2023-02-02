@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package netcheck checks the network conditions from the current host.
 package netcheck
@@ -19,6 +18,7 @@ import (
 	"net/netip"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -1128,12 +1128,23 @@ func (c *Client) checkCaptivePortal(ctx context.Context, dm *tailcfg.DERPMap, pr
 	}
 
 	node := dm.Regions[preferredDERP].Nodes[0]
+
+	if strings.HasSuffix(node.HostName, tailcfg.DotInvalid) {
+		// Don't try to connect to invalid hostnames. This occurred in tests:
+		// https://github.com/tailscale/tailscale/issues/6207
+		// TODO(bradfitz,andrew-d): how to actually handle this nicely?
+		return false, nil
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "GET", "http://"+node.HostName+"/generate_204", nil)
 	if err != nil {
 		return false, err
 	}
 
-	chal := "tailscale " + node.HostName
+	// Note: the set of valid characters in a challenge and the total
+	// length is limited; see isChallengeChar in cmd/derper for more
+	// details.
+	chal := "ts_" + node.HostName
 	req.Header.Set("X-Tailscale-Challenge", chal)
 	r, err := noRedirectClient.Do(req)
 	if err != nil {

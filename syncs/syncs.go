@@ -1,13 +1,15 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package syncs contains additional sync types and functionality.
 package syncs
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
+
+	"tailscale.com/util/mak"
 )
 
 // ClosedChan returns a channel that's already closed.
@@ -151,4 +153,67 @@ func (s Semaphore) TryAcquire() bool {
 // Release releases a resource.
 func (s Semaphore) Release() {
 	<-s.c
+}
+
+// Map is a Go map protected by a [sync.RWMutex].
+// It is preferred over [sync.Map] for maps with entries that change
+// at a relatively high frequency.
+// This must not be shallow copied.
+type Map[K comparable, V any] struct {
+	mu sync.RWMutex
+	m  map[K]V
+}
+
+func (m *Map[K, V]) Load(key K) (value V, ok bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	value, ok = m.m[key]
+	return value, ok
+}
+
+func (m *Map[K, V]) Store(key K, value V) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	mak.Set(&m.m, key, value)
+}
+
+func (m *Map[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
+	if actual, loaded = m.Load(key); loaded {
+		return actual, loaded
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	actual, loaded = m.m[key]
+	if !loaded {
+		actual = value
+		mak.Set(&m.m, key, value)
+	}
+	return actual, loaded
+}
+
+func (m *Map[K, V]) LoadAndDelete(key K) (value V, loaded bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	value, loaded = m.m[key]
+	if loaded {
+		delete(m.m, key)
+	}
+	return value, loaded
+}
+
+func (m *Map[K, V]) Delete(key K) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.m, key)
+}
+
+func (m *Map[K, V]) Range(f func(key K, value V) bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for k, v := range m.m {
+		if !f(k, v) {
+			return
+		}
+	}
 }

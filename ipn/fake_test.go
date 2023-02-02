@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package ipn
 
@@ -16,13 +15,13 @@ type FakeBackend struct {
 }
 
 func (b *FakeBackend) Start(opts Options) error {
-	b.serverURL = opts.Prefs.ControlURLOrDefault()
+	b.serverURL = opts.LegacyMigrationPrefs.ControlURLOrDefault()
 	if b.notify == nil {
 		panic("FakeBackend.Start: SetNotifyCallback not called")
 	}
 	nl := NeedsLogin
 	if b.notify != nil {
-		p := opts.Prefs.View()
+		p := opts.LegacyMigrationPrefs.View()
 		b.notify(Notify{Prefs: &p})
 		b.notify(Notify{State: &nl})
 	}

@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package dnscache
 
@@ -22,7 +21,7 @@ func TestDialer(t *testing.T) {
 	if *dialTest == "" {
 		t.Skip("skipping; --dial-test is blank")
 	}
-	r := new(Resolver)
+	r := &Resolver{Logf: t.Logf}
 	var std net.Dialer
 	dialer := Dialer(std.DialContext, r)
 	t0 := time.Now()
@@ -113,6 +112,7 @@ func TestDialCall_uniqueIPs(t *testing.T) {
 
 func TestResolverAllHostStaticResult(t *testing.T) {
 	r := &Resolver{
+		Logf:       t.Logf,
 		SingleHost: "foo.bar",
 		SingleHostStaticResult: []netip.Addr{
 			netip.MustParseAddr("2001:4860:4860::8888"),
@@ -185,11 +185,12 @@ func TestShouldTryBootstrap(t *testing.T) {
 	errFailed := errors.New("some failure")
 
 	cacheWithFallback := &Resolver{
+		Logf: t.Logf,
 		LookupIPFallback: func(_ context.Context, _ string) ([]netip.Addr, error) {
 			panic("unimplemented")
 		},
 	}
-	cacheNoFallback := &Resolver{}
+	cacheNoFallback := &Resolver{Logf: t.Logf}
 
 	testCases := []struct {
 		name       string

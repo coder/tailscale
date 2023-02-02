@@ -1,6 +1,5 @@
-// Copyright (c) 2021 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package health is a registry for other packages to report & check
 // overall health status of the node.
@@ -19,15 +18,17 @@ import (
 	"tailscale.com/envknob"
 	"tailscale.com/tailcfg"
 	"tailscale.com/util/multierr"
+	"tailscale.com/util/set"
 )
 
 var (
 	// mu guards everything in this var block.
 	mu sync.Mutex
 
-	sysErr   = map[Subsystem]error{}                     // error key => err (or nil for no error)
-	watchers = map[*watchHandle]func(Subsystem, error){} // opt func to run if error state changes
-	timer    *time.Timer
+	sysErr    = map[Subsystem]error{}                   // error key => err (or nil for no error)
+	watchers  = set.HandleSet[func(Subsystem, error)]{} // opt func to run if error state changes
+	warnables = map[*Warnable]struct{}{}                // set of warnables
+	timer     *time.Timer
 
 	debugHandler = map[string]http.Handler{}
 
@@ -46,6 +47,8 @@ var (
 	udp4Unbound             bool
 	controlHealth           []string
 	lastLoginErr            error
+	localLogConfigErr       error
+	tlsConnectionErrors     = map[string]error{} // map[ServerName]error
 )
 
 // Subsystem is the name of a subsystem whose health can be monitored.
@@ -68,17 +71,87 @@ const (
 	// SysDNSManager is the name of the net/dns manager subsystem.
 	SysDNSManager = Subsystem("dns-manager")
 
-	// SysNetworkCategory is the name of the subsystem that sets
-	// the Windows network adapter's "category" (public, private, domain).
-	// If it's unhealthy, the Windows firewall rules won't match.
-	SysNetworkCategory = Subsystem("network-category")
-
-	// SysValidUnsignedNodes is a health check area for recording problems
-	// with the unsigned nodes that the coordination server sent.
-	SysValidUnsignedNodes = Subsystem("valid-unsigned-nodes")
+	// SysTKA is the name of the tailnet key authority subsystem.
+	SysTKA = Subsystem("tailnet-lock")
 )
 
-type watchHandle byte
+// NewWarnable returns a new warnable item that the caller can mark
+// as health or in warning state.
+func NewWarnable(opts ...WarnableOpt) *Warnable {
+	w := new(Warnable)
+	for _, o := range opts {
+		o.mod(w)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	warnables[w] = struct{}{}
+	return w
+}
+
+// WarnableOpt is an option passed to NewWarnable.
+type WarnableOpt interface {
+	mod(*Warnable)
+}
+
+// WithMapDebugFlag returns a WarnableOpt for NewWarnable that makes the returned
+// Warnable report itself to the coordination server as broken with this
+// string in MapRequest.DebugFlag when Set to a non-nil value.
+func WithMapDebugFlag(name string) WarnableOpt {
+	return warnOptFunc(func(w *Warnable) {
+		w.debugFlag = name
+	})
+}
+
+type warnOptFunc func(*Warnable)
+
+func (f warnOptFunc) mod(w *Warnable) { f(w) }
+
+// Warnable is a health check item that may or may not be in a bad warning state.
+// The caller of NewWarnable is responsible for calling Set to update the state.
+type Warnable struct {
+	debugFlag string // optional MapRequest.DebugFlag to send when unhealthy
+
+	isSet atomic.Bool
+	mu    sync.Mutex
+	err   error
+}
+
+// Set updates the Warnable's state.
+// If non-nil, it's considered unhealthy.
+func (w *Warnable) Set(err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.err = err
+	w.isSet.Store(err != nil)
+}
+
+func (w *Warnable) get() error {
+	if !w.isSet.Load() {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.err
+}
+
+// AppendWarnableDebugFlags appends to base any health items that are currently in failed
+// state and were created with MapDebugFlag.
+func AppendWarnableDebugFlags(base []string) []string {
+	ret := base
+
+	mu.Lock()
+	defer mu.Unlock()
+	for w := range warnables {
+		if w.debugFlag == "" {
+			continue
+		}
+		if err := w.get(); err != nil {
+			ret = append(ret, w.debugFlag)
+		}
+	}
+	sort.Strings(ret[len(base):]) // sort the new ones
+	return ret
+}
 
 // RegisterWatcher adds a function that will be called if an
 // error changes state either to unhealthy or from unhealthy. It is
@@ -87,8 +160,7 @@ type watchHandle byte
 func RegisterWatcher(cb func(key Subsystem, err error)) (unregister func()) {
 	mu.Lock()
 	defer mu.Unlock()
-	handle := new(watchHandle)
-	watchers[handle] = cb
+	handle := watchers.Add(cb)
 	if timer == nil {
 		timer = time.AfterFunc(time.Minute, timerSelfCheck)
 	}
@@ -103,36 +175,52 @@ func RegisterWatcher(cb func(key Subsystem, err error)) (unregister func()) {
 	}
 }
 
-// SetValidUnsignedNodes sets the state of the map response validation.
-func SetValidUnsignedNodes(err error) { set(SysValidUnsignedNodes, err) }
-
 // SetRouterHealth sets the state of the wgengine/router.Router.
-func SetRouterHealth(err error) { set(SysRouter, err) }
+func SetRouterHealth(err error) { setErr(SysRouter, err) }
 
 // RouterHealth returns the wgengine/router.Router error state.
 func RouterHealth() error { return get(SysRouter) }
 
 // SetDNSHealth sets the state of the net/dns.Manager
-func SetDNSHealth(err error) { set(SysDNS, err) }
+func SetDNSHealth(err error) { setErr(SysDNS, err) }
 
 // DNSHealth returns the net/dns.Manager error state.
 func DNSHealth() error { return get(SysDNS) }
 
 // SetDNSOSHealth sets the state of the net/dns.OSConfigurator
-func SetDNSOSHealth(err error) { set(SysDNSOS, err) }
+func SetDNSOSHealth(err error) { setErr(SysDNSOS, err) }
 
 // SetDNSManagerHealth sets the state of the Linux net/dns manager's
 // discovery of the /etc/resolv.conf situation.
-func SetDNSManagerHealth(err error) { set(SysDNSManager, err) }
+func SetDNSManagerHealth(err error) { setErr(SysDNSManager, err) }
 
 // DNSOSHealth returns the net/dns.OSConfigurator error state.
 func DNSOSHealth() error { return get(SysDNSOS) }
 
-// SetNetworkCategoryHealth sets the state of setting the network adaptor's category.
-// This only applies on Windows.
-func SetNetworkCategoryHealth(err error) { set(SysNetworkCategory, err) }
+// SetTKAHealth sets the health of the tailnet key authority.
+func SetTKAHealth(err error) { setErr(SysTKA, err) }
 
-func NetworkCategoryHealth() error { return get(SysNetworkCategory) }
+// TKAHealth returns the tailnet key authority error state.
+func TKAHealth() error { return get(SysTKA) }
+
+// SetLocalLogConfigHealth sets the error state of this client's local log configuration.
+func SetLocalLogConfigHealth(err error) {
+	mu.Lock()
+	defer mu.Unlock()
+	localLogConfigErr = err
+}
+
+// SetTLSConnectionError sets the error state for connections to a specific
+// host. Setting the error to nil will clear any previously-set error.
+func SetTLSConnectionError(host string, err error) {
+	mu.Lock()
+	defer mu.Unlock()
+	if err == nil {
+		delete(tlsConnectionErrors, host)
+	} else {
+		tlsConnectionErrors[host] = err
+	}
+}
 
 func RegisterDebugHandler(typ string, h http.Handler) {
 	mu.Lock()
@@ -152,7 +240,7 @@ func get(key Subsystem) error {
 	return sysErr[key]
 }
 
-func set(key Subsystem, err error) {
+func setErr(key Subsystem, err error) {
 	mu.Lock()
 	defer mu.Unlock()
 	setLocked(key, err)
@@ -338,6 +426,9 @@ func overallErrorLocked() error {
 	if !anyInterfaceUp {
 		return errors.New("network down")
 	}
+	if localLogConfigErr != nil {
+		return localLogConfigErr
+	}
 	if !ipnWantRunning {
 		return fmt.Errorf("state=%v, wantRunning=%v", ipnState, ipnWantRunning)
 	}
@@ -384,6 +475,11 @@ func overallErrorLocked() error {
 		}
 		errs = append(errs, fmt.Errorf("%v: %w", sys, err))
 	}
+	for w := range warnables {
+		if err := w.get(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	for regionID, problem := range derpRegionHealthProblem {
 		errs = append(errs, fmt.Errorf("derp%d: %v", regionID, problem))
 	}
@@ -392,6 +488,9 @@ func overallErrorLocked() error {
 	}
 	if err := envknob.ApplyDiskConfigError(); err != nil {
 		errs = append(errs, err)
+	}
+	for serverName, err := range tlsConnectionErrors {
+		errs = append(errs, fmt.Errorf("TLS connection error for %q: %w", serverName, err))
 	}
 	if e := fakeErrForTesting(); len(errs) == 0 && e != "" {
 		return errors.New(e)

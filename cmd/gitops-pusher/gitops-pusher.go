@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Command gitops-pusher allows users to use a GitOps flow for managing Tailscale ACLs.
 //
@@ -23,6 +22,7 @@ import (
 
 	"github.com/peterbourgon/ff/v3/ffcli"
 	"github.com/tailscale/hujson"
+	"tailscale.com/util/httpm"
 )
 
 var (
@@ -31,6 +31,7 @@ var (
 	cacheFname   = rootFlagSet.String("cache-file", "./version-cache.json", "filename for the previous known version hash")
 	timeout      = rootFlagSet.Duration("timeout", 5*time.Minute, "timeout for the entire CI run")
 	githubSyntax = rootFlagSet.Bool("github-syntax", true, "use GitHub Action error syntax (https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#setting-an-error-message)")
+	apiServer    = rootFlagSet.String("api-server", "api.tailscale.com", "API server to contact")
 )
 
 func modifiedExternallyError() {
@@ -234,7 +235,7 @@ func applyNewACL(ctx context.Context, tailnet, apiKey, policyFname, oldEtag stri
 	}
 	defer fin.Close()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("https://api.tailscale.com/api/v2/tailnet/%s/acl", tailnet), fin)
+	req, err := http.NewRequestWithContext(ctx, httpm.POST, fmt.Sprintf("https://%s/api/v2/tailnet/%s/acl", *apiServer, tailnet), fin)
 	if err != nil {
 		return err
 	}
@@ -274,7 +275,7 @@ func testNewACLs(ctx context.Context, tailnet, apiKey, policyFname string) error
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("https://api.tailscale.com/api/v2/tailnet/%s/acl/validate", tailnet), bytes.NewBuffer(data))
+	req, err := http.NewRequestWithContext(ctx, httpm.POST, fmt.Sprintf("https://%s/api/v2/tailnet/%s/acl/validate", *apiServer, tailnet), bytes.NewBuffer(data))
 	if err != nil {
 		return err
 	}
@@ -346,7 +347,7 @@ type ACLTestErrorDetail struct {
 }
 
 func getACLETag(ctx context.Context, tailnet, apiKey string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://api.tailscale.com/api/v2/tailnet/%s/acl", tailnet), nil)
+	req, err := http.NewRequestWithContext(ctx, httpm.GET, fmt.Sprintf("https://%s/api/v2/tailnet/%s/acl", *apiServer, tailnet), nil)
 	if err != nil {
 		return "", err
 	}

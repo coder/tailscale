@@ -1,11 +1,11 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package STUN generates STUN request packets and parses response packets.
 package stun
 
 import (
+	"bytes"
 	crand "crypto/rand"
 	"encoding/binary"
 	"errors"
@@ -301,7 +301,7 @@ func mappedAddress(b []byte) (addr []byte, port uint16, err error) {
 	if len(addrField) < addrLen {
 		return nil, 0, ErrMalformedAttrs
 	}
-	return append([]byte(nil), addrField[:addrLen]...), port, nil
+	return bytes.Clone(addrField[:addrLen]), port, nil
 }
 
 // Is reports whether b is a STUN message.

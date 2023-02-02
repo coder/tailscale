@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package netns contains the common code for using the Go net package
 // in a logical "network namespace" to avoid routing loops where
@@ -30,6 +29,17 @@ var disabled atomic.Bool
 // It defaults to being enabled.
 func SetEnabled(on bool) {
 	disabled.Store(!on)
+}
+
+var bindToInterfaceByRoute atomic.Bool
+
+// SetBindToInterfaceByRoute enables or disables whether we use the system's
+// route information to bind to a particular interface. It is the same as
+// setting the TS_BIND_TO_INTERFACE_BY_ROUTE.
+//
+// Currently, this only changes the behaviour on macOS.
+func SetBindToInterfaceByRoute(v bool) {
+	bindToInterfaceByRoute.Store(v)
 }
 
 // Listener returns a new net.Listener with its Control hook func

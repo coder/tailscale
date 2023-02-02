@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package disco
 
@@ -72,10 +71,10 @@ func TestMarshalAndParse(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			foo := []byte("foo")
 			got := string(tt.m.AppendMarshal(foo))
-			if !strings.HasPrefix(got, "foo") {
+			got, ok := strings.CutPrefix(got, "foo")
+			if !ok {
 				t.Fatalf("didn't start with foo: got %q", got)
 			}
-			got = strings.TrimPrefix(got, "foo")
 
 			gotHex := fmt.Sprintf("% x", got)
 			if gotHex != tt.want {

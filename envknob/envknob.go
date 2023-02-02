@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package envknob provides access to environment-variable tweakable
 // debug settings.
@@ -29,17 +28,20 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"tailscale.com/types/opt"
+	"tailscale.com/version"
 	"tailscale.com/version/distro"
 )
 
 var (
-	mu         sync.Mutex
-	set        = map[string]string{}
-	regStr     = map[string]*string{}
-	regBool    = map[string]*bool{}
-	regOptBool = map[string]*opt.Bool{}
+	mu          sync.Mutex
+	set         = map[string]string{}
+	regStr      = map[string]*string{}
+	regBool     = map[string]*bool{}
+	regOptBool  = map[string]*opt.Bool{}
+	regDuration = map[string]*time.Duration{}
 )
 
 func noteEnv(k, v string) {
@@ -95,6 +97,9 @@ func Setenv(envVar, val string) {
 	}
 	if p := regOptBool[envVar]; p != nil {
 		setOptBoolLocked(p, envVar, val)
+	}
+	if p := regDuration[envVar]; p != nil {
+		setDurationLocked(p, envVar, val)
 	}
 }
 
@@ -158,6 +163,25 @@ func RegisterOptBool(envVar string) func() opt.Bool {
 	return func() opt.Bool { return *p }
 }
 
+// RegisterDuration returns a func that gets the named environment variable as a
+// duration, without a map lookup per call. It assumes that any mutations happen
+// via envknob.Setenv.
+func RegisterDuration(envVar string) func() time.Duration {
+	mu.Lock()
+	defer mu.Unlock()
+	p, ok := regDuration[envVar]
+	if !ok {
+		val := os.Getenv(envVar)
+		if val != "" {
+			noteEnvLocked(envVar, val)
+		}
+		p = new(time.Duration)
+		setDurationLocked(p, envVar, val)
+		regDuration[envVar] = p
+	}
+	return func() time.Duration { return *p }
+}
+
 func setBoolLocked(p *bool, envVar, val string) {
 	noteEnvLocked(envVar, val)
 	if val == "" {
@@ -182,6 +206,19 @@ func setOptBoolLocked(p *opt.Bool, envVar, val string) {
 		log.Fatalf("invalid boolean environment variable %s value %q", envVar, val)
 	}
 	p.Set(b)
+}
+
+func setDurationLocked(p *time.Duration, envVar, val string) {
+	noteEnvLocked(envVar, val)
+	if val == "" {
+		*p = 0
+		return
+	}
+	var err error
+	*p, err = time.ParseDuration(val)
+	if err != nil {
+		log.Fatalf("invalid duration environment variable %s value %q", envVar, val)
+	}
 }
 
 // Bool returns the boolean value of the named environment variable.
@@ -264,12 +301,17 @@ func LookupInt(envVar string) (v int, ok bool) {
 // of Work-In-Progress code.
 func UseWIPCode() bool { return Bool("TAILSCALE_USE_WIP_CODE") }
 
-// CanSSHD is whether the Tailscale SSH server is allowed to run.
+// CanSSHD reports whether the Tailscale SSH server is allowed to run.
 //
-// If disabled, the SSH server won't start (won't intercept port 22)
-// if already enabled and any attempt to re-enable it will result in
-// an error.
+// If disabled (when this reports false), the SSH server won't start (won't
+// intercept port 22) if previously configured to do so and any attempt to
+// re-enable it will result in an error.
 func CanSSHD() bool { return !Bool("TS_DISABLE_SSH_SERVER") }
+
+// CanTaildrop reports whether the Taildrop feature is allowed to function.
+//
+// If disabled, Taildrop won't receive files regardless of user & server config.
+func CanTaildrop() bool { return !Bool("TS_DISABLE_TAILDROP") }
 
 // SSHPolicyFile returns the path, if any, to the SSHPolicy JSON file for development.
 func SSHPolicyFile() string { return String("TS_DEBUG_SSH_POLICY_FILE") }
@@ -277,16 +319,21 @@ func SSHPolicyFile() string { return String("TS_DEBUG_SSH_POLICY_FILE") }
 // SSHIgnoreTailnetPolicy is whether to ignore the Tailnet SSH policy for development.
 func SSHIgnoreTailnetPolicy() bool { return Bool("TS_DEBUG_SSH_IGNORE_TAILNET_POLICY") }
 
-
 // TKASkipSignatureCheck is whether to skip node-key signature checking for development.
 func TKASkipSignatureCheck() bool { return Bool("TS_UNSAFE_SKIP_NKS_VERIFICATION") }
-
 
 // NoLogsNoSupport reports whether the client's opted out of log uploads and
 // technical support.
 func NoLogsNoSupport() bool {
 	return Bool("TS_NO_LOGS_NO_SUPPORT")
 }
+
+var allowRemoteUpdate = RegisterBool("TS_ALLOW_ADMIN_CONSOLE_REMOTE_UPDATE")
+
+// AllowsRemoteUpdate reports whether this node has opted-in to letting the
+// Tailscale control plane initiate a Tailscale update (e.g. on behalf of an
+// admin on the admin console).
+func AllowsRemoteUpdate() bool { return allowRemoteUpdate() }
 
 // SetNoLogsNoSupport enables no-logs-no-support mode.
 func SetNoLogsNoSupport() {
@@ -428,4 +475,15 @@ func applyKeyValueEnv(r io.Reader) error {
 		Setenv(k, v)
 	}
 	return bs.Err()
+}
+
+// IPCVersion returns version.Long usually, unless TS_DEBUG_FAKE_IPC_VERSION is
+// set, in which it contains that value. This is only used for weird development
+// cases when testing mismatched versions and you want the client to act like it's
+// compatible with the server.
+func IPCVersion() string {
+	if v := String("TS_DEBUG_FAKE_IPC_VERSION"); v != "" {
+		return v
+	}
+	return version.Long
 }

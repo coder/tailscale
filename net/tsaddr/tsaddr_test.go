@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package tsaddr
 
@@ -32,11 +31,25 @@ func TestInCrostiniRange(t *testing.T) {
 	}
 }
 
+func TestTailscaleServiceIP(t *testing.T) {
+	got := TailscaleServiceIP().String()
+	want := "100.100.100.100"
+	if got != want {
+		t.Errorf("got %q; want %q", got, want)
+	}
+	if TailscaleServiceIPString != want {
+		t.Error("TailscaleServiceIPString is not consistent")
+	}
+}
+
 func TestTailscaleServiceIPv6(t *testing.T) {
 	got := TailscaleServiceIPv6().String()
 	want := "fd7a:115c:a1e0::53"
 	if got != want {
 		t.Errorf("got %q; want %q", got, want)
+	}
+	if TailscaleServiceIPv6String != want {
+		t.Error("TailscaleServiceIPv6String is not consistent")
 	}
 }
 

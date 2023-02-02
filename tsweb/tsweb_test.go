@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package tsweb
 
@@ -22,6 +21,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"tailscale.com/metrics"
 	"tailscale.com/tstest"
+	"tailscale.com/util/vizerror"
 	"tailscale.com/version"
 )
 
@@ -149,6 +149,40 @@ func TestStdHandler(t *testing.T) {
 				RequestURI: "/foo",
 				Err:        "not found",
 				Code:       404,
+			},
+		},
+
+		{
+			name:     "handler returns user-visible error",
+			rh:       handlerErr(0, vizerror.New("visible error")),
+			r:        req(bgCtx, "http://example.com/foo"),
+			wantCode: 500,
+			wantLog: AccessLogRecord{
+				When:       clock.Start,
+				Seconds:    1.0,
+				Proto:      "HTTP/1.1",
+				Host:       "example.com",
+				Method:     "GET",
+				RequestURI: "/foo",
+				Err:        "visible error",
+				Code:       500,
+			},
+		},
+
+		{
+			name:     "handler returns user-visible error wrapped by private error",
+			rh:       handlerErr(0, fmt.Errorf("private internal error: %w", vizerror.New("visible error"))),
+			r:        req(bgCtx, "http://example.com/foo"),
+			wantCode: 500,
+			wantLog: AccessLogRecord{
+				When:       clock.Start,
+				Seconds:    1.0,
+				Proto:      "HTTP/1.1",
+				Host:       "example.com",
+				Method:     "GET",
+				RequestURI: "/foo",
+				Err:        "visible error",
+				Code:       500,
 			},
 		},
 
@@ -360,6 +394,12 @@ func TestVarzHandler(t *testing.T) {
 			"# TYPE foo counter\nfoo 0\n",
 		},
 		{
+			"dash_in_metric_name",
+			"counter_foo-bar",
+			new(expvar.Int),
+			"# TYPE foo_bar counter\nfoo_bar 0\n",
+		},
+		{
 			"int_with_type_counter",
 			"counter_foo",
 			new(expvar.Int),
@@ -444,15 +484,15 @@ func TestVarzHandler(t *testing.T) {
 		},
 		{
 			"func_float64_gauge",
-			"gauge_x",
+			"gauge_y",
 			expvar.Func(func() any { return float64(1.2) }),
-			"# TYPE x gauge\nx 1.2\n",
+			"# TYPE y gauge\ny 1.2\n",
 		},
 		{
 			"func_float64_untyped",
-			"x",
+			"z",
 			expvar.Func(func() any { return float64(1.2) }),
-			"x 1.2\n",
+			"z 1.2\n",
 		},
 		{
 			"metrics_label_map",
@@ -535,6 +575,12 @@ foo_totalY 4
 			"custom_var",
 			promWriter{},
 			"custom_var_value 42\n",
+		},
+		{
+			"string_version_var",
+			"foo_version",
+			expvar.Func(func() any { return "1.2.3-foo15" }),
+			"foo_version{version=\"1.2.3-foo15\"} 1\n",
 		},
 		{
 			"field_ordering",

@@ -6,26 +6,40 @@ Private WireGuard® networks made easy
 
 ## Overview
 
-This repository contains all the open source Tailscale client code and
-the `tailscaled` daemon and `tailscale` CLI tool. The `tailscaled`
-daemon runs on Linux, Windows and [macOS](https://tailscale.com/kb/1065/macos-variants/), and to varying degrees on FreeBSD, OpenBSD, and Darwin. (The Tailscale iOS and Android apps use this repo's code, but this repo doesn't contain the mobile GUI code.)
+This repository contains the majority of Tailscale's open source code.
+Notably, it includes the `tailscaled` daemon and
+the `tailscale` CLI tool. The `tailscaled` daemon runs on Linux, Windows,
+[macOS](https://tailscale.com/kb/1065/macos-variants/), and to varying degrees
+on FreeBSD and OpenBSD. The Tailscale iOS and Android apps use this repo's
+code, but this repo doesn't contain the mobile GUI code.
 
-The Android app is at https://github.com/tailscale/tailscale-android
+Other [Tailscale repos](https://github.com/orgs/tailscale/repositories) of note:
 
-The Synology package is at https://github.com/tailscale/tailscale-synology
+* the Android app is at https://github.com/tailscale/tailscale-android
+* the Synology package is at https://github.com/tailscale/tailscale-synology
+* the QNAP package is at https://github.com/tailscale/tailscale-qpkg
+* the Chocolatey packaging is at https://github.com/tailscale/tailscale-chocolatey
+
+For background on which parts of Tailscale are open source and why,
+see [https://tailscale.com/opensource/](https://tailscale.com/opensource/).
 
 ## Using
 
-We serve packages for a variety of distros at
-https://pkgs.tailscale.com .
+We serve packages for a variety of distros and platforms at
+[https://pkgs.tailscale.com](https://pkgs.tailscale.com/).
 
 ## Other clients
 
 The [macOS, iOS, and Windows clients](https://tailscale.com/download)
 use the code in this repository but additionally include small GUI
-wrappers that are not open source.
+wrappers. The GUI wrappers on non-open source platforms are themselves
+not open source.
 
 ## Building
+
+We always require the latest Go release, currently Go 1.20. (While we build
+releases with our [Go fork](https://github.com/tailscale/go/), its use is not
+required.)
 
 ```
 go install tailscale.com/cmd/tailscale{,d}
@@ -43,8 +57,6 @@ If your distro has conventions that preclude the use of
 `build_dist.sh`, please do the equivalent of what it does in your
 distro's way, so that bug reports contain useful version information.
 
-We require the latest Go release, currently Go 1.19.
-
 ## Bugs
 
 Please file any issues about this code or the hosted service on
@@ -58,6 +70,9 @@ bugs](https://docs.github.com/en/github/writing-on-github/autolinked-references-
 We require [Developer Certificate of
 Origin](https://en.wikipedia.org/wiki/Developer_Certificate_of_Origin)
 `Signed-off-by` lines in commits.
+
+See `git log` for our commit message style. It's basically the same as
+[Go's style](https://github.com/golang/go/wiki/CommitMessage).
 
 ## About Us
 
