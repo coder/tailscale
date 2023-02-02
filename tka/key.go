@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package tka
 
@@ -74,14 +73,36 @@ func (k Key) Clone() Key {
 	return out
 }
 
-func (k Key) ID() tkatype.KeyID {
+// MustID returns the KeyID of the key, panicking if an error is
+// encountered. This must only be used for tests.
+func (k Key) MustID() tkatype.KeyID {
+	id, err := k.ID()
+	if err != nil {
+		panic(err)
+	}
+	return id
+}
+
+// ID returns the KeyID of the key.
+func (k Key) ID() (tkatype.KeyID, error) {
 	switch k.Kind {
 	// Because 25519 public keys are so short, we just use the 32-byte
 	// public as their 'key ID'.
 	case Key25519:
-		return tkatype.KeyID(k.Public)
+		return tkatype.KeyID(k.Public), nil
 	default:
-		panic("unsupported key kind")
+		return nil, fmt.Errorf("unknown key kind: %v", k.Kind)
+	}
+}
+
+// Ed25519 returns the ed25519 public key encoded by Key. An error is
+// returned for keys which do not represent ed25519 public keys.
+func (k Key) Ed25519() (ed25519.PublicKey, error) {
+	switch k.Kind {
+	case Key25519:
+		return ed25519.PublicKey(k.Public), nil
+	default:
+		return nil, fmt.Errorf("key is of type %v, not ed25519", k.Kind)
 	}
 }
 

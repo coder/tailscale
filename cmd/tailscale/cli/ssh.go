@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package cli
 
@@ -21,6 +20,7 @@ import (
 	"tailscale.com/envknob"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/net/tsaddr"
+	"tailscale.com/paths"
 	"tailscale.com/version"
 )
 
@@ -37,7 +37,7 @@ most users running the Tailscale SSH server will prefer to just use the normal
 
 The 'tailscale ssh' wrapper adds a few things:
 
-* It resolves the destination server name in its arugments using MagicDNS,
+* It resolves the destination server name in its arguments using MagicDNS,
   even if --accept-dns=false.
 * It works in userspace-networking mode, by supplying a ProxyCommand to the
   system 'ssh' command that connects via a pipe through tailscaled.
@@ -110,10 +110,15 @@ func runSSH(ctx context.Context, args []string) error {
 	// So don't use it for now. MagicDNS is usually working on macOS anyway
 	// and they're not in userspace mode, so 'nc' isn't very useful.
 	if runtime.GOOS != "darwin" {
+		socketArg := ""
+		if rootArgs.socket != "" && rootArgs.socket != paths.DefaultTailscaledSocket() {
+			socketArg = fmt.Sprintf("--socket=%q", rootArgs.socket)
+		}
+
 		argv = append(argv,
-			"-o", fmt.Sprintf("ProxyCommand %q --socket=%q nc %%h %%p",
+			"-o", fmt.Sprintf("ProxyCommand %q %s nc %%h %%p",
 				tailscaleBin,
-				rootArgs.socket,
+				socketArg,
 			))
 	}
 

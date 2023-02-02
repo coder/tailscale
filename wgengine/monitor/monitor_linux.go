@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 //go:build !android
 
@@ -228,6 +227,10 @@ func (c *nlConn) Receive() (message, error) {
 			c.logf("%+v", rdm)
 		}
 		return rdm, nil
+	case unix.RTM_NEWLINK, unix.RTM_DELLINK:
+		// This is an unhandled message, but don't print an error.
+		// See https://github.com/tailscale/tailscale/issues/6806
+		return unspecifiedMessage{}, nil
 	default:
 		c.logf("unhandled netlink msg type %+v, %q", msg.Header, msg.Data)
 		return unspecifiedMessage{}, nil

@@ -1,30 +1,27 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package portlist
 
 import (
-	"path/filepath"
-	"strings"
-	"syscall"
 	"time"
 
-	"golang.org/x/sys/windows"
 	"tailscale.com/net/netstat"
 )
 
-// Forking on Windows is insanely expensive, so don't do it too often.
-const pollInterval = 5 * time.Second
-
 func init() {
 	newOSImpl = newWindowsImpl
+	// The portlist poller used to fork on Windows, which is insanely expensive,
+	// so historically we only did this every 5 seconds on Windows. Maybe we
+	// could reduce it down to 1 seconds like Linux, but nobody's benchmarked as
+	// of 2022-11-04.
+	pollInterval = 5 * time.Second
 }
 
 type famPort struct {
 	proto string
 	port  uint16
-	pid   uintptr
+	pid   uint32
 }
 
 type windowsImpl struct {
@@ -67,19 +64,25 @@ func (im *windowsImpl) AppendListeningPorts(base []Port) ([]Port, error) {
 		fp := famPort{
 			proto: "tcp", // TODO(bradfitz): UDP too; add to netstat
 			port:  e.Local.Port(),
-			pid:   uintptr(e.Pid),
+			pid:   uint32(e.Pid),
 		}
 		pm, ok := im.known[fp]
 		if ok {
 			pm.keep = true
 			continue
 		}
+		var process string
+		if e.OSMetadata != nil {
+			if module, err := e.OSMetadata.GetModule(); err == nil {
+				process = module
+			}
+		}
 		pm = &portMeta{
 			keep: true,
 			port: Port{
 				Proto:   "tcp",
 				Port:    e.Local.Port(),
-				Process: procNameOfPid(e.Pid),
+				Process: process,
 			},
 		}
 		im.known[fp] = pm
@@ -92,35 +95,6 @@ func (im *windowsImpl) AppendListeningPorts(base []Port) ([]Port, error) {
 		}
 		ret = append(ret, m.port)
 	}
+
 	return sortAndDedup(ret), nil
-}
-
-func procNameOfPid(pid int) string {
-	const da = windows.PROCESS_QUERY_LIMITED_INFORMATION
-	h, err := syscall.OpenProcess(da, false, uint32(pid))
-	if err != nil {
-		return ""
-	}
-	defer syscall.CloseHandle(h)
-
-	var buf [512]uint16
-	var size = uint32(len(buf))
-	if err := windows.QueryFullProcessImageName(windows.Handle(h), 0, &buf[0], &size); err != nil {
-		return ""
-	}
-	name := filepath.Base(windows.UTF16ToString(buf[:]))
-	if name == "." {
-		return ""
-	}
-	name = strings.TrimSuffix(name, ".exe")
-	name = strings.TrimSuffix(name, ".EXE")
-	return name
-}
-
-func appendListeningPorts([]Port) ([]Port, error) {
-	panic("unused on windows; needed to compile for now")
-}
-
-func addProcesses([]Port) ([]Port, error) {
-	panic("unused on windows; needed to compile for now")
 }

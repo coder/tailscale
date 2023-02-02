@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package interfaces contains helpers for looking up system network interfaces.
 package interfaces
@@ -398,6 +397,22 @@ func (s *State) EqualFiltered(s2 *State, useInterface InterfaceFilter, useIP IPF
 		}
 	}
 	return true
+}
+
+// HasIP reports whether any interface has the provided IP address.
+func (s *State) HasIP(ip netip.Addr) bool {
+	if s == nil {
+		return false
+	}
+	want := netip.PrefixFrom(ip, ip.BitLen())
+	for _, pv := range s.InterfaceIPs {
+		for _, p := range pv {
+			if p == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func interfacesEqual(a, b Interface) bool {

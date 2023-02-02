@@ -1,7 +1,6 @@
 #!/bin/sh
-# Copyright (c) 2021 Tailscale Inc & AUTHORS All rights reserved.
-# Use of this source code is governed by a BSD-style
-# license that can be found in the LICENSE file.
+# Copyright (c) Tailscale Inc & AUTHORS
+# SPDX-License-Identifier: BSD-3-Clause
 #
 # This script detects the current operating system, and installs
 # Tailscale according to that OS's conventions.
@@ -172,7 +171,7 @@ main() {
 				VERSION=""
 				PACKAGETYPE="dnf"
 				;;
-			rocky|almalinux)
+			rocky|almalinux|nobara)
 				OS="fedora"
 				VERSION=""
 				PACKAGETYPE="dnf"
@@ -187,7 +186,7 @@ main() {
 				VERSION="$(echo "$VERSION_ID" | cut -f1 -d.)"
 				PACKAGETYPE="yum"
 				;;
-			opensuse-leap)
+			opensuse-leap|sles)
 				OS="opensuse"
 				VERSION="leap/$VERSION_ID"
 				PACKAGETYPE="zypper"
@@ -487,7 +486,7 @@ main() {
 				;;
 			esac
 			$SUDO apt-get update
-			$SUDO apt-get install -y tailscale
+			$SUDO apt-get install -y tailscale tailscale-archive-keyring
 			if [ "$APT_SYSTEMCTL_START" = "true" ]; then
 				$SUDO systemctl enable --now tailscaled
 				$SUDO systemctl start tailscaled

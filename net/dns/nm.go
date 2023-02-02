@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 //go:build linux
 
@@ -14,9 +13,9 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/josharian/native"
 	"tailscale.com/net/interfaces"
 	"tailscale.com/util/dnsname"
-	"tailscale.com/util/endian"
 )
 
 const (
@@ -130,7 +129,7 @@ func (m *nmManager) trySet(ctx context.Context, config OSConfig) error {
 	for _, ip := range config.Nameservers {
 		b := ip.As16()
 		if ip.Is4() {
-			dnsv4 = append(dnsv4, endian.Native.Uint32(b[12:]))
+			dnsv4 = append(dnsv4, native.Endian.Uint32(b[12:]))
 		} else {
 			dnsv6 = append(dnsv6, b[:])
 		}

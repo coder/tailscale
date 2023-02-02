@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 //go:build linux
 
@@ -16,7 +15,6 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"tailscale.com/types/logger"
-	"tailscale.com/version/distro"
 )
 
 func init() {
@@ -172,25 +170,4 @@ func maybeStartLoginSessionLinux(logf logger.Logf, ia incubatorArgs) (func() err
 		}, nil
 	}
 	return nil, nil
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
-func (ia *incubatorArgs) loginArgs() []string {
-	if distro.Get() == distro.Arch && !fileExists("/etc/pam.d/remote") {
-		// See https://github.com/tailscale/tailscale/issues/4924
-		//
-		// Arch uses a different login binary that makes the -h flag set the PAM
-		// service to "remote". So if they don't have that configured, don't
-		// pass -h.
-		return []string{ia.loginCmdPath, "-f", ia.localUser, "-p"}
-	}
-	return []string{ia.loginCmdPath, "-f", ia.localUser, "-h", ia.remoteIP, "-p"}
-}
-
-func setGroups(groupIDs []int) error {
-	return syscall.Setgroups(groupIDs)
 }

@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package natlab lets us simulate different types of networks all
 // in-memory without running VMs or requiring root, etc. Despite the
@@ -50,7 +49,7 @@ func (p *Packet) Clone() *Packet {
 	return &Packet{
 		Src:     p.Src,
 		Dst:     p.Dst,
-		Payload: append([]byte(nil), p.Payload...),
+		Payload: bytes.Clone(p.Payload),
 		locator: p.locator,
 	}
 }
@@ -812,6 +811,18 @@ func (c *conn) LocalAddr() net.Addr {
 	}
 }
 
+func (c *conn) Read(buf []byte) (int, error) {
+	panic("unimplemented stub")
+}
+
+func (c *conn) RemoteAddr() net.Addr {
+	panic("unimplemented stub")
+}
+
+func (c *conn) Write(buf []byte) (int, error) {
+	panic("unimplemented stub")
+}
+
 func (c *conn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -852,7 +863,7 @@ func (c *conn) WriteToUDPAddrPort(p []byte, ipp netip.AddrPort) (n int, err erro
 	pkt := &Packet{
 		Src:     c.ipp,
 		Dst:     ipp,
-		Payload: append([]byte(nil), p...),
+		Payload: bytes.Clone(p),
 	}
 	pkt.setLocator("mach=%s", c.m.Name)
 	pkt.Trace("PacketConn.WriteTo")

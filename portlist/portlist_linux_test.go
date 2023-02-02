@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package portlist
 
@@ -133,6 +132,19 @@ func BenchmarkParsePorts(b *testing.B) {
 		}
 		if len(li.known) != 2 {
 			b.Fatalf("wrong results; want 2 parsed got %d", len(li.known))
+		}
+	}
+}
+
+func BenchmarkFindProcessNames(b *testing.B) {
+	b.ReportAllocs()
+	li := &linuxImpl{}
+	need := map[string]*portMeta{
+		"something-we'll-never-find": new(portMeta),
+	}
+	for i := 0; i < b.N; i++ {
+		if err := li.findProcessNames(need); err != nil {
+			b.Fatal(err)
 		}
 	}
 }

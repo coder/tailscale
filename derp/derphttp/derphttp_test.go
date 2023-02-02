@@ -1,10 +1,10 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package derphttp
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"net"
@@ -103,7 +103,7 @@ func TestSendRecv(t *testing.T) {
 				case derp.PeerGoneMessage:
 					// Ignore.
 				case derp.ReceivedPacket:
-					recvChs[i] <- append([]byte(nil), m.Data...)
+					recvChs[i] <- bytes.Clone(m.Data)
 				}
 			}
 		}(i)

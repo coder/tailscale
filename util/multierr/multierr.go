@@ -1,6 +1,5 @@
-// Copyright (c) 2021 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package multierr provides a simple multiple-error type.
 // It was inspired by github.com/go-multierror/multierror.
@@ -9,6 +8,8 @@ package multierr
 import (
 	"errors"
 	"strings"
+
+	"golang.org/x/exp/slices"
 )
 
 // An Error represents multiple errors.
@@ -29,7 +30,14 @@ func (e Error) Error() string {
 
 // Errors returns a slice containing all errors in e.
 func (e Error) Errors() []error {
-	return append(e.errs[:0:0], e.errs...)
+	return slices.Clone(e.errs)
+}
+
+// Unwrap returns the underlying errors as-is.
+func (e Error) Unwrap() []error {
+	// Do not clone since Unwrap requires callers to not mutate the slice.
+	// See the documentation in the Go "errors" package.
+	return e.errs
 }
 
 // New returns an error composed from errs.
@@ -41,7 +49,31 @@ func (e Error) Errors() []error {
 // If the resulting slice has length 1, New returns that error.
 // If the resulting slice has length > 1, New returns that slice as an Error.
 func New(errs ...error) error {
-	dst := make([]error, 0, len(errs))
+	// First count the number of errors to avoid allocating.
+	var n int
+	var errFirst error
+	for _, e := range errs {
+		switch e := e.(type) {
+		case nil:
+			continue
+		case Error:
+			n += len(e.errs)
+			if errFirst == nil && len(e.errs) > 0 {
+				errFirst = e.errs[0]
+			}
+		default:
+			n++
+			if errFirst == nil {
+				errFirst = e
+			}
+		}
+	}
+	if n <= 1 {
+		return errFirst // nil if n == 0
+	}
+
+	// More than one error, allocate slice and construct the multi-error.
+	dst := make([]error, 0, n)
 	for _, e := range errs {
 		switch e := e.(type) {
 		case nil:
@@ -51,18 +83,6 @@ func New(errs ...error) error {
 		default:
 			dst = append(dst, e)
 		}
-	}
-	// dst has been filtered and splatted.
-	switch len(dst) {
-	case 0:
-		return nil
-	case 1:
-		return dst[0]
-	}
-	// Zero any remaining elements of dst left over from errs, for GC.
-	tail := dst[len(dst):cap(dst)]
-	for i := range tail {
-		tail[i] = nil
 	}
 	return Error{errs: dst}
 }
@@ -86,4 +106,32 @@ func (e Error) As(target any) bool {
 		}
 	}
 	return false
+}
+
+// Range performs a pre-order, depth-first iteration of the error tree
+// by successively unwrapping all error values.
+// For each iteration it calls fn with the current error value and
+// stops iteration if it ever reports false.
+func Range(err error, fn func(error) bool) bool {
+	if err == nil {
+		return true
+	}
+	if !fn(err) {
+		return false
+	}
+	switch err := err.(type) {
+	case interface{ Unwrap() error }:
+		if err := err.Unwrap(); err != nil {
+			if !Range(err, fn) {
+				return false
+			}
+		}
+	case interface{ Unwrap() []error }:
+		for _, err := range err.Unwrap() {
+			if !Range(err, fn) {
+				return false
+			}
+		}
+	}
+	return true
 }

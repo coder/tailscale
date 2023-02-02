@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package controlclient
 
@@ -75,7 +74,7 @@ type Status struct {
 	// use them. Please don't use these fields.
 	// TODO(apenwarr): Unexport or remove these.
 	State   State
-	Persist *persist.Persist // locally persisted configuration
+	Persist *persist.PersistView // locally persisted configuration
 }
 
 // Equal reports whether s and s2 are equal.

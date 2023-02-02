@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package derphttp implements DERP-over-HTTP.
 //
@@ -1031,9 +1030,10 @@ var ErrClientClosed = errors.New("derphttp.Client closed")
 
 func parseMetaCert(certs []*x509.Certificate) (serverPub key.NodePublic, serverProtoVersion int) {
 	for _, cert := range certs {
-		if cn := cert.Subject.CommonName; strings.HasPrefix(cn, "derpkey") {
+		// Look for derpkey prefix added by initMetacert() on the server side.
+		if pubHex, ok := strings.CutPrefix(cert.Subject.CommonName, "derpkey"); ok {
 			var err error
-			serverPub, err = key.ParseNodePublicUntyped(mem.S(strings.TrimPrefix(cn, "derpkey")))
+			serverPub, err = key.ParseNodePublicUntyped(mem.S(pubHex))
 			if err == nil && cert.SerialNumber.BitLen() <= 8 { // supports up to version 255
 				return serverPub, int(cert.SerialNumber.Int64())
 			}

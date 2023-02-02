@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package publicdns contains mapping and helpers for working with
 // public DNS providers.
@@ -14,8 +13,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"tailscale.com/util/strs"
 )
 
 // dohOfIP maps from public DNS IPs to their DoH base URL.
@@ -83,7 +80,7 @@ func DoHIPsOfBase(dohBase string) []netip.Addr {
 	if s := dohIPsOfBase[dohBase]; len(s) > 0 {
 		return s
 	}
-	if hexStr, ok := strs.CutPrefix(dohBase, "https://dns.nextdns.io/"); ok {
+	if hexStr, ok := strings.CutPrefix(dohBase, "https://dns.nextdns.io/"); ok {
 		// The path is of the form /<profile-hex>[/<hostname>/<model>/<device id>...]
 		// or /<profile-hex>?<query params>
 		// but only the <profile-hex> is required. Ignore the rest:

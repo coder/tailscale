@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package netcheck
 
@@ -23,7 +22,6 @@ import (
 	"tailscale.com/net/stun"
 	"tailscale.com/net/stun/stuntest"
 	"tailscale.com/tailcfg"
-	"tailscale.com/util/strs"
 )
 
 func TestHairpinSTUN(t *testing.T) {
@@ -307,16 +305,16 @@ func TestMakeProbePlan(t *testing.T) {
 			have6if: true,
 			last:    nil, // initial
 			want: probePlan{
-				"region-1-v4": []probe{p("1a", 4), p("1a", 4, 100*ms), p("1a", 4, 200*ms)}, // all a
-				"region-1-v6": []probe{p("1a", 6), p("1a", 6, 100*ms), p("1a", 6, 200*ms)},
-				"region-2-v4": []probe{p("2a", 4), p("2b", 4, 100*ms), p("2a", 4, 200*ms)}, // a -> b -> a
-				"region-2-v6": []probe{p("2a", 6), p("2b", 6, 100*ms), p("2a", 6, 200*ms)},
-				"region-3-v4": []probe{p("3a", 4), p("3b", 4, 100*ms), p("3c", 4, 200*ms)}, // a -> b -> c
-				"region-3-v6": []probe{p("3a", 6), p("3b", 6, 100*ms), p("3c", 6, 200*ms)},
-				"region-4-v4": []probe{p("4a", 4), p("4b", 4, 100*ms), p("4c", 4, 200*ms)},
-				"region-4-v6": []probe{p("4a", 6), p("4b", 6, 100*ms), p("4c", 6, 200*ms)},
-				"region-5-v4": []probe{p("5a", 4), p("5b", 4, 100*ms), p("5c", 4, 200*ms)},
-				"region-5-v6": []probe{p("5a", 6), p("5b", 6, 100*ms), p("5c", 6, 200*ms)},
+				"region-1-v4": []probe{p("1a", 4), p("1a", 4), p("1a", 4)}, // all a
+				"region-1-v6": []probe{p("1a", 6), p("1a", 6), p("1a", 6)},
+				"region-2-v4": []probe{p("2a", 4), p("2b", 4), p("2a", 4)}, // a -> b -> a
+				"region-2-v6": []probe{p("2a", 6), p("2b", 6), p("2a", 6)},
+				"region-3-v4": []probe{p("3a", 4), p("3b", 4), p("3c", 4)}, // a -> b -> c
+				"region-3-v6": []probe{p("3a", 6), p("3b", 6), p("3c", 6)},
+				"region-4-v4": []probe{p("4a", 4), p("4b", 4), p("4c", 4)},
+				"region-4-v6": []probe{p("4a", 6), p("4b", 6), p("4c", 6)},
+				"region-5-v4": []probe{p("5a", 4), p("5b", 4), p("5c", 4)},
+				"region-5-v6": []probe{p("5a", 6), p("5b", 6), p("5c", 6)},
 			},
 		},
 		{
@@ -325,11 +323,11 @@ func TestMakeProbePlan(t *testing.T) {
 			have6if: false,
 			last:    nil, // initial
 			want: probePlan{
-				"region-1-v4": []probe{p("1a", 4), p("1a", 4, 100*ms), p("1a", 4, 200*ms)}, // all a
-				"region-2-v4": []probe{p("2a", 4), p("2b", 4, 100*ms), p("2a", 4, 200*ms)}, // a -> b -> a
-				"region-3-v4": []probe{p("3a", 4), p("3b", 4, 100*ms), p("3c", 4, 200*ms)}, // a -> b -> c
-				"region-4-v4": []probe{p("4a", 4), p("4b", 4, 100*ms), p("4c", 4, 200*ms)},
-				"region-5-v4": []probe{p("5a", 4), p("5b", 4, 100*ms), p("5c", 4, 200*ms)},
+				"region-1-v4": []probe{p("1a", 4), p("1a", 4), p("1a", 4)}, // all a
+				"region-2-v4": []probe{p("2a", 4), p("2b", 4), p("2a", 4)}, // a -> b -> a
+				"region-3-v4": []probe{p("3a", 4), p("3b", 4), p("3c", 4)}, // a -> b -> c
+				"region-4-v4": []probe{p("4a", 4), p("4b", 4), p("4c", 4)},
+				"region-5-v4": []probe{p("5a", 4), p("5b", 4), p("5c", 4)},
 			},
 		},
 		{
@@ -419,11 +417,11 @@ func TestMakeProbePlan(t *testing.T) {
 			no4:     true,
 			dm:      basicMap,
 			want: probePlan{
-				"region-1-v6": []probe{p("1a", 6), p("1a", 6, 100*ms), p("1a", 6, 200*ms)},
-				"region-2-v6": []probe{p("2a", 6), p("2b", 6, 100*ms), p("2a", 6, 200*ms)},
-				"region-3-v6": []probe{p("3a", 6), p("3b", 6, 100*ms), p("3c", 6, 200*ms)},
-				"region-4-v6": []probe{p("4a", 6), p("4b", 6, 100*ms), p("4c", 6, 200*ms)},
-				"region-5-v6": []probe{p("5a", 6), p("5b", 6, 100*ms), p("5c", 6, 200*ms)},
+				"region-1-v6": []probe{p("1a", 6), p("1a", 6), p("1a", 6)},
+				"region-2-v6": []probe{p("2a", 6), p("2b", 6), p("2a", 6)},
+				"region-3-v6": []probe{p("3a", 6), p("3b", 6), p("3c", 6)},
+				"region-4-v6": []probe{p("4a", 6), p("4b", 6), p("4c", 6)},
+				"region-5-v6": []probe{p("5a", 6), p("5b", 6), p("5c", 6)},
 			},
 		},
 		{
@@ -622,7 +620,7 @@ func TestLogConciseReport(t *testing.T) {
 			var buf bytes.Buffer
 			c := &Client{Logf: func(f string, a ...any) { fmt.Fprintf(&buf, f, a...) }}
 			c.logConciseReport(tt.r, dm)
-			if got, ok := strs.CutPrefix(buf.String(), "[v1] report: "); !ok {
+			if got, ok := strings.CutPrefix(buf.String(), "[v1] report: "); !ok {
 				t.Errorf("unexpected result.\n got: %#q\nwant: %#q\n", got, tt.want)
 			}
 		})

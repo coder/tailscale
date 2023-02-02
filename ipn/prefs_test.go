@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package ipn
 
@@ -56,6 +55,7 @@ func TestPrefsEqual(t *testing.T) {
 		"NoSNAT",
 		"NetfilterMode",
 		"OperatorUser",
+		"ProfileName",
 		"Persist",
 	}
 	if have := fieldsOf(reflect.TypeOf(Prefs{})); !reflect.DeepEqual(have, prefsHandles) {
@@ -271,6 +271,16 @@ func TestPrefsEqual(t *testing.T) {
 			&Prefs{Persist: &persist.Persist{LoginName: "dave"}},
 			&Prefs{Persist: &persist.Persist{LoginName: "dave"}},
 			true,
+		},
+		{
+			&Prefs{ProfileName: "work"},
+			&Prefs{ProfileName: "work"},
+			true,
+		},
+		{
+			&Prefs{ProfileName: "work"},
+			&Prefs{ProfileName: "home"},
+			false,
 		},
 	}
 	for i, tt := range tests {

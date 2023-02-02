@@ -1,14 +1,16 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package portlist
 
 import (
+	"context"
 	"flag"
 	"net"
 	"runtime"
+	"sync"
 	"testing"
+	"time"
 
 	"tailscale.com/tstest"
 )
@@ -180,6 +182,70 @@ func TestEqualLessThan(t *testing.T) {
 			t.Errorf("%s: equal = %v; want %v", tt.name, gotEqual, wantEqual)
 		}
 	}
+}
+
+func TestPoller(t *testing.T) {
+	p, err := NewPoller()
+	if err != nil {
+		t.Skipf("not running test: %v", err)
+	}
+	defer p.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	gotUpdate := make(chan bool, 16)
+
+	go func() {
+		defer wg.Done()
+		for pl := range p.Updates() {
+			// Look at all the pl slice memory to maximize
+			// chance of race detector seeing violations.
+			for _, v := range pl {
+				if v == (Port{}) {
+					// Force use
+					panic("empty port")
+				}
+			}
+			select {
+			case gotUpdate <- true:
+			default:
+			}
+		}
+	}()
+
+	tick := make(chan time.Time, 16)
+	go func() {
+		defer wg.Done()
+		if err := p.runWithTickChan(context.Background(), tick); err != nil {
+			t.Error("runWithTickChan:", err)
+		}
+	}()
+	for i := 0; i < 10; i++ {
+		ln, err := net.Listen("tcp", ":0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		tick <- time.Time{}
+
+		select {
+		case <-gotUpdate:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for update")
+		}
+	}
+
+	// And a bunch of ticks without waiting for updates,
+	// to make race tests more likely to fail, if any present.
+	for i := 0; i < 10; i++ {
+		tick <- time.Time{}
+	}
+
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	wg.Wait()
 }
 
 func BenchmarkGetList(b *testing.B) {

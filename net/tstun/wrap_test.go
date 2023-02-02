@@ -1,24 +1,28 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package tstun
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"net/netip"
-	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 	"unsafe"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/tailscale/wireguard-go/tun/tuntest"
 	"go4.org/mem"
 	"go4.org/netipx"
-	"golang.zx2c4.com/wireguard/tun/tuntest"
 	"tailscale.com/disco"
+	"tailscale.com/net/connstats"
 	"tailscale.com/net/netaddr"
 	"tailscale.com/net/packet"
 	"tailscale.com/tstest"
@@ -27,6 +31,7 @@ import (
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 	"tailscale.com/types/netlogtype"
+	"tailscale.com/util/must"
 	"tailscale.com/wgengine/filter"
 )
 
@@ -207,16 +212,24 @@ func TestReadAndInject(t *testing.T) {
 
 	var buf [MaxPacketSize]byte
 	var seen = make(map[string]bool)
+	sizes := make([]int, 1)
 	// We expect the same packets back, in no particular order.
 	for i := 0; i < len(written)+len(injected); i++ {
-		n, err := tun.Read(buf[:], 0)
+		packet := buf[:]
+		buffs := [][]byte{packet}
+		numPackets, err := tun.Read(buffs, sizes, 0)
 		if err != nil {
 			t.Errorf("read %d: error: %v", i, err)
 		}
-		if n != size {
-			t.Errorf("read %d: got size %d; want %d", i, n, size)
+		if numPackets != 1 {
+			t.Fatalf("read %d packets, expected %d", numPackets, 1)
 		}
-		got := string(buf[:n])
+		packet = packet[:sizes[0]]
+		packetLen := len(packet)
+		if packetLen != size {
+			t.Errorf("read %d: got size %d; want %d", i, packetLen, size)
+		}
+		got := string(packet)
 		t.Logf("read %d: got %s", i, got)
 		seen[got] = true
 	}
@@ -244,12 +257,9 @@ func TestWriteAndInject(t *testing.T) {
 	go func() {
 		for _, packet := range written {
 			payload := []byte(packet)
-			n, err := tun.Write(payload, 0)
+			_, err := tun.Write([][]byte{payload}, 0)
 			if err != nil {
 				t.Errorf("%s: error: %v", packet, err)
-			}
-			if n != size {
-				t.Errorf("%s: got size %d; want %d", packet, n, size)
 			}
 		}
 	}()
@@ -283,11 +293,17 @@ func TestWriteAndInject(t *testing.T) {
 			t.Errorf("%s not received", packet)
 		}
 	}
+}
 
-	// Statistics gathering is disabled by default.
-	if stats := tun.ExtractStatistics(); len(stats) > 0 {
-		t.Errorf("tun.ExtractStatistics = %v, want {}", stats)
-	}
+// mustHexDecode is like hex.DecodeString, but panics on error
+// and ignores whitespace in s.
+func mustHexDecode(s string) []byte {
+	return must.Get(hex.DecodeString(strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, s)))
 }
 
 func TestFilter(t *testing.T) {
@@ -307,8 +323,9 @@ func TestFilter(t *testing.T) {
 		drop bool
 		data []byte
 	}{
-		{"junk_in", in, true, []byte("\x45not a valid IPv4 packet")},
-		{"junk_out", out, true, []byte("\x45not a valid IPv4 packet")},
+		{"short_in", in, true, []byte("\x45xxx")},
+		{"short_out", out, true, []byte("\x45xxx")},
+		{"ip97_out", out, false, mustHexDecode("4500 0019 d186 4000 4061 751d 644a 4603 6449 e549 6865 6c6c 6f")},
 		{"bad_port_in", in, true, udp4("5.6.7.8", "1.2.3.4", 22, 22)},
 		{"bad_port_out", out, false, udp4("1.2.3.4", "5.6.7.8", 22, 22)},
 		{"bad_ip_in", in, true, udp4("8.1.1.1", "1.2.3.4", 89, 89)},
@@ -336,15 +353,19 @@ func TestFilter(t *testing.T) {
 	}()
 
 	var buf [MaxPacketSize]byte
-	tun.SetStatisticsEnabled(true)
+	stats := connstats.NewStatistics(0, 0, nil)
+	defer stats.Shutdown(context.Background())
+	tun.SetStatistics(stats)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var n int
 			var err error
 			var filtered bool
+			sizes := make([]int, 1)
 
-			if stats := tun.ExtractStatistics(); len(stats) > 0 {
-				t.Errorf("tun.ExtractStatistics = %v, want {}", stats)
+			tunStats, _ := stats.TestExtract()
+			if len(tunStats) > 0 {
+				t.Errorf("connstats.Statistics.Extract = %v, want {}", stats)
 			}
 
 			if tt.dir == in {
@@ -354,11 +375,11 @@ func TestFilter(t *testing.T) {
 				// If it stays zero, nothing made it through
 				// to the wrapped TUN.
 				tun.lastActivityAtomic.StoreAtomic(0)
-				_, err = tun.Write(tt.data, 0)
+				_, err = tun.Write([][]byte{tt.data}, 0)
 				filtered = tun.lastActivityAtomic.LoadAtomic() == 0
 			} else {
 				chtun.Outbound <- tt.data
-				n, err = tun.Read(buf[:], 0)
+				n, err = tun.Read([][]byte{buf[:]}, sizes, 0)
 				// In the read direction, errors are fatal, so we return n = 0 instead.
 				filtered = (n == 0)
 			}
@@ -377,11 +398,13 @@ func TestFilter(t *testing.T) {
 				}
 			}
 
-			got := tun.ExtractStatistics()
+			got, _ := stats.TestExtract()
 			want := map[netlogtype.Connection]netlogtype.Counts{}
+			var wasUDP bool
 			if !tt.drop {
 				var p packet.Parsed
 				p.Decode(tt.data)
+				wasUDP = p.IPProto == ipproto.UDP
 				switch tt.dir {
 				case in:
 					conn := netlogtype.Connection{Proto: ipproto.UDP, Src: p.Dst, Dst: p.Src}
@@ -391,8 +414,10 @@ func TestFilter(t *testing.T) {
 					want[conn] = netlogtype.Counts{TxPackets: 1, TxBytes: uint64(len(tt.data))}
 				}
 			}
-			if !reflect.DeepEqual(got, want) {
-				t.Errorf("tun.ExtractStatistics = %v, want %v", got, want)
+			if wasUDP {
+				if diff := cmp.Diff(got, want, cmpopts.EquateEmpty()); diff != "" {
+					t.Errorf("stats.TestExtract (-got +want):\n%s", diff)
+				}
 			}
 		})
 	}
@@ -402,7 +427,7 @@ func TestAllocs(t *testing.T) {
 	ftun, tun := newFakeTUN(t.Logf, false)
 	defer tun.Close()
 
-	buf := []byte{0x00}
+	buf := [][]byte{{0x00}}
 	err := tstest.MinAllocsPerRun(t, 0, func() {
 		_, err := ftun.Write(buf, 0)
 		if err != nil {
@@ -419,7 +444,7 @@ func TestAllocs(t *testing.T) {
 func TestClose(t *testing.T) {
 	ftun, tun := newFakeTUN(t.Logf, false)
 
-	data := udp4("1.2.3.4", "5.6.7.8", 98, 98)
+	data := [][]byte{udp4("1.2.3.4", "5.6.7.8", 98, 98)}
 	_, err := ftun.Write(data, 0)
 	if err != nil {
 		t.Error(err)
@@ -437,7 +462,7 @@ func BenchmarkWrite(b *testing.B) {
 	ftun, tun := newFakeTUN(b.Logf, true)
 	defer tun.Close()
 
-	packet := udp4("5.6.7.8", "1.2.3.4", 89, 89)
+	packet := [][]byte{udp4("5.6.7.8", "1.2.3.4", 89, 89)}
 	for i := 0; i < b.N; i++ {
 		_, err := ftun.Write(packet, 0)
 		if err != nil {
@@ -514,9 +539,12 @@ func TestPeerAPIBypass(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			p := new(packet.Parsed)
+			p.Decode(tt.pkt)
 			tt.w.SetFilter(tt.filter)
 			tt.w.disableTSMPRejected = true
-			if got := tt.w.filterIn(tt.pkt); got != tt.want {
+			tt.w.logf = t.Logf
+			if got := tt.w.filterIn(p); got != tt.want {
 				t.Errorf("got = %v; want %v", got, tt.want)
 			}
 		})
@@ -544,7 +572,9 @@ func TestFilterDiscoLoop(t *testing.T) {
 	uh.Marshal(pkt)
 	copy(pkt[uh.Len():], discoPayload)
 
-	got := tw.filterIn(pkt)
+	p := new(packet.Parsed)
+	p.Decode(pkt)
+	got := tw.filterIn(p)
 	if got != filter.DropSilently {
 		t.Errorf("got %v; want DropSilently", got)
 	}

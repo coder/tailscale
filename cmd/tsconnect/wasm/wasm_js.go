@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // The wasm package builds a WebAssembly module that provides a subset of
 // Tailscale APIs to JavaScript.
@@ -36,6 +35,7 @@ import (
 	"tailscale.com/net/netns"
 	"tailscale.com/net/tsdial"
 	"tailscale.com/safesocket"
+	"tailscale.com/smallzstd"
 	"tailscale.com/tailcfg"
 	"tailscale.com/wgengine"
 	"tailscale.com/wgengine/netstack"
@@ -114,9 +114,7 @@ func newIPN(jsConfig js.Value) map[string]any {
 	}
 	ns.ProcessLocalIPs = true
 	ns.ProcessSubnets = true
-	if err := ns.Start(); err != nil {
-		log.Fatalf("failed to start netstack: %v", err)
-	}
+
 	dialer.UseNetstackForIP = func(ip netip.Addr) bool {
 		return true
 	}
@@ -124,15 +122,19 @@ func newIPN(jsConfig js.Value) map[string]any {
 		return ns.DialContextTCP(ctx, dst)
 	}
 
-	srv, err := ipnserver.New(logf, lpc.PublicID.String(), store, eng, dialer, nil, ipnserver.Options{
-		SurviveDisconnects: true,
-		LoginFlags:         controlclient.LoginEphemeral,
-	})
+	logid := lpc.PublicID.String()
+	srv := ipnserver.New(logf, logid)
+	lb, err := ipnlocal.NewLocalBackend(logf, logid, store, dialer, eng, controlclient.LoginEphemeral)
 	if err != nil {
-		log.Fatalf("ipnserver.New: %v", err)
+		log.Fatalf("ipnlocal.NewLocalBackend: %v", err)
 	}
-	lb := srv.LocalBackend()
-	ns.SetLocalBackend(lb)
+	if err := ns.Start(lb); err != nil {
+		log.Fatalf("failed to start netstack: %v", err)
+	}
+	lb.SetDecompressor(func() (controlclient.Decompressor, error) {
+		return smallzstd.NewDecoder(nil)
+	})
+	srv.SetLocalBackend(lb)
 
 	jsIPN := &jsIPN{
 		dialer:     dialer,
@@ -284,7 +286,6 @@ func (i *jsIPN) run(jsCallbacks js.Value) {
 
 	go func() {
 		err := i.lb.Start(ipn.Options{
-			StateKey: "wasm",
 			UpdatePrefs: &ipn.Prefs{
 				ControlURL:       i.controlURL,
 				RouteAll:         false,
@@ -300,7 +301,7 @@ func (i *jsIPN) run(jsCallbacks js.Value) {
 	}()
 
 	go func() {
-		ln, _, err := safesocket.Listen("", 0)
+		ln, err := safesocket.Listen("")
 		if err != nil {
 			log.Fatalf("safesocket.Listen: %v", err)
 		}

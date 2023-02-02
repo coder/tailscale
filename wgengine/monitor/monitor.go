@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package monitor provides facilities for monitoring network
 // interface and route changes. It primarily exists to know when
@@ -17,6 +16,7 @@ import (
 
 	"tailscale.com/net/interfaces"
 	"tailscale.com/types/logger"
+	"tailscale.com/util/set"
 )
 
 // pollWallTimeInterval is how often we check the time to check
@@ -54,9 +54,6 @@ type osMon interface {
 // callback.
 type ChangeFunc func(changed bool, state *interfaces.State)
 
-// An allocated callbackHandle's address is the Mon.cbs map key.
-type callbackHandle byte
-
 // Mon represents a monitoring instance.
 type Mon struct {
 	logf   logger.Logf
@@ -65,8 +62,8 @@ type Mon struct {
 	stop   chan struct{} // closed on Stop
 
 	mu         sync.Mutex // guards all following fields
-	cbs        map[*callbackHandle]ChangeFunc
-	ruleDelCB  map[*callbackHandle]RuleDeleteCallback
+	cbs        set.HandleSet[ChangeFunc]
+	ruleDelCB  set.HandleSet[RuleDeleteCallback]
 	ifState    *interfaces.State
 	gwValid    bool       // whether gw and gwSelfIP are valid
 	gw         netip.Addr // our gateway's IP
@@ -86,7 +83,6 @@ func New(logf logger.Logf) (*Mon, error) {
 	logf = logger.WithPrefix(logf, "monitor: ")
 	m := &Mon{
 		logf:     logf,
-		cbs:      map[*callbackHandle]ChangeFunc{},
 		change:   make(chan struct{}, 1),
 		stop:     make(chan struct{}),
 		lastWall: wallTime(),
@@ -144,10 +140,9 @@ func (m *Mon) GatewayAndSelfIP() (gw, myIP netip.Addr, ok bool) {
 // notified (in their own goroutine) when the network state changes.
 // To remove this callback, call unregister (or close the monitor).
 func (m *Mon) RegisterChangeCallback(callback ChangeFunc) (unregister func()) {
-	handle := new(callbackHandle)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.cbs[handle] = callback
+	handle := m.cbs.Add(callback)
 	return func() {
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -165,13 +160,9 @@ type RuleDeleteCallback func(table uint8, priority uint32)
 // notified (in their own goroutine) when a Linux ip rule is deleted.
 // To remove this callback, call unregister (or close the monitor).
 func (m *Mon) RegisterRuleDeleteCallback(callback RuleDeleteCallback) (unregister func()) {
-	handle := new(callbackHandle)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.ruleDelCB == nil {
-		m.ruleDelCB = map[*callbackHandle]RuleDeleteCallback{}
-	}
-	m.ruleDelCB[handle] = callback
+	handle := m.ruleDelCB.Add(callback)
 	return func() {
 		m.mu.Lock()
 		defer m.mu.Unlock()

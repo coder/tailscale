@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package monitor
 
@@ -51,11 +50,13 @@ func newOSMon(logf logger.Logf, _ *Mon) (osMon, error) {
 		messagec:         make(chan eventMessage, 1),
 		noDeadlockTicker: time.NewTicker(5000 * time.Hour), // arbitrary
 	}
+	m.ctx, m.cancel = context.WithCancel(context.Background())
 
 	var err error
 	m.addressChangeCallback, err = winipcfg.RegisterUnicastAddressChangeCallback(m.unicastAddressChanged)
 	if err != nil {
 		m.logf("winipcfg.RegisterUnicastAddressChangeCallback error: %v", err)
+		m.cancel()
 		return nil, err
 	}
 
@@ -63,10 +64,9 @@ func newOSMon(logf logger.Logf, _ *Mon) (osMon, error) {
 	if err != nil {
 		m.addressChangeCallback.Unregister()
 		m.logf("winipcfg.RegisterRouteChangeCallback error: %v", err)
+		m.cancel()
 		return nil, err
 	}
-
-	m.ctx, m.cancel = context.WithCancel(context.Background())
 
 	return m, nil
 }

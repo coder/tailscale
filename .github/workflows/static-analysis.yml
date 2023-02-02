@@ -24,7 +24,9 @@ jobs:
       with:
         go-version-file: go.mod
     - name: Run gofmt (goimports)
-      run: go run golang.org/x/tools/cmd/goimports -d --format-only .
+      run: |
+        OUT=$(go run golang.org/x/tools/cmd/goimports -d --format-only .)
+        [ -z "$OUT" ] || (echo "Not gofmt'ed: $OUT" && exit 1)
     - uses: k0kubun/action-slack@v2.0.0
       with:
         payload: |
@@ -43,14 +45,17 @@ jobs:
   vet:
     runs-on: ubuntu-latest
     steps:
+    - name: Check out code
+      uses: actions/checkout@v3
+
     - name: Set up Go
       uses: actions/setup-go@v3
       with:
-        go-version: 1.19
-    - name: Check out code
-      uses: actions/checkout@v3
+        go-version-file: go.mod
+
     - name: Run go vet
       run: go vet ./...
+
     - uses: k0kubun/action-slack@v2.0.0
       with:
         payload: |
@@ -77,13 +82,14 @@ jobs:
             goarch: 386
 
     steps:
+    - name: Check out code
+      uses: actions/checkout@v3
+
     - name: Set up Go
       uses: actions/setup-go@v3
       with:
-        go-version: 1.19
+        go-version-file: go.mod
 
-    - name: Check out code
-      uses: actions/checkout@v3
 
     - name: Install staticcheck
       run: "GOBIN=~/.local/bin go install honnef.co/go/tools/cmd/staticcheck"

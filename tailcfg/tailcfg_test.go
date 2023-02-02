@@ -1,8 +1,7 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
-package tailcfg
+package tailcfg_test
 
 import (
 	"encoding"
@@ -16,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	. "tailscale.com/tailcfg"
 	"tailscale.com/tstest"
 	"tailscale.com/types/key"
 	"tailscale.com/util/must"
@@ -48,7 +48,11 @@ func TestHostinfoEqual(t *testing.T) {
 		"ShieldsUp",
 		"ShareeNode",
 		"NoLogsNoSupport",
+		"WireIngress",
+		"AllowsUpdate",
+		"Machine",
 		"GoArch",
+		"GoArchVar",
 		"GoVersion",
 		"RoutableIPs",
 		"RequestTags",
@@ -328,12 +332,12 @@ func TestNodeEqual(t *testing.T) {
 		"ID", "StableID", "Name", "User", "Sharer",
 		"Key", "KeyExpiry", "KeySignature", "Machine", "DiscoKey",
 		"Addresses", "AllowedIPs", "Endpoints", "DERP", "Hostinfo",
-		"Created", "Tags", "PrimaryRoutes",
+		"Created", "Cap", "Tags", "PrimaryRoutes",
 		"LastSeen", "Online", "KeepAlive", "MachineAuthorized",
 		"Capabilities",
 		"UnsignedPeerAPIOnly",
 		"ComputedName", "computedHostIfDifferent", "ComputedNameWithHost",
-		"DataPlaneAuditLogID",
+		"DataPlaneAuditLogID", "Expired",
 	}
 	if have := fieldsOf(reflect.TypeOf(Node{})); !reflect.DeepEqual(have, nodeHandles) {
 		t.Errorf("Node.Equal check might be out of sync\nfields: %q\nhandled: %q\n",
@@ -513,6 +517,11 @@ func TestNodeEqual(t *testing.T) {
 			&Node{},
 			false,
 		},
+		{
+			&Node{Expired: true},
+			&Node{},
+			false,
+		},
 	}
 	for i, tt := range tests {
 		got := tt.a.Equal(tt.b)
@@ -654,7 +663,7 @@ func BenchmarkKeyMarshalText(b *testing.B) {
 	b.ReportAllocs()
 	var k [32]byte
 	for i := 0; i < b.N; i++ {
-		sinkBytes = keyMarshalText("prefix", k)
+		sinkBytes = ExportKeyMarshalText("prefix", k)
 	}
 }
 
@@ -664,7 +673,7 @@ func TestAppendKeyAllocs(t *testing.T) {
 	}
 	var k [32]byte
 	err := tstest.MinAllocsPerRun(t, 1, func() {
-		sinkBytes = keyMarshalText("prefix", k)
+		sinkBytes = ExportKeyMarshalText("prefix", k)
 	})
 	if err != nil {
 		t.Fatal(err)

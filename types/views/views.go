@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package views provides read-only accessors for commonly used
 // value types.
@@ -11,6 +10,7 @@ import (
 	"errors"
 	"net/netip"
 
+	"golang.org/x/exp/slices"
 	"tailscale.com/net/tsaddr"
 )
 
@@ -169,6 +169,37 @@ func SliceContains[T comparable](v Slice[T], e T) bool {
 	return false
 }
 
+// SliceEqualAnyOrder reports whether a and b contain the same elements, regardless of order.
+// The underlying slices for a and b can be nil.
+func SliceEqualAnyOrder[T comparable](a, b Slice[T]) bool {
+	if a.Len() != b.Len() {
+		return false
+	}
+
+	var diffStart int // beginning index where a and b differ
+	for n := a.Len(); diffStart < n; diffStart++ {
+		if a.At(diffStart) != b.At(diffStart) {
+			break
+		}
+	}
+	if diffStart == a.Len() {
+		return true
+	}
+
+	// count the occurrences of remaining values and compare
+	valueCount := make(map[T]int)
+	for i, n := diffStart, a.Len(); i < n; i++ {
+		valueCount[a.At(i)]++
+		valueCount[b.At(i)]--
+	}
+	for _, count := range valueCount {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // IPPrefixSlice is a read-only accessor for a slice of netip.Prefix.
 type IPPrefixSlice struct {
 	ж Slice[netip.Prefix]
@@ -213,7 +244,7 @@ func (v IPPrefixSlice) ContainsIP(ip netip.Addr) bool {
 
 // PrefixesContainsFunc reports whether f is true for any IPPrefix in the slice.
 func (v IPPrefixSlice) ContainsFunc(f func(netip.Prefix) bool) bool {
-	return tsaddr.PrefixesContainsFunc(v.ж.ж, f)
+	return slices.ContainsFunc(v.ж.ж, f)
 }
 
 // ContainsExitRoutes reports whether v contains ExitNode Routes.

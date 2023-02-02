@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package prober
 
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"tailscale.com/util/httpm"
 )
 
 var (
@@ -59,7 +59,7 @@ func SendAlert(summary, details string) error {
 		return errors.New("no SQUADCAST_WEBHOOK configured")
 	}
 
-	req, err := http.NewRequest(http.MethodPost, webhookUrl, bytes.NewBuffer(sqBody))
+	req, err := http.NewRequest(httpm.POST, webhookUrl, bytes.NewBuffer(sqBody))
 	if err != nil {
 		alertFailed.Add(1)
 		return err

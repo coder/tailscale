@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 //go:build go1.19
 
@@ -11,6 +10,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+
+	"tailscale.com/util/httpm"
 )
 
 // TailnetDeleteRequest handles sending a DELETE request for a tailnet to control.
@@ -22,7 +23,7 @@ func (c *Client) TailnetDeleteRequest(ctx context.Context, tailnetID string) (er
 	}()
 
 	path := fmt.Sprintf("%s/api/v2/tailnet/%s", c.baseURL(), url.PathEscape(string(tailnetID)))
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, path, nil)
+	req, err := http.NewRequestWithContext(ctx, httpm.DELETE, path, nil)
 	if err != nil {
 		return err
 	}

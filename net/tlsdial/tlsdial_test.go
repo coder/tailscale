@@ -1,6 +1,5 @@
-// Copyright (c) 2021 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package tlsdial
 
@@ -43,7 +42,7 @@ func TestFallbackRootWorks(t *testing.T) {
 	crtFile := filepath.Join(d, "tlsdial.test.crt")
 	keyFile := filepath.Join(d, "tlsdial.test.key")
 	caFile := filepath.Join(d, "rootCA.pem")
-	cmd := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"),
+	cmd := exec.Command("go",
 		"run", "filippo.io/mkcert",
 		"--cert-file="+crtFile,
 		"--key-file="+keyFile,

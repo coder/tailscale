@@ -1,10 +1,10 @@
-// Copyright (c) 2021 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package key
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"encoding/hex"
 
@@ -87,7 +87,7 @@ func (k *MachinePrivate) UnmarshalText(b []byte) error {
 // specific raw byte serialization, please use
 // MarshalText/UnmarshalText.
 func (k MachinePrivate) UntypedBytes() []byte {
-	return append([]byte(nil), k.k[:]...)
+	return bytes.Clone(k.k[:])
 }
 
 // SealTo wraps cleartext into a NaCl box (see
@@ -231,7 +231,7 @@ func (k MachinePublic) UntypedHexString() string {
 // specific raw byte serialization, please use
 // MarshalText/UnmarshalText.
 func (k MachinePublic) UntypedBytes() []byte {
-	return append([]byte(nil), k.k[:]...)
+	return bytes.Clone(k.k[:])
 }
 
 // String returns the output of MarshalText as a string.

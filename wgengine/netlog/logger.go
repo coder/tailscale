@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package netlog provides a logger that monitors a TUN device and
 // periodically records any traffic into a log stream.
@@ -17,13 +16,14 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sync/errgroup"
 	"tailscale.com/logpolicy"
 	"tailscale.com/logtail"
+	"tailscale.com/net/connstats"
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/smallzstd"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/netlogtype"
+	"tailscale.com/util/multierr"
 	"tailscale.com/wgengine/router"
 )
 
@@ -31,32 +31,29 @@ import (
 const pollPeriod = 5 * time.Second
 
 // Device is an abstraction over a tunnel device or a magic socket.
-// *tstun.Wrapper implements this interface.
-// *magicsock.Conn implements this interface.
+// Both *tstun.Wrapper and *magicsock.Conn implement this interface.
 type Device interface {
-	SetStatisticsEnabled(bool)
-	ExtractStatistics() map[netlogtype.Connection]netlogtype.Counts
+	SetStatistics(*connstats.Statistics)
 }
 
 type noopDevice struct{}
 
-func (noopDevice) SetStatisticsEnabled(bool)                                      {}
-func (noopDevice) ExtractStatistics() map[netlogtype.Connection]netlogtype.Counts { return nil }
+func (noopDevice) SetStatistics(*connstats.Statistics) {}
 
 // Logger logs statistics about every connection.
 // At present, it only logs connections within a tailscale network.
 // Exit node traffic is not logged for privacy reasons.
 // The zero value is ready for use.
 type Logger struct {
-	mu sync.Mutex
+	mu sync.Mutex // protects all fields below
 
 	logger *logtail.Logger
+	stats  *connstats.Statistics
+	tun    Device
+	sock   Device
 
 	addrs    map[netip.Addr]bool
 	prefixes map[netip.Prefix]bool
-
-	group  errgroup.Group
-	cancel context.CancelFunc
 }
 
 // Running reports whether the logger is running.
@@ -98,18 +95,13 @@ func (nl *Logger) Startup(nodeID tailcfg.StableNodeID, nodeLogID, domainLogID lo
 	if nl.logger != nil {
 		return fmt.Errorf("network logger already running for %v", nl.logger.PrivateID().Public())
 	}
-	if tun == nil {
-		tun = noopDevice{}
-	}
-	if sock == nil {
-		sock = noopDevice{}
-	}
 
+	// Startup a log stream to Tailscale's logging service.
 	httpc := &http.Client{Transport: logpolicy.NewLogtailTransport(logtail.DefaultHost)}
 	if testClient != nil {
 		httpc = testClient
 	}
-	logger := logtail.NewLogger(logtail.Config{
+	nl.logger = logtail.NewLogger(logtail.Config{
 		Collection:    "tailtraffic.log.tailscale.io",
 		PrivateID:     nodeLogID,
 		CopyPrivateID: domainLogID,
@@ -128,54 +120,38 @@ func (nl *Logger) Startup(nodeID tailcfg.StableNodeID, nodeLogID, domainLogID lo
 		IncludeProcID:       true,
 		IncludeProcSequence: true,
 	}, log.Printf)
-	nl.logger = logger
 
-	ctx, cancel := context.WithCancel(context.Background())
-	nl.cancel = cancel
-	nl.group.Go(func() error {
-		tun.SetStatisticsEnabled(true)
-		defer tun.SetStatisticsEnabled(false)
-		tun.ExtractStatistics() // clear out any stale statistics
-
-		sock.SetStatisticsEnabled(true)
-		defer sock.SetStatisticsEnabled(false)
-		sock.ExtractStatistics() // clear out any stale statistics
-
-		start := time.Now()
-		ticker := time.NewTicker(pollPeriod)
-		for {
-			var end time.Time
-			select {
-			case <-ctx.Done():
-				tun.SetStatisticsEnabled(false)
-				end = time.Now()
-			case end = <-ticker.C:
-			}
-
-			// NOTE: tunStats and sockStats will always be slightly out-of-sync.
-			// It is impossible to have an atomic snapshot of statistics
-			// at both layers without a global mutex that spans all layers.
-			tunStats := tun.ExtractStatistics()
-			sockStats := sock.ExtractStatistics()
-			if len(tunStats)+len(sockStats) > 0 {
-				nl.mu.Lock()
-				addrs := nl.addrs
-				prefixes := nl.prefixes
-				nl.mu.Unlock()
-				recordStatistics(logger, nodeID, start, end, tunStats, sockStats, addrs, prefixes)
-			}
-
-			if ctx.Err() != nil {
-				break
-			}
-			start = end.Add(time.Nanosecond)
-		}
-		return nil
+	// Startup a data structure to track per-connection statistics.
+	// There is a maximum size for individual log messages that logtail
+	// can upload to the Tailscale log service, so stay below this limit.
+	const maxLogSize = 256 << 10
+	const maxConns = (maxLogSize - netlogtype.MaxMessageJSONSize) / netlogtype.MaxConnectionCountsJSONSize
+	nl.stats = connstats.NewStatistics(pollPeriod, maxConns, func(start, end time.Time, virtual, physical map[netlogtype.Connection]netlogtype.Counts) {
+		nl.mu.Lock()
+		addrs := nl.addrs
+		prefixes := nl.prefixes
+		nl.mu.Unlock()
+		recordStatistics(nl.logger, nodeID, start, end, virtual, physical, addrs, prefixes)
 	})
+
+	// Register the connection tracker into the TUN device.
+	if tun == nil {
+		tun = noopDevice{}
+	}
+	nl.tun = tun
+	nl.tun.SetStatistics(nl.stats)
+
+	// Register the connection tracker into magicsock.
+	if sock == nil {
+		sock = noopDevice{}
+	}
+	nl.sock = sock
+	nl.sock.SetStatistics(nl.stats)
+
 	return nil
 }
 
-func recordStatistics(logger *logtail.Logger, nodeID tailcfg.StableNodeID, start, end time.Time, tunStats, sockStats map[netlogtype.Connection]netlogtype.Counts, addrs map[netip.Addr]bool, prefixes map[netip.Prefix]bool) {
+func recordStatistics(logger *logtail.Logger, nodeID tailcfg.StableNodeID, start, end time.Time, connstats, sockStats map[netlogtype.Connection]netlogtype.Counts, addrs map[netip.Addr]bool, prefixes map[netip.Prefix]bool) {
 	m := netlogtype.Message{NodeID: nodeID, Start: start.UTC(), End: end.UTC()}
 
 	classifyAddr := func(a netip.Addr) (isTailscale, withinRoute bool) {
@@ -194,7 +170,7 @@ func recordStatistics(logger *logtail.Logger, nodeID tailcfg.StableNodeID, start
 	}
 
 	exitTraffic := make(map[netlogtype.Connection]netlogtype.Counts)
-	for conn, cnts := range tunStats {
+	for conn, cnts := range connstats {
 		srcIsTailscaleIP, srcWithinSubnet := classifyAddr(conn.Src.Addr())
 		dstIsTailscaleIP, dstWithinSubnet := classifyAddr(conn.Dst.Addr())
 		switch {
@@ -226,21 +202,8 @@ func recordStatistics(logger *logtail.Logger, nodeID tailcfg.StableNodeID, start
 	}
 
 	if len(m.VirtualTraffic)+len(m.SubnetTraffic)+len(m.ExitTraffic)+len(m.PhysicalTraffic) > 0 {
-		// TODO(joetsai): Place a hard limit on the size of a network log message.
-		// The log server rejects any payloads above a certain size, so logging
-		// a message that large would cause logtail to be stuck forever trying
-		// and failing to upload the same excessively large payload.
-		//
-		// We should figure out the behavior for handling this. We could split
-		// the message apart so that there are multiple chunks with the same window,
-		// We could also consider reducing the granularity of the data
-		// by dropping port numbers.
-		const maxSize = 256 << 10
 		if b, err := json.Marshal(m); err != nil {
 			logger.Logf("json.Marshal error: %v", err)
-		} else if len(b) > maxSize {
-			logger.Logf("JSON body too large: %dB (virtual:%d subnet:%d exit:%d physical:%d)",
-				len(b), len(m.VirtualTraffic), len(m.SubnetTraffic), len(m.ExitTraffic), len(m.PhysicalTraffic))
 		} else {
 			logger.Logf("%s", b)
 		}
@@ -289,15 +252,23 @@ func (nl *Logger) Shutdown(ctx context.Context) error {
 	if nl.logger == nil {
 		return nil
 	}
-	nl.cancel()
-	nl.mu.Unlock()
-	nl.group.Wait() // do not hold lock while waiting
-	nl.mu.Lock()
-	err := nl.logger.Shutdown(ctx)
 
+	// Shutdown in reverse order of Startup.
+	// Do not hold lock while shutting down since this may flush one last time.
+	nl.mu.Unlock()
+	nl.sock.SetStatistics(nil)
+	nl.tun.SetStatistics(nil)
+	err1 := nl.stats.Shutdown(ctx)
+	err2 := nl.logger.Shutdown(ctx)
+	nl.mu.Lock()
+
+	// Purge state.
 	nl.logger = nil
+	nl.stats = nil
+	nl.tun = nil
+	nl.sock = nil
 	nl.addrs = nil
 	nl.prefixes = nil
-	nl.cancel = nil
-	return err
+
+	return multierr.New(err1, err2)
 }

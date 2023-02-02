@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package wgengine
 
@@ -11,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/netip"
 	"reflect"
 	"runtime"
@@ -19,9 +17,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tailscale/wireguard-go/device"
+	"github.com/tailscale/wireguard-go/tun"
 	"golang.org/x/exp/maps"
-	"golang.zx2c4.com/wireguard/device"
-	"golang.zx2c4.com/wireguard/tun"
 	"tailscale.com/control/controlclient"
 	"tailscale.com/envknob"
 	"tailscale.com/health"
@@ -54,13 +52,6 @@ import (
 	"tailscale.com/wgengine/wgcfg"
 	"tailscale.com/wgengine/wgint"
 	"tailscale.com/wgengine/wglog"
-)
-
-const magicDNSPort = 53
-
-var (
-	magicDNSIP   = tsaddr.TailscaleServiceIP()
-	magicDNSIPv6 = tsaddr.TailscaleServiceIPv6()
 )
 
 // Lazy wireguard-go configuration parameters.
@@ -462,8 +453,6 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 	e.logf("Starting link monitor...")
 	e.linkMon.Start()
 
-	go e.pollResolver()
-
 	e.logf("Engine created.")
 	return e, nil
 }
@@ -491,19 +480,6 @@ func echoRespondToAll(p *packet.Parsed, t *tstun.Wrapper) filter.Response {
 // tailscaled directly. Other packets are allowed to proceed into the
 // main ACL filter.
 func (e *userspaceEngine) handleLocalPackets(p *packet.Parsed, t *tstun.Wrapper) filter.Response {
-	// Handle traffic to the service IP.
-	// TODO(tom): Netstack handles this when it is installed. Rip all
-	//            this out once netstack is used on all platforms.
-	switch p.Dst.Addr() {
-	case magicDNSIP, magicDNSIPv6:
-		err := e.dns.EnqueuePacket(append([]byte(nil), p.Payload()...), p.IPProto, p.Src, p.Dst)
-		if err != nil {
-			e.logf("dns: enqueue: %v", err)
-		}
-		metricMagicDNSPacketIn.Add(1)
-		return filter.Drop
-	}
-
 	if runtime.GOOS == "darwin" || runtime.GOOS == "ios" {
 		isLocalAddr, ok := e.isLocalAddr.LoadOk()
 		if !ok {
@@ -521,27 +497,6 @@ func (e *userspaceEngine) handleLocalPackets(p *packet.Parsed, t *tstun.Wrapper)
 	}
 
 	return filter.Accept
-}
-
-// pollResolver reads packets from the DNS resolver and injects them inbound.
-//
-// TODO(tom): Remove this fallback path (via NextPacket()) once all
-// platforms use netstack.
-func (e *userspaceEngine) pollResolver() {
-	for {
-		bs, err := e.dns.NextPacket()
-		if errors.Is(err, net.ErrClosed) {
-			return
-		}
-		if err != nil {
-			e.logf("dns: error: %v", err)
-			continue
-		}
-
-		// The leading empty space required by the semantics of
-		// InjectInboundDirect is allocated in NextPacket().
-		e.tundev.InjectInboundDirect(bs, tstun.PacketStartOffset)
-	}
 }
 
 var debugTrimWireguard = envknob.RegisterOptBool("TS_DEBUG_TRIM_WIREGUARD")
@@ -1265,13 +1220,15 @@ func (e *userspaceEngine) UpdateStatus(sb *ipnstate.StatusBuilder) {
 		e.logf("wgengine: getStatus: %v", err)
 		return
 	}
-	for _, ps := range st.Peers {
-		sb.AddPeer(ps.NodeKey, &ipnstate.PeerStatus{
-			RxBytes:       int64(ps.RxBytes),
-			TxBytes:       int64(ps.TxBytes),
-			LastHandshake: ps.LastHandshake,
-			InEngine:      true,
-		})
+	if sb.WantPeers {
+		for _, ps := range st.Peers {
+			sb.AddPeer(ps.NodeKey, &ipnstate.PeerStatus{
+				RxBytes:       int64(ps.RxBytes),
+				TxBytes:       int64(ps.TxBytes),
+				LastHandshake: ps.LastHandshake,
+				InEngine:      true,
+			})
+		}
 	}
 
 	e.magicConn.UpdateStatus(sb)

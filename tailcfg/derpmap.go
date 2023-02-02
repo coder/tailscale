@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package tailcfg
 
@@ -154,3 +153,6 @@ type DERPNode struct {
 	// If empty, it's assumed to be the same as the DERP server.
 	STUNTestIP string `json:",omitempty"`
 }
+
+// DotInvalid is a fake DNS TLD used in tests for an invalid hostname.
+const DotInvalid = ".invalid"

@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // This file contains the code for the incubator process.  Tailscaled
 // launches the incubator as the same user as it was launched as.  The
@@ -8,7 +7,7 @@
 // and groups to the specified `--uid`, `--gid` and `--groups`, and
 // then launches the requested `--cmd`.
 
-//go:build linux || (darwin && !ios)
+//go:build linux || (darwin && !ios) || freebsd || openbsd
 
 package tailssh
 
@@ -24,6 +23,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,11 +31,17 @@ import (
 	"github.com/creack/pty"
 	"github.com/pkg/sftp"
 	"github.com/u-root/u-root/pkg/termios"
+	"go4.org/mem"
 	gossh "golang.org/x/crypto/ssh"
+	"golang.org/x/exp/slices"
 	"golang.org/x/sys/unix"
 	"tailscale.com/cmd/tailscaled/childproc"
+	"tailscale.com/envknob"
+	"tailscale.com/hostinfo"
 	"tailscale.com/tempfork/gliderlabs/ssh"
 	"tailscale.com/types/logger"
+	"tailscale.com/util/lineread"
+	"tailscale.com/version/distro"
 )
 
 func init() {
@@ -59,7 +65,14 @@ var maybeStartLoginSession = func(logf logger.Logf, ia incubatorArgs) (close fun
 //
 // If ss.srv.tailscaledPath is empty, this method is equivalent to
 // exec.CommandContext.
-func (ss *sshSession) newIncubatorCommand() *exec.Cmd {
+//
+// The returned Cmd.Env is guaranteed to be nil; the caller populates it.
+func (ss *sshSession) newIncubatorCommand() (cmd *exec.Cmd) {
+	defer func() {
+		if cmd.Env != nil {
+			panic("internal error")
+		}
+	}()
 	var (
 		name    string
 		args    []string
@@ -270,7 +283,20 @@ func beIncubator(args []string) error {
 			Foreground: true,
 		}
 	}
-	return cmd.Run()
+	err = cmd.Run()
+	if ee, ok := err.(*exec.ExitError); ok {
+		ps := ee.ProcessState
+		code := ps.ExitCode()
+		if code < 0 {
+			// TODO(bradfitz): do we need to also check the syscall.WaitStatus
+			// and make our process look like it also died by signal/same signal
+			// as our child process? For now we just do the exit code.
+			fmt.Fprintf(os.Stderr, "[tailscale-ssh: process died: %v]\n", ps.String())
+			code = 1 // for now. so we don't exit with negative
+		}
+		os.Exit(code)
+	}
+	return err
 }
 
 // launchProcess launches an incubator process for the provided session.
@@ -292,7 +318,7 @@ func (ss *sshSession) launchProcess() error {
 	} else {
 		return err
 	}
-	cmd.Env = append(cmd.Env, envForUser(ss.conn.localUser)...)
+	cmd.Env = envForUser(ss.conn.localUser)
 	for _, kv := range ss.Environ() {
 		if acceptEnvPair(kv) {
 			cmd.Env = append(cmd.Env, kv)
@@ -567,7 +593,83 @@ func envForUser(u *user.User) []string {
 		fmt.Sprintf("SHELL=" + loginShell(u.Uid)),
 		fmt.Sprintf("USER=" + u.Username),
 		fmt.Sprintf("HOME=" + u.HomeDir),
+		fmt.Sprintf("PATH=" + defaultPathForUser(u)),
 	}
+}
+
+// defaultPathTmpl specifies the default PATH template to use for new sessions.
+//
+// If empty, a default value is used based on the OS & distro to match OpenSSH's
+// usually-hardcoded behavior. (see
+// https://github.com/tailscale/tailscale/issues/5285 for background).
+//
+// The template may contain @{HOME} or @{PAM_USER} which expand to the user's
+// home directory and username, respectively. (PAM is not used, despite the
+// name)
+var defaultPathTmpl = envknob.RegisterString("TAILSCALE_SSH_DEFAULT_PATH")
+
+func defaultPathForUser(u *user.User) string {
+	if s := defaultPathTmpl(); s != "" {
+		return expandDefaultPathTmpl(s, u)
+	}
+	isRoot := u.Uid == "0"
+	switch distro.Get() {
+	case distro.Debian:
+		hi := hostinfo.New()
+		if hi.Distro == "ubuntu" {
+			// distro.Get's Debian includes Ubuntu. But see if it's actually Ubuntu.
+			// Ubuntu doesn't empirically seem to distinguish between root and non-root for the default.
+			// And it includes /snap/bin.
+			return "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin"
+		}
+		if isRoot {
+			return "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+		}
+		return "/usr/local/bin:/usr/bin:/bin:/usr/bn/games"
+	case distro.NixOS:
+		return defaultPathForUserOnNixOS(u)
+	}
+	if isRoot {
+		return "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	}
+	return "/usr/local/bin:/usr/bin:/bin"
+}
+
+func defaultPathForUserOnNixOS(u *user.User) string {
+	var path string
+	lineread.File("/etc/pam/environment", func(lineb []byte) error {
+		if v := pathFromPAMEnvLine(lineb, u); v != "" {
+			path = v
+			return io.EOF // stop iteration
+		}
+		return nil
+	})
+	return path
+}
+
+func pathFromPAMEnvLine(line []byte, u *user.User) (path string) {
+	if !mem.HasPrefix(mem.B(line), mem.S("PATH")) {
+		return ""
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(string(line), "PATH"))
+	if quoted, ok := strings.CutPrefix(rest, "DEFAULT="); ok {
+		if path, err := strconv.Unquote(quoted); err == nil {
+			return expandDefaultPathTmpl(path, u)
+		}
+	}
+	return ""
+}
+
+func expandDefaultPathTmpl(t string, u *user.User) string {
+	p := strings.NewReplacer(
+		"@{HOME}", u.HomeDir,
+		"@{PAM_USER}", u.Username,
+	).Replace(t)
+	if strings.Contains(p, "@{") {
+		// If there are unknown expansions, conservatively fail closed.
+		return ""
+	}
+	return p
 }
 
 // updateStringInSlice mutates ss to change the first occurrence of a
@@ -590,4 +692,60 @@ func acceptEnvPair(kv string) bool {
 		return false
 	}
 	return k == "TERM" || k == "LANG" || strings.HasPrefix(k, "LC_")
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func (ia *incubatorArgs) loginArgs() []string {
+	switch runtime.GOOS {
+	case "linux":
+		if distro.Get() == distro.Arch && !fileExists("/etc/pam.d/remote") {
+			// See https://github.com/tailscale/tailscale/issues/4924
+			//
+			// Arch uses a different login binary that makes the -h flag set the PAM
+			// service to "remote". So if they don't have that configured, don't
+			// pass -h.
+			return []string{ia.loginCmdPath, "-f", ia.localUser, "-p"}
+		}
+		return []string{ia.loginCmdPath, "-f", ia.localUser, "-h", ia.remoteIP, "-p"}
+	case "darwin", "freebsd", "openbsd":
+		return []string{ia.loginCmdPath, "-fp", "-h", ia.remoteIP, ia.localUser}
+	}
+	panic("unimplemented")
+}
+
+func setGroups(groupIDs []int) error {
+	if runtime.GOOS == "darwin" && len(groupIDs) > 16 {
+		// darwin returns "invalid argument" if more than 16 groups are passed to syscall.Setgroups
+		// some info can be found here:
+		// https://opensource.apple.com/source/samba/samba-187.8/patches/support-darwin-initgroups-syscall.auto.html
+		// this fix isn't great, as anyone reading this has probably just wasted hours figuring out why
+		// some permissions thing isn't working, due to some arbitrary group ordering, but it at least allows
+		// this to work for more things than it previously did.
+		groupIDs = groupIDs[:16]
+	}
+
+	err := syscall.Setgroups(groupIDs)
+	if err != nil && os.Geteuid() != 0 && groupsMatchCurrent(groupIDs) {
+		// If we're not root, ignore a Setgroups failure if all groups are the same.
+		return nil
+	}
+	return err
+}
+
+func groupsMatchCurrent(groupIDs []int) bool {
+	existing, err := syscall.Getgroups()
+	if err != nil {
+		return false
+	}
+	if len(existing) != len(groupIDs) {
+		return false
+	}
+	groupIDs = slices.Clone(groupIDs)
+	sort.Ints(groupIDs)
+	sort.Ints(existing)
+	return slices.Equal(groupIDs, existing)
 }

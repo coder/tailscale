@@ -12,13 +12,17 @@ tidy:
 	./tool/go mod tidy
 
 updatedeps:
-	./tool/go run github.com/tailscale/depaware --update \
+	# depaware (via x/tools/go/packages) shells back to "go", so make sure the "go"
+	# it finds in its $$PATH is the right one.
+	PATH="$$(./tool/go env GOROOT)/bin:$$PATH" ./tool/go run github.com/tailscale/depaware --update \
 		tailscale.com/cmd/tailscaled \
 		tailscale.com/cmd/tailscale \
 		tailscale.com/cmd/derper
 
 depaware:
-	./tool/go run github.com/tailscale/depaware --check \
+	# depaware (via x/tools/go/packages) shells back to "go", so make sure the "go"
+	# it finds in its $$PATH is the right one.
+	PATH="$$(./tool/go env GOROOT)/bin:$$PATH" ./tool/go run github.com/tailscale/depaware --check \
 		tailscale.com/cmd/tailscaled \
 		tailscale.com/cmd/tailscale \
 		tailscale.com/cmd/derper
@@ -34,6 +38,9 @@ buildlinuxarm:
 
 buildwasm:
 	GOOS=js GOARCH=wasm ./tool/go install ./cmd/tsconnect/wasm ./cmd/tailscale/cli
+
+buildlinuxloong64:
+	GOOS=linux GOARCH=loong64 ./tool/go install tailscale.com/cmd/tailscale tailscale.com/cmd/tailscaled
 
 buildmultiarchimage:
 	./build_docker.sh
@@ -59,4 +66,14 @@ publishdevimage:
 	@test -n "${REPO}" || (echo "REPO=... required; e.g. REPO=ghcr.io/${USER}/tailscale" && exit 1)
 	@test "${REPO}" != "tailscale/tailscale" || (echo "REPO=... must not be tailscale/tailscale" && exit 1)
 	@test "${REPO}" != "ghcr.io/tailscale/tailscale" || (echo "REPO=... must not be ghcr.io/tailscale/tailscale" && exit 1)
-	TAGS=latest REPOS=${REPO} PUSH=true ./build_docker.sh
+	@test "${REPO}" != "tailscale/k8s-operator" || (echo "REPO=... must not be tailscale/k8s-operator" && exit 1)
+	@test "${REPO}" != "ghcr.io/tailscale/k8s-operator" || (echo "REPO=... must not be ghcr.io/tailscale/k8s-operator" && exit 1)
+	TAGS=latest REPOS=${REPO} PUSH=true TARGET=client ./build_docker.sh
+
+publishdevoperator:
+	@test -n "${REPO}" || (echo "REPO=... required; e.g. REPO=ghcr.io/${USER}/tailscale" && exit 1)
+	@test "${REPO}" != "tailscale/tailscale" || (echo "REPO=... must not be tailscale/tailscale" && exit 1)
+	@test "${REPO}" != "ghcr.io/tailscale/tailscale" || (echo "REPO=... must not be ghcr.io/tailscale/tailscale" && exit 1)
+	@test "${REPO}" != "tailscale/k8s-operator" || (echo "REPO=... must not be tailscale/k8s-operator" && exit 1)
+	@test "${REPO}" != "ghcr.io/tailscale/k8s-operator" || (echo "REPO=... must not be ghcr.io/tailscale/k8s-operator" && exit 1)
+	TAGS=latest REPOS=${REPO} PUSH=true TARGET=operator ./build_docker.sh

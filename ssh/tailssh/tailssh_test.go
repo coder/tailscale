@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 //go:build linux || darwin
 
@@ -33,7 +32,7 @@ import (
 	gossh "github.com/tailscale/golang-x-crypto/ssh"
 	"tailscale.com/ipn/ipnlocal"
 	"tailscale.com/ipn/store/mem"
-	"tailscale.com/net/nettest"
+	"tailscale.com/net/memnet"
 	"tailscale.com/net/tsdial"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tempfork/gliderlabs/ssh"
@@ -43,7 +42,7 @@ import (
 	"tailscale.com/util/cibuild"
 	"tailscale.com/util/lineread"
 	"tailscale.com/util/must"
-	"tailscale.com/util/strs"
+	"tailscale.com/version/distro"
 	"tailscale.com/wgengine"
 )
 
@@ -286,7 +285,7 @@ func (ts *localState) WhoIs(ipp netip.AddrPort) (n *tailcfg.Node, u tailcfg.User
 
 func (ts *localState) DoNoiseRequest(req *http.Request) (*http.Response, error) {
 	rec := httptest.NewRecorder()
-	k, ok := strs.CutPrefix(req.URL.Path, "/ssh-action/")
+	k, ok := strings.CutPrefix(req.URL.Path, "/ssh-action/")
 	if !ok {
 		rec.WriteHeader(http.StatusNotFound)
 	}
@@ -429,7 +428,7 @@ func TestSSHAuthFlow(t *testing.T) {
 	src, dst := must.Get(netip.ParseAddrPort("100.100.100.101:2231")), must.Get(netip.ParseAddrPort("100.100.100.102:22"))
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			sc, dc := nettest.NewTCPConn(src, dst, 1024)
+			sc, dc := memnet.NewTCPConn(src, dst, 1024)
 			s.lb = tc.state
 			sshUser := "alice"
 			if tc.sshUser != "" {
@@ -754,4 +753,64 @@ func TestAcceptEnvPair(t *testing.T) {
 			t.Errorf("for %q, got %v; want %v", tt.in, got, tt.want)
 		}
 	}
+}
+
+func TestPathFromPAMEnvLine(t *testing.T) {
+	u := &user.User{Username: "foo", HomeDir: "/Homes/Foo"}
+	tests := []struct {
+		line string
+		u    *user.User
+		want string
+	}{
+		{"", u, ""},
+		{`PATH   DEFAULT="/run/wrappers/bin:@{HOME}/.nix-profile/bin:/etc/profiles/per-user/@{PAM_USER}/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin"`,
+			u, "/run/wrappers/bin:/Homes/Foo/.nix-profile/bin:/etc/profiles/per-user/foo/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin"},
+		{`PATH   DEFAULT="@{SOMETHING_ELSE}:nope:@{HOME}"`,
+			u, ""},
+	}
+	for i, tt := range tests {
+		got := pathFromPAMEnvLine([]byte(tt.line), tt.u)
+		if got != tt.want {
+			t.Errorf("%d. got %q; want %q", i, got, tt.want)
+		}
+	}
+}
+
+func TestExpandDefaultPathTmpl(t *testing.T) {
+	u := &user.User{Username: "foo", HomeDir: "/Homes/Foo"}
+	tests := []struct {
+		t    string
+		u    *user.User
+		want string
+	}{
+		{"", u, ""},
+		{`/run/wrappers/bin:@{HOME}/.nix-profile/bin:/etc/profiles/per-user/@{PAM_USER}/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin`,
+			u, "/run/wrappers/bin:/Homes/Foo/.nix-profile/bin:/etc/profiles/per-user/foo/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin"},
+		{`@{SOMETHING_ELSE}:nope:@{HOME}`, u, ""},
+	}
+	for i, tt := range tests {
+		got := expandDefaultPathTmpl(tt.t, tt.u)
+		if got != tt.want {
+			t.Errorf("%d. got %q; want %q", i, got, tt.want)
+		}
+	}
+}
+
+func TestPathFromPAMEnvLineOnNixOS(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("skipping on non-linux")
+	}
+	if distro.Get() != distro.NixOS {
+		t.Skip("skipping on non-NixOS")
+	}
+	u, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := defaultPathForUserOnNixOS(u)
+	if got == "" {
+		x, err := os.ReadFile("/etc/pam/environment")
+		t.Fatalf("no result. file was: err=%v, contents=%s", err, x)
+	}
+	t.Logf("success; got=%q", got)
 }

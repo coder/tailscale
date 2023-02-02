@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package ipnstate captures the entire state of the Tailscale network.
 //
@@ -20,14 +19,21 @@ import (
 
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
+	"tailscale.com/types/ptr"
 	"tailscale.com/types/views"
 	"tailscale.com/util/dnsname"
 )
+
+//go:generate go run tailscale.com/cmd/cloner  -clonefunc=false -type=TKAFilteredPeer
 
 // Status represents the entire state of the IPN network.
 type Status struct {
 	// Version is the daemon's long version (see version.Long).
 	Version string
+
+	// TUN is whether /dev/net/tun (or equivalent kernel interface) is being
+	// used. If false, it's running in userspace mode.
+	TUN bool
 
 	// BackendState is an ipn.State string value:
 	//  "NoState", "NeedsLogin", "NeedsMachineAuth", "Stopped",
@@ -67,6 +73,23 @@ type Status struct {
 	User map[tailcfg.UserID]tailcfg.UserProfile
 }
 
+// TKAKey describes a key trusted by network lock.
+type TKAKey struct {
+	Key      key.NLPublic
+	Metadata map[string]string
+	Votes    uint
+}
+
+// TKAFilteredPeer describes a peer which was removed from the netmap
+// (i.e. no connectivity) because it failed tailnet lock
+// checks.
+type TKAFilteredPeer struct {
+	Name         string // DNS
+	ID           tailcfg.NodeID
+	StableID     tailcfg.StableNodeID
+	TailscaleIPs []netip.Addr // Tailscale IP(s) assigned to this node
+}
+
 // NetworkLockStatus represents whether network-lock is enabled,
 // along with details about the locally-known state of the tailnet
 // key authority.
@@ -78,8 +101,35 @@ type NetworkLockStatus struct {
 	// if network lock is not enabled.
 	Head *[32]byte
 
-	// PublicKey describes the nodes' network-lock public key.
+	// PublicKey describes the node's network-lock public key.
+	// It may be zero if the node has not logged in.
 	PublicKey key.NLPublic
+
+	// NodeKey describes the node's current node-key. This field is not
+	// populated if the node is not operating (i.e. waiting for a login).
+	NodeKey *key.NodePublic
+
+	// NodeKeySigned is true if our node is authorized by network-lock.
+	NodeKeySigned bool
+
+	// TrustedKeys describes the keys currently trusted to make changes
+	// to network-lock.
+	TrustedKeys []TKAKey
+
+	// FilteredPeers describes peers which were removed from the netmap
+	// (i.e. no connectivity) because they failed tailnet lock
+	// checks.
+	FilteredPeers []*TKAFilteredPeer
+}
+
+// NetworkLockUpdate describes a change to network-lock state.
+type NetworkLockUpdate struct {
+	Hash   [32]byte
+	Change string // values of tka.AUMKind.String()
+
+	// Raw contains the serialized AUM. The AUM is sent in serialized
+	// form to avoid transitive dependences bloating this package.
+	Raw []byte
 }
 
 // TailnetStatus is information about a Tailscale network ("tailnet").
@@ -196,9 +246,20 @@ type PeerStatus struct {
 	// InEngine means that this peer is tracked by the wireguard engine.
 	// In theory, all of InNetworkMap and InMagicSock and InEngine should all be true.
 	InEngine bool
+
+	// Expired means that this peer's node key has expired, based on either
+	// information from control or optimisically set on the client if the
+	// expiration time has passed.
+	Expired bool `json:",omitempty"`
+
+	// KeyExpiry, if present, is the time at which the node key expired or
+	// will expire.
+	KeyExpiry *time.Time `json:",omitempty"`
 }
 
 type StatusBuilder struct {
+	WantPeers bool // whether caller wants peers
+
 	mu     sync.Mutex
 	locked bool
 	st     Status
@@ -371,6 +432,15 @@ func (sb *StatusBuilder) AddPeer(peer key.NodePublic, st *PeerStatus) {
 	}
 	if st.Active {
 		e.Active = true
+	}
+	if st.PeerAPIURL != nil {
+		e.PeerAPIURL = st.PeerAPIURL
+	}
+	if st.Expired {
+		e.Expired = true
+	}
+	if t := st.KeyExpiry; t != nil {
+		e.KeyExpiry = ptr.To(*t)
 	}
 }
 
@@ -585,4 +655,12 @@ func sortKey(ps *PeerStatus) string {
 	}
 	raw := ps.PublicKey.Raw32()
 	return string(raw[:])
+}
+
+// DebugDERPRegionReport is the result of a "tailscale debug derp" command,
+// to let people debug a custom DERP setup.
+type DebugDERPRegionReport struct {
+	Info     []string
+	Warnings []string
+	Errors   []string
 }

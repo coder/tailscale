@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package wgengine
 
@@ -11,6 +10,7 @@ import (
 	"testing"
 
 	"go4.org/mem"
+	"tailscale.com/cmd/testwrapper/flakytest"
 	"tailscale.com/net/dns"
 	"tailscale.com/net/netaddr"
 	"tailscale.com/net/tstun"
@@ -143,6 +143,7 @@ func TestUserspaceEngineReconfig(t *testing.T) {
 }
 
 func TestUserspaceEnginePortReconfig(t *testing.T) {
+	flakytest.Mark(t, "https://github.com/tailscale/tailscale/issues/2855")
 	const defaultPort = 49983
 	// Keep making a wgengine until we find an unused port
 	var ue *userspaceEngine

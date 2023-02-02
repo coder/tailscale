@@ -1,6 +1,5 @@
-// Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 package wglog_test
 
@@ -22,9 +21,9 @@ func TestLogger(t *testing.T) {
 		want   string
 		omit   bool
 	}{
-		{"hi", nil, "hi", false},
+		{"hi", nil, "wg: hi", false},
 		{"Routine: starting", nil, "", true},
-		{"%v says it misses you", []any{stringer("peer(IMTB…r7lM)")}, "[IMTBr] says it misses you", false},
+		{"%v says it misses you", []any{stringer("peer(IMTB…r7lM)")}, "wg: [IMTBr] says it misses you", false},
 	}
 
 	type log struct {

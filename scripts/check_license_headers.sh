@@ -1,8 +1,7 @@
 #!/bin/sh
 #
-# Copyright (c) 2020 Tailscale Inc & AUTHORS All rights reserved.
-# Use of this source code is governed by a BSD-style
-# license that can be found in the LICENSE file.
+# Copyright (c) Tailscale Inc & AUTHORS
+# SPDX-License-Identifier: BSD-3-Clause
 #
 # check_license_headers.sh checks that all Go files in the given
 # directory tree have a correct-looking Tailscale license header.
@@ -10,17 +9,14 @@
 check_file() {
     got=$1
 
-    for year in `seq 2019 2022`; do
-        want=$(cat <<EOF
-// Copyright (c) $year Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+    want=$(cat <<EOF
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 EOF
-        )
-        if [ "$got" = "$want" ]; then
-            return 0
-        fi
-    done
+    )
+    if [ "$got" = "$want" ]; then
+        return 0
+    fi
     return 1
 }
 
@@ -38,6 +34,9 @@ for file in $(find $1 -name '*.go' -not -path '*/.git/*'); do
         $1/wgengine/router/ifconfig_windows.go)
             # WireGuard copyright.
         ;;
+        $1/cmd/tailscale/cli/authenticode_windows.go)
+            # WireGuard copyright.
+        ;;
 		*_string.go)
 			# Generated file from go:generate stringer
 		;;
@@ -48,7 +47,7 @@ for file in $(find $1 -name '*.go' -not -path '*/.git/*'); do
             # Generated syscall wrappers
         ;;
         *)
-            header="$(head -3 $file)"
+            header="$(head -2 $file)"
             if ! check_file "$header"; then
                 fail=1
                 echo "${file#$1/} doesn't have the right copyright header:"

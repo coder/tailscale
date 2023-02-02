@@ -1,6 +1,5 @@
-// Copyright (c) 2022 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // No need to run this on Windows where CI's slow enough. Then we don't need to
 // worry about "go.exe" etc.
@@ -13,13 +12,11 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"testing"
 )
 
 func TestDeps(t *testing.T) {
-	cmd := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "list", "-json", ".")
+	cmd := exec.Command("go", "list", "-json", ".")
 	cmd.Env = append(os.Environ(), "GOOS=ios", "GOARCH=arm64")
 	out, err := cmd.Output()
 	if err != nil {

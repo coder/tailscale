@@ -1,6 +1,5 @@
-// Copyright (c) 2021 Tailscale Inc & AUTHORS All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// Copyright (c) Tailscale Inc & AUTHORS
+// SPDX-License-Identifier: BSD-3-Clause
 
 // Package tsnet provides Tailscale as a library.
 //
@@ -13,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/netip"
@@ -34,10 +34,11 @@ import (
 	"tailscale.com/logpolicy"
 	"tailscale.com/logtail"
 	"tailscale.com/logtail/filch"
-	"tailscale.com/net/nettest"
+	"tailscale.com/net/memnet"
 	"tailscale.com/net/tsdial"
 	"tailscale.com/smallzstd"
 	"tailscale.com/types/logger"
+	"tailscale.com/util/mak"
 	"tailscale.com/wgengine"
 	"tailscale.com/wgengine/monitor"
 	"tailscale.com/wgengine/netstack"
@@ -82,6 +83,10 @@ type Server struct {
 	// used.
 	AuthKey string
 
+	// ControlURL optionally specifies the coordination server URL.
+	// If empty, the Tailscale default is used.
+	ControlURL string
+
 	initOnce         sync.Once
 	initErr          error
 	lb               *ipnlocal.LocalBackend
@@ -108,6 +113,18 @@ func (s *Server) Dial(ctx context.Context, network, address string) (net.Conn, e
 		return nil, err
 	}
 	return s.dialer.UserDial(ctx, network, address)
+}
+
+// HTTPClient returns an HTTP client that is configured to connect over Tailscale.
+//
+// This is useful if you need to have your tsnet services connect to other devices on
+// your tailnet.
+func (s *Server) HTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: s.Dial,
+		},
+	}
 }
 
 // LocalClient returns a LocalClient that speaks to s.
@@ -299,9 +316,6 @@ func (s *Server) start() (reterr error) {
 	}
 	ns.ProcessLocalIPs = true
 	ns.ForwardTCPIn = s.forwardTCP
-	if err := ns.Start(); err != nil {
-		return fmt.Errorf("failed to start netstack: %w", err)
-	}
 	s.netstack = ns
 	s.dialer.UseNetstackForIP = func(ip netip.Addr) bool {
 		_, ok := eng.PeerForIP(ip)
@@ -331,6 +345,9 @@ func (s *Server) start() (reterr error) {
 	lb.SetVarRoot(s.rootPath)
 	logf("tsnet starting with hostname %q, varRoot %q", s.hostname, s.rootPath)
 	s.lb = lb
+	if err := ns.Start(lb); err != nil {
+		return fmt.Errorf("failed to start netstack: %w", err)
+	}
 	closePool.addFunc(func() { s.lb.Shutdown() })
 	lb.SetDecompressor(func() (controlclient.Decompressor, error) {
 		return smallzstd.NewDecoder(nil)
@@ -338,9 +355,9 @@ func (s *Server) start() (reterr error) {
 	prefs := ipn.NewPrefs()
 	prefs.Hostname = s.hostname
 	prefs.WantRunning = true
+	prefs.ControlURL = s.ControlURL
 	authKey := s.getAuthKey()
 	err = lb.Start(ipn.Options{
-		StateKey:    ipn.GlobalDaemonStateKey,
 		UpdatePrefs: prefs,
 		AuthKey:     authKey,
 	})
@@ -363,8 +380,7 @@ func (s *Server) start() (reterr error) {
 
 	// Create an in-process listener.
 	// nettest.Listen provides a in-memory pipe based implementation for net.Conn.
-	// TODO(maisem): Rename nettest package to remove "test".
-	lal := nettest.Listen("local-tailscaled.sock:80")
+	lal := memnet.Listen("local-tailscaled.sock:80")
 	s.localAPIListener = lal
 	s.localClient = &tailscale.LocalClient{Dial: lal.Dial}
 	go func() {
@@ -424,7 +440,7 @@ func (s *Server) printAuthURLLoop() {
 
 func (s *Server) forwardTCP(c net.Conn, port uint16) {
 	s.mu.Lock()
-	ln, ok := s.listeners[listenKey{"tcp", "", fmt.Sprint(port)}]
+	ln, ok := s.listeners[listenKey{"tcp", "", port}]
 	s.mu.Unlock()
 	if !ok {
 		c.Close()
@@ -501,16 +517,24 @@ func (s *Server) APIClient() (*tailscale.Client, error) {
 // Listen announces only on the Tailscale network.
 // It will start the server if it has not been started yet.
 func (s *Server) Listen(network, addr string) (net.Listener, error) {
-	host, port, err := net.SplitHostPort(addr)
+	switch network {
+	case "", "tcp", "tcp4", "tcp6":
+	default:
+		return nil, errors.New("unsupported network type")
+	}
+	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, fmt.Errorf("tsnet: %w", err)
 	}
-
+	port, err := net.LookupPort(network, portStr)
+	if err != nil || port < 0 || port > math.MaxUint16 {
+		return nil, fmt.Errorf("invalid port: %w", err)
+	}
 	if err := s.Start(); err != nil {
 		return nil, err
 	}
 
-	key := listenKey{network, host, port}
+	key := listenKey{network, host, uint16(port)}
 	ln := &listener{
 		s:    s,
 		key:  key,
@@ -519,14 +543,11 @@ func (s *Server) Listen(network, addr string) (net.Listener, error) {
 		conn: make(chan net.Conn),
 	}
 	s.mu.Lock()
-	if s.listeners == nil {
-		s.listeners = map[listenKey]*listener{}
-	}
 	if _, ok := s.listeners[key]; ok {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("tsnet: listener already open for %s, %s", network, addr)
 	}
-	s.listeners[key] = ln
+	mak.Set(&s.listeners, key, ln)
 	s.mu.Unlock()
 	return ln, nil
 }
@@ -534,7 +555,7 @@ func (s *Server) Listen(network, addr string) (net.Listener, error) {
 type listenKey struct {
 	network string
 	host    string
-	port    string
+	port    uint16
 }
 
 type listener struct {
