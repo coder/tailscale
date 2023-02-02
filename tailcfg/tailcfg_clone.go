@@ -286,18 +286,17 @@ func (src *DERPRegion) Clone() *DERPRegion {
 	for i := range dst.Nodes {
 		dst.Nodes[i] = src.Nodes[i].Clone()
 	}
-	dst.EmbeddedRelay = src.EmbeddedRelay
 	return dst
 }
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _DERPRegionCloneNeedsRegeneration = DERPRegion(struct {
 	EmbeddedRelay bool
-	RegionID   int
-	RegionCode string
-	RegionName string
-	Avoid      bool
-	Nodes      []*DERPNode
+	RegionID      int
+	RegionCode    string
+	RegionName    string
+	Avoid         bool
+	Nodes         []*DERPNode
 }{})
 
 // Clone makes a deep copy of DERPMap.
