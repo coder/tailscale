@@ -657,10 +657,10 @@ func (v *DERPRegionView) UnmarshalJSON(b []byte) error {
 }
 
 func (v DERPRegionView) EmbeddedRelay() bool { return v.ж.EmbeddedRelay }
-func (v DERPRegionView) RegionID() int      { return v.ж.RegionID }
-func (v DERPRegionView) RegionCode() string { return v.ж.RegionCode }
-func (v DERPRegionView) RegionName() string { return v.ж.RegionName }
-func (v DERPRegionView) Avoid() bool        { return v.ж.Avoid }
+func (v DERPRegionView) RegionID() int       { return v.ж.RegionID }
+func (v DERPRegionView) RegionCode() string  { return v.ж.RegionCode }
+func (v DERPRegionView) RegionName() string  { return v.ж.RegionName }
+func (v DERPRegionView) Avoid() bool         { return v.ж.Avoid }
 func (v DERPRegionView) Nodes() views.SliceView[*DERPNode, DERPNodeView] {
 	return views.SliceOfViews[*DERPNode, DERPNodeView](v.ж.Nodes)
 }
@@ -668,11 +668,11 @@ func (v DERPRegionView) Nodes() views.SliceView[*DERPNode, DERPNodeView] {
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _DERPRegionViewNeedsRegeneration = DERPRegion(struct {
 	EmbeddedRelay bool
-	RegionID   int
-	RegionCode string
-	RegionName string
-	Avoid      bool
-	Nodes      []*DERPNode
+	RegionID      int
+	RegionCode    string
+	RegionName    string
+	Avoid         bool
+	Nodes         []*DERPNode
 }{})
 
 // View returns a readonly view of DERPMap.
