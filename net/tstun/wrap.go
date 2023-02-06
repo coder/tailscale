@@ -717,8 +717,8 @@ func (t *Wrapper) filterIn(p *packet.Parsed) filter.Response {
 	if t.PostFilterIn != nil {
 		if res := t.PostFilterIn(p, t); res.IsDrop() {
 			if res == filter.DropSilently {
-				if t.stats.enabled.Load() {
-					t.stats.UpdateRx(buf)
+				if stats := t.stats.Load(); stats != nil {
+					stats.UpdateRxVirtual(p.Buffer())
 				}
 			}
 			return res
