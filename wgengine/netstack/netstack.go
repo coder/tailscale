@@ -96,6 +96,7 @@ type Impl struct {
 	ProcessSubnets bool
 
 	ipstack   *stack.Stack
+	epMu      sync.RWMutex
 	linkEP    *channel.Endpoint
 	tundev    *tstun.Wrapper
 	e         wgengine.Engine
@@ -201,7 +202,9 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 func (ns *Impl) Close() error {
 	ns.ctxCancel()
 	ns.ipstack.Close()
+	ns.epMu.Lock()
 	ns.ipstack.Wait()
+	ns.epMu.Unlock()
 	return nil
 }
 
@@ -686,8 +689,10 @@ func (ns *Impl) injectInbound(p *packet.Parsed, t *tstun.Wrapper) filter.Respons
 	packetBuf := stack.NewPacketBuffer(stack.PacketBufferOptions{
 		Payload: bufferv2.MakeWithData(bytes.Clone(p.Buffer())),
 	})
-	if ns.linkEP.IsAttached() {
+
+	if ns.epMu.TryRLock() && ns.linkEP.IsAttached() {
 		ns.linkEP.InjectInbound(pn, packetBuf)
+		ns.epMu.RUnlock()
 	}
 	packetBuf.DecRef()
 
