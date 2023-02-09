@@ -686,7 +686,9 @@ func (ns *Impl) injectInbound(p *packet.Parsed, t *tstun.Wrapper) filter.Respons
 	packetBuf := stack.NewPacketBuffer(stack.PacketBufferOptions{
 		Payload: bufferv2.MakeWithData(bytes.Clone(p.Buffer())),
 	})
-	ns.linkEP.InjectInbound(pn, packetBuf)
+	if ns.linkEP.IsAttached() {
+		ns.linkEP.InjectInbound(pn, packetBuf)
+	}
 	packetBuf.DecRef()
 
 	// We've now delivered this to netstack, so we're done.
