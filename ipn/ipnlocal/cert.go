@@ -32,6 +32,8 @@ import (
 
 	"golang.org/x/crypto/acme"
 	"tailscale.com/envknob"
+	"tailscale.com/hostinfo"
+	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/types/logger"
 	"tailscale.com/version"
@@ -94,9 +96,9 @@ func (b *LocalBackend) GetCertPEM(ctx context.Context, domain string) (*TLSCertK
 		log.Printf("acme %T: %s", v, j)
 	}
 
-	if pair, ok := getCertPEMCached(dir, domain, now); ok {
+	if pair, err := b.getCertPEMCached(dir, domain, now); err == nil {
 		future := now.AddDate(0, 0, 14)
-		if shouldStartDomainRenewal(dir, domain, future) {
+		if b.shouldStartDomainRenewal(dir, domain, future) {
 			logf("starting async renewal")
 			// Start renewal in the background.
 			go b.getCertPEM(context.Background(), logf, traceACME, dir, domain, future)
@@ -112,7 +114,7 @@ func (b *LocalBackend) GetCertPEM(ctx context.Context, domain string) (*TLSCertK
 	return pair, nil
 }
 
-func shouldStartDomainRenewal(dir, domain string, future time.Time) bool {
+func (b *LocalBackend) shouldStartDomainRenewal(dir, domain string, future time.Time) bool {
 	renewMu.Lock()
 	defer renewMu.Unlock()
 	now := time.Now()
@@ -122,8 +124,101 @@ func shouldStartDomainRenewal(dir, domain string, future time.Time) bool {
 		return false
 	}
 	lastRenewCheck[domain] = now
-	_, ok := getCertPEMCached(dir, domain, future)
-	return !ok
+	_, err := b.getCertPEMCached(dir, domain, future)
+	return errors.Is(err, errCertExpired)
+}
+
+// certStore provides a way to perist and retrieve TLS certificates.
+// As of 2023-02-01, we use store certs in directories on disk everywhere
+// except on Kubernetes, where we use the state store.
+type certStore interface {
+	// Read returns the cert and key for domain, if they exist and are valid
+	// for now. If they're expired, it returns errCertExpired.
+	// If they don't exist, it returns ipn.ErrStateNotExist.
+	Read(domain string, now time.Time) (*TLSCertKeyPair, error)
+	// WriteCert writes the cert for domain.
+	WriteCert(domain string, cert []byte) error
+	// WriteKey writes the key for domain.
+	WriteKey(domain string, key []byte) error
+}
+
+var errCertExpired = errors.New("cert expired")
+
+func (b *LocalBackend) getCertStore(dir string) certStore {
+	if hostinfo.GetEnvType() == hostinfo.Kubernetes && dir == "/tmp" {
+		return certStateStore{StateStore: b.store}
+	}
+	return certFileStore{dir: dir}
+}
+
+// certFileStore implements certStore by storing the cert & key files in the named directory.
+type certFileStore struct {
+	dir string
+
+	// This field allows a test to override the CA root(s) for certificate
+	// verification. If nil the default system pool is used.
+	testRoots *x509.CertPool
+}
+
+func (f certFileStore) Read(domain string, now time.Time) (*TLSCertKeyPair, error) {
+	certPEM, err := os.ReadFile(certFile(f.dir, domain))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ipn.ErrStateNotExist
+		}
+		return nil, err
+	}
+	keyPEM, err := os.ReadFile(keyFile(f.dir, domain))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ipn.ErrStateNotExist
+		}
+		return nil, err
+	}
+	if !validCertPEM(domain, keyPEM, certPEM, f.testRoots, now) {
+		return nil, errCertExpired
+	}
+	return &TLSCertKeyPair{CertPEM: certPEM, KeyPEM: keyPEM, Cached: true}, nil
+}
+
+func (f certFileStore) WriteCert(domain string, cert []byte) error {
+	return os.WriteFile(certFile(f.dir, domain), cert, 0644)
+}
+
+func (f certFileStore) WriteKey(domain string, key []byte) error {
+	return os.WriteFile(keyFile(f.dir, domain), key, 0600)
+}
+
+// certStateStore implements certStore by storing the cert & key files in an ipn.StateStore.
+type certStateStore struct {
+	ipn.StateStore
+
+	// This field allows a test to override the CA root(s) for certificate
+	// verification. If nil the default system pool is used.
+	testRoots *x509.CertPool
+}
+
+func (s certStateStore) Read(domain string, now time.Time) (*TLSCertKeyPair, error) {
+	certPEM, err := s.ReadState(ipn.StateKey(domain + ".crt"))
+	if err != nil {
+		return nil, err
+	}
+	keyPEM, err := s.ReadState(ipn.StateKey(domain + ".key"))
+	if err != nil {
+		return nil, err
+	}
+	if !validCertPEM(domain, keyPEM, certPEM, s.testRoots, now) {
+		return nil, errCertExpired
+	}
+	return &TLSCertKeyPair{CertPEM: certPEM, KeyPEM: keyPEM, Cached: true}, nil
+}
+
+func (s certStateStore) WriteCert(domain string, cert []byte) error {
+	return s.WriteState(ipn.StateKey(domain+".crt"), cert)
+}
+
+func (s certStateStore) WriteKey(domain string, key []byte) error {
+	return s.WriteState(ipn.StateKey(domain+".key"), key)
 }
 
 // TLSCertKeyPair is a TLS public and private key, and whether they were obtained
@@ -137,30 +232,27 @@ type TLSCertKeyPair struct {
 func keyFile(dir, domain string) string  { return filepath.Join(dir, domain+".key") }
 func certFile(dir, domain string) string { return filepath.Join(dir, domain+".crt") }
 
-// getCertPEMCached returns a non-nil keyPair and true if a cached
-// keypair for domain exists on disk in dir that is valid at the
-// provided now time.
-func getCertPEMCached(dir, domain string, now time.Time) (p *TLSCertKeyPair, ok bool) {
+// getCertPEMCached returns a non-nil keyPair and true if a cached keypair for
+// domain exists on disk in dir that is valid at the provided now time.
+// If the keypair is expired, it returns errCertExpired.
+// If the keypair doesn't exist, it returns ipn.ErrStateNotExist.
+func (b *LocalBackend) getCertPEMCached(dir, domain string, now time.Time) (p *TLSCertKeyPair, err error) {
 	if !validLookingCertDomain(domain) {
 		// Before we read files from disk using it, validate it's halfway
 		// reasonable looking.
-		return nil, false
+		return nil, fmt.Errorf("invalid domain %q", domain)
 	}
-	if keyPEM, err := os.ReadFile(keyFile(dir, domain)); err == nil {
-		certPEM, _ := os.ReadFile(certFile(dir, domain))
-		if validCertPEM(domain, keyPEM, certPEM, now) {
-			return &TLSCertKeyPair{CertPEM: certPEM, KeyPEM: keyPEM, Cached: true}, true
-		}
-	}
-	return nil, false
+	return b.getCertStore(dir).Read(domain, now)
 }
 
 func (b *LocalBackend) getCertPEM(ctx context.Context, logf logger.Logf, traceACME func(any), dir, domain string, now time.Time) (*TLSCertKeyPair, error) {
 	acmeMu.Lock()
 	defer acmeMu.Unlock()
 
-	if p, ok := getCertPEMCached(dir, domain, now); ok {
+	if p, err := b.getCertPEMCached(dir, domain, now); err == nil {
 		return p, nil
+	} else if !errors.Is(err, ipn.ErrStateNotExist) && !errors.Is(err, errCertExpired) {
+		return nil, err
 	}
 
 	key, err := acmeKey(dir)
@@ -274,7 +366,8 @@ func (b *LocalBackend) getCertPEM(ctx context.Context, logf logger.Logf, traceAC
 	if err := encodeECDSAKey(&privPEM, certPrivKey); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(keyFile(dir, domain), privPEM.Bytes(), 0600); err != nil {
+	certStore := b.getCertStore(dir)
+	if err := certStore.WriteKey(domain, privPEM.Bytes()); err != nil {
 		return nil, err
 	}
 
@@ -297,7 +390,7 @@ func (b *LocalBackend) getCertPEM(ctx context.Context, logf logger.Logf, traceAC
 			return nil, err
 		}
 	}
-	if err := os.WriteFile(certFile(dir, domain), certPEM.Bytes(), 0644); err != nil {
+	if err := certStore.WriteCert(domain, certPEM.Bytes()); err != nil {
 		return nil, err
 	}
 
@@ -375,7 +468,11 @@ func acmeKey(dir string) (crypto.Signer, error) {
 	return privKey, nil
 }
 
-func validCertPEM(domain string, keyPEM, certPEM []byte, now time.Time) bool {
+// validCertPEM reports whether the given certificate is valid for domain at now.
+//
+// If roots != nil, it is used instead of the system root pool. This is meant
+// to support testing, and production code should pass roots == nil.
+func validCertPEM(domain string, keyPEM, certPEM []byte, roots *x509.CertPool, now time.Time) bool {
 	if len(keyPEM) == 0 || len(certPEM) == 0 {
 		return false
 	}
@@ -383,6 +480,7 @@ func validCertPEM(domain string, keyPEM, certPEM []byte, now time.Time) bool {
 	if err != nil {
 		return false
 	}
+
 	var leaf *x509.Certificate
 	intermediates := x509.NewCertPool()
 	for i, certDER := range tlsCert.Certificate {
@@ -402,6 +500,7 @@ func validCertPEM(domain string, keyPEM, certPEM []byte, now time.Time) bool {
 	_, err = leaf.Verify(x509.VerifyOptions{
 		DNSName:       domain,
 		CurrentTime:   now,
+		Roots:         roots,
 		Intermediates: intermediates,
 	})
 	return err == nil

@@ -76,6 +76,7 @@ import (
 	"tailscale.com/version"
 	"tailscale.com/version/distro"
 	"tailscale.com/wgengine"
+	"tailscale.com/wgengine/capture"
 	"tailscale.com/wgengine/filter"
 	"tailscale.com/wgengine/magicsock"
 	"tailscale.com/wgengine/router"
@@ -147,6 +148,7 @@ type LocalBackend struct {
 	em                    *expiryManager // non-nil
 	sshAtomicBool         atomic.Bool
 	shutdownCalled        bool // if Shutdown has been called
+	debugSink             *capture.Sink
 
 	// lastProfileID tracks the last profile we've seen from the ProfileManager.
 	// It's used to detect when the user has changed their profile.
@@ -516,6 +518,11 @@ func (b *LocalBackend) Shutdown() {
 		b.sshServer = nil
 	}
 	b.closePeerAPIListenersLocked()
+	if b.debugSink != nil {
+		b.e.InstallCaptureHook(nil)
+		b.debugSink.Close()
+		b.debugSink = nil
+	}
 	b.mu.Unlock()
 
 	b.unregisterLinkMon()
@@ -823,7 +830,8 @@ func (b *LocalBackend) setClientStatus(st controlclient.Status) {
 
 	// Handle node expiry in the netmap
 	if st.NetMap != nil {
-		b.em.flagExpiredPeers(st.NetMap)
+		now := time.Now()
+		b.em.flagExpiredPeers(st.NetMap, now)
 
 		// Always stop the existing netmap timer if we have a netmap;
 		// it's possible that we have no nodes expiring, so we should
@@ -837,31 +845,9 @@ func (b *LocalBackend) setClientStatus(st controlclient.Status) {
 			b.nmExpiryTimer = nil
 		}
 
-		now := time.Now()
-
 		// Figure out when the next node in the netmap is expiring so we can
 		// start a timer to reconfigure at that point.
-		var nextExpiry time.Time // zero if none
-		for _, peer := range st.NetMap.Peers {
-			if peer.KeyExpiry.IsZero() {
-				continue // tagged node
-			} else if peer.Expired {
-				// Peer already expired; Expired is set by the
-				// flagExpiredPeers function, above.
-				continue
-			}
-			if nextExpiry.IsZero() || peer.KeyExpiry.Before(nextExpiry) {
-				nextExpiry = peer.KeyExpiry
-			}
-		}
-
-		// Ensure that we also fire this timer if our own node key expires.
-		if st.NetMap.SelfNode != nil {
-			if selfExpiry := st.NetMap.SelfNode.KeyExpiry; !selfExpiry.IsZero() && selfExpiry.Before(nextExpiry) {
-				nextExpiry = selfExpiry
-			}
-		}
-
+		nextExpiry := b.em.nextPeerExpiry(st.NetMap, now)
 		if !nextExpiry.IsZero() {
 			tmrDuration := nextExpiry.Sub(now) + 10*time.Second
 			b.nmExpiryTimer = time.AfterFunc(tmrDuration, func() {
@@ -1809,6 +1795,21 @@ func (b *LocalBackend) readPoller() {
 			close(b.gotPortPollRes)
 		}
 	}
+}
+
+// ResendHostinfoIfNeeded is called to recompute the Hostinfo and send
+// the new version to the control server.
+func (b *LocalBackend) ResendHostinfoIfNeeded() {
+	hi := hostinfo.New()
+
+	b.mu.Lock()
+	if b.hostinfo != nil {
+		hi.Services = b.hostinfo.Services
+	}
+	b.hostinfo = hi
+	b.mu.Unlock()
+
+	b.doSetHostinfoFilterServices(hi)
 }
 
 // WatchNotifications subscribes to the ipn.Notify message bus notification
@@ -3839,6 +3840,8 @@ func (b *LocalBackend) setNetMapLocked(nm *netmap.NetworkMap) {
 
 	// See the netns package for documentation on what this capability does.
 	netns.SetBindToInterfaceByRoute(hasCapability(nm, tailcfg.CapabilityBindToInterfaceByRoute))
+	interfaces.SetDisableAlternateDefaultRouteInterface(hasCapability(nm, tailcfg.CapabilityDebugDisableAlternateDefaultRouteInterface))
+	netns.SetDisableBindConnToInterface(hasCapability(nm, tailcfg.CapabilityDebugDisableBindConnToInterface))
 
 	b.setTCPPortsInterceptedFromNetmapAndPrefsLocked(b.pm.CurrentPrefs())
 	if nm == nil {
@@ -4821,4 +4824,46 @@ func (b *LocalBackend) ResetAuth() error {
 		return err
 	}
 	return b.resetForProfileChangeLockedOnEntry()
+}
+
+// StreamDebugCapture writes a pcap stream of packets traversing
+// tailscaled to the provided response writer.
+func (b *LocalBackend) StreamDebugCapture(ctx context.Context, w io.Writer) error {
+	var s *capture.Sink
+
+	b.mu.Lock()
+	if b.debugSink == nil {
+		s = capture.New()
+		b.debugSink = s
+		b.e.InstallCaptureHook(s.LogPacket)
+	} else {
+		s = b.debugSink
+	}
+	b.mu.Unlock()
+
+	unregister := s.RegisterOutput(w)
+
+	select {
+	case <-ctx.Done():
+	case <-s.WaitCh():
+	}
+	unregister()
+
+	// Shut down & uninstall the sink if there are no longer
+	// any outputs on it.
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	select {
+	case <-b.ctx.Done():
+		return nil
+	default:
+	}
+	if b.debugSink != nil && b.debugSink.NumOutputs() == 0 {
+		s := b.debugSink
+		b.e.InstallCaptureHook(nil)
+		b.debugSink = nil
+		return s.Close()
+	}
+	return nil
 }

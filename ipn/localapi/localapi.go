@@ -68,8 +68,10 @@ var handler = map[string]localAPIHandler{
 	"debug-derp-region":           (*Handler).serveDebugDERPRegion,
 	"debug-packet-filter-matches": (*Handler).serveDebugPacketFilterMatches,
 	"debug-packet-filter-rules":   (*Handler).serveDebugPacketFilterRules,
+	"debug-capture":               (*Handler).serveDebugCapture,
 	"derpmap":                     (*Handler).serveDERPMap,
 	"dev-set-state-store":         (*Handler).serveDevSetStateStore,
+	"set-push-device-token":       (*Handler).serveSetPushDeviceToken,
 	"dial":                        (*Handler).serveDial,
 	"file-targets":                (*Handler).serveFileTargets,
 	"goroutines":                  (*Handler).serveGoroutines,
@@ -314,6 +316,22 @@ func (h *Handler) serveBugReport(w http.ResponseWriter, r *http.Request) {
 	} else {
 		h.logf("user bugreport health: ok")
 	}
+
+	// Information about the current node from the netmap
+	if nm := h.b.NetMap(); nm != nil {
+		if self := nm.SelfNode; self != nil {
+			h.logf("user bugreport node info: nodeid=%q stableid=%q expiry=%q", self.ID, self.StableID, self.KeyExpiry.Format(time.RFC3339))
+		}
+		h.logf("user bugreport public keys: machine=%q node=%q", nm.MachineKey, nm.NodeKey)
+	} else {
+		h.logf("user bugreport netmap: no active netmap")
+	}
+
+	// Print all envknobs; we otherwise only print these on startup, and
+	// printing them here ensures we don't have to go spelunking through
+	// logs for them.
+	envknob.LogCurrent(logger.WithPrefix(h.logf, "user bugreport: "))
+
 	if defBool(r.URL.Query().Get("diagnose"), false) {
 		h.b.Doctor(r.Context(), logger.WithPrefix(h.logf, "diag: "))
 	}
@@ -1197,6 +1215,25 @@ func (h *Handler) serveDial(w http.ResponseWriter, r *http.Request) {
 	<-errc
 }
 
+func (h *Handler) serveSetPushDeviceToken(w http.ResponseWriter, r *http.Request) {
+	if !h.PermitWrite {
+		http.Error(w, "set push device token access denied", http.StatusForbidden)
+		return
+	}
+	if r.Method != "POST" {
+		http.Error(w, "unsupported method", http.StatusMethodNotAllowed)
+		return
+	}
+	var params apitype.SetPushDeviceTokenRequest
+	if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
+		http.Error(w, "invalid JSON body", 400)
+		return
+	}
+	hostinfo.SetPushDeviceToken(params.PushDeviceToken)
+	h.b.ResendHostinfoIfNeeded()
+	w.WriteHeader(http.StatusOK)
+}
+
 func (h *Handler) serveUploadClientMetrics(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "unsupported method", http.StatusMethodNotAllowed)
@@ -1526,6 +1563,21 @@ func defBool(a string, def bool) bool {
 		return def
 	}
 	return v
+}
+
+func (h *Handler) serveDebugCapture(w http.ResponseWriter, r *http.Request) {
+	if !h.PermitWrite {
+		http.Error(w, "debug access denied", http.StatusForbidden)
+		return
+	}
+	if r.Method != "POST" {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.WriteHeader(200)
+	w.(http.Flusher).Flush()
+	h.b.StreamDebugCapture(r.Context(), w)
 }
 
 var (

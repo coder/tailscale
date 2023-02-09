@@ -525,6 +525,7 @@ type Hostinfo struct {
 	Desktop         opt.Bool       `json:",omitempty"` // if a desktop was detected on Linux
 	Package         string         `json:",omitempty"` // Tailscale package to disambiguate ("choco", "appstore", etc; "" for unknown)
 	DeviceModel     string         `json:",omitempty"` // mobile phone model ("Pixel 3a", "iPhone12,3")
+	PushDeviceToken string         `json:",omitempty"` // macOS/iOS APNs device token for notifications (and Android in the future)
 	Hostname        string         `json:",omitempty"` // name of the host the client runs on
 	ShieldsUp       bool           `json:",omitempty"` // indicates whether the host is blocking incoming connections
 	ShareeNode      bool           `json:",omitempty"` // indicates this node exists in netmap because it's owned by a shared-to user
@@ -979,6 +980,25 @@ type MapRequest struct {
 	Stream      bool // if true, multiple MapResponse objects are returned
 	Hostinfo    *Hostinfo
 
+	// MapSessionHandle, if non-empty, is a request to reattach to a previous
+	// map session after a previous map session was interrupted for whatever
+	// reason. Its value is an opaque string as returned by
+	// MapResponse.MapSessionHandle.
+	//
+	// When set, the client must also send MapSessionSeq to specify the last
+	// processed message in that prior session.
+	//
+	// The server may choose to ignore the request for any reason and start a
+	// new map session. This is only applicable when Stream is true.
+	MapSessionHandle string `json:",omitempty"`
+
+	// MapSessionSeq is the sequence number in the map session identified by
+	// MapSesssionHandle that was most recently processed by the client.
+	// It is only applicable when MapSessionHandle is specified.
+	// If the server chooses to honor the MapSessionHandle request, only sequence
+	// numbers greater than this value will be returned.
+	MapSessionSeq int64 `json:",omitempty"`
+
 	// Endpoints are the client's magicsock UDP ip:port endpoints (IPv4 or IPv6).
 	Endpoints []string
 	// EndpointTypes are the types of the corresponding endpoints in Endpoints.
@@ -1313,6 +1333,20 @@ type PingResponse struct {
 }
 
 type MapResponse struct {
+	// MapSessionHandle optionally specifies a unique opaque handle for this
+	// stateful MapResponse session. Servers may choose not to send it, and it's
+	// only sent on the first MapResponse in a stream. The client can determine
+	// whether it's reattaching to a prior stream by seeing whether this value
+	// matches the requested MapRequest.MapSessionHandle.
+	MapSessionHandle string `json:",omitempty"`
+
+	// Seq is a sequence number within a named map session (a response where the
+	// first message contains a MapSessionHandle). The Seq number may be omitted
+	// on responses that don't change the state of the stream, such as KeepAlive
+	// or certain types of PingRequests. This is the value to be sent in
+	// MapRequest.MapSessionSeq to resume after this message.
+	Seq int64 `json:",omitempty"`
+
 	// KeepAlive, if set, represents an empty message just to keep
 	// the connection alive. When true, all other fields except
 	// PingRequest, ControlTime, and PopBrowserURL are ignored.
@@ -1730,6 +1764,17 @@ const (
 	// sockets (in the net/netns package). See that package for more
 	// details on the behaviour of this capability.
 	CapabilityBindToInterfaceByRoute = "https://tailscale.com/cap/bind-to-interface-by-route"
+
+	// CapabilityDebugDisableAlternateDefaultRouteInterface changes how Darwin
+	// nodes get the default interface. There is an optional hook (used by the
+	// macOS and iOS clients) to override the default interface, this capability
+	// disables that and uses the default behavior (of parsing the routing
+	// table).
+	CapabilityDebugDisableAlternateDefaultRouteInterface = "https://tailscale.com/cap/debug-disable-alternate-default-route-interface"
+
+	// CapabilityDebugDisableBindConnToInterface disables the automatic binding
+	// of connections to the default network interface on Darwin nodes.
+	CapabilityDebugDisableBindConnToInterface = "https://tailscale.com/cap/debug-disable-bind-conn-to-interface"
 
 	// CapabilityTailnetLockAlpha indicates the node is in the tailnet lock alpha,
 	// and initialization of tailnet lock may proceed.
