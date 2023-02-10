@@ -690,8 +690,10 @@ func (ns *Impl) injectInbound(p *packet.Parsed, t *tstun.Wrapper) filter.Respons
 		Payload: bufferv2.MakeWithData(bytes.Clone(p.Buffer())),
 	})
 
-	if ns.epMu.TryRLock() && ns.linkEP.IsAttached() {
-		ns.linkEP.InjectInbound(pn, packetBuf)
+	if ns.epMu.TryRLock() {
+		if ns.linkEP.IsAttached() {
+			ns.linkEP.InjectInbound(pn, packetBuf)
+		}
 		ns.epMu.RUnlock()
 	}
 	packetBuf.DecRef()
