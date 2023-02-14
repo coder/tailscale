@@ -17,6 +17,7 @@ import (
 	"math"
 	"math/rand"
 	"net"
+	"net/http"
 	"net/netip"
 	"reflect"
 	"runtime"
@@ -344,6 +345,9 @@ type Conn struct {
 
 	// port is the preferred port from opts.Port; 0 means auto.
 	port atomic.Uint32
+
+	// headers that are passed to the DERP HTTP client
+	derpHeader atomic.Pointer[http.Header]
 
 	// stats maintains per-connection counters.
 	stats atomic.Pointer[connstats.Statistics]
@@ -1482,11 +1486,14 @@ func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) cha
 		}
 		return derpMap.Regions[regionID]
 	})
-
 	dc.SetCanAckPings(true)
 	dc.NotePreferred(c.myDerp == regionID)
 	dc.SetAddressFamilySelector(derpAddrFamSelector{c})
 	dc.DNSCache = dnscache.Get()
+	header := c.derpHeader.Load()
+	if header != nil {
+		dc.Header = header.Clone()
+	}
 
 	ctx, cancel := context.WithCancel(c.connCtx)
 	ch := make(chan derpWriteRequest, bufferedDerpWritesBeforeDrop)
@@ -2334,6 +2341,10 @@ func (c *Conn) discoInfoLocked(k key.DiscoPublic) *discoInfo {
 		c.discoInfo[k] = di
 	}
 	return di
+}
+
+func (c *Conn) SetDERPHeader(header http.Header) {
+	c.derpHeader.Store(&header)
 }
 
 func (c *Conn) SetNetworkUp(up bool) {

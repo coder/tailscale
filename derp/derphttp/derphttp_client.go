@@ -47,6 +47,7 @@ import (
 // Send/Recv will completely re-establish the connection (unless Close
 // has been called).
 type Client struct {
+	Header    http.Header
 	TLSConfig *tls.Config        // optional; nil means default
 	DNSCache  *dnscache.Resolver // optional; nil means no caching
 	MeshKey   string             // optional; for trusted clients
@@ -402,6 +403,9 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 	req, err := http.NewRequest("GET", c.urlString(node), nil)
 	if err != nil {
 		return nil, 0, err
+	}
+	if c.Header != nil {
+		req.Header = c.Header.Clone()
 	}
 	req.Header.Set("Upgrade", "DERP")
 	req.Header.Set("Connection", "Upgrade")
