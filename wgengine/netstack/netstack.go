@@ -97,7 +97,7 @@ type Impl struct {
 
 	ipstack   *stack.Stack
 	epMu      sync.RWMutex
-	linkEP    *channel.Endpoint
+	linkEP    *protectedLinkEndpoint
 	tundev    *tstun.Wrapper
 	e         wgengine.Engine
 	mc        *magicsock.Conn
@@ -159,7 +159,7 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 	if tcpipErr != nil {
 		return nil, fmt.Errorf("could not enable TCP SACK: %v", tcpipErr)
 	}
-	linkEP := channel.New(512, mtu, "")
+	linkEP := &protectedLinkEndpoint{Endpoint: channel.New(512, mtu, "")}
 	if tcpipProblem := ipstack.CreateNIC(nicID, linkEP); tcpipProblem != nil {
 		return nil, fmt.Errorf("could not create netstack NIC: %v", tcpipProblem)
 	}
@@ -202,9 +202,7 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 func (ns *Impl) Close() error {
 	ns.ctxCancel()
 	ns.ipstack.Close()
-	ns.epMu.Lock()
 	ns.ipstack.Wait()
-	ns.epMu.Unlock()
 	return nil
 }
 
@@ -689,13 +687,7 @@ func (ns *Impl) injectInbound(p *packet.Parsed, t *tstun.Wrapper) filter.Respons
 	packetBuf := stack.NewPacketBuffer(stack.PacketBufferOptions{
 		Payload: bufferv2.MakeWithData(bytes.Clone(p.Buffer())),
 	})
-
-	if ns.epMu.TryRLock() {
-		if ns.linkEP.IsAttached() {
-			ns.linkEP.InjectInbound(pn, packetBuf)
-		}
-		ns.epMu.RUnlock()
-	}
+	ns.linkEP.InjectInbound(pn, packetBuf)
 	packetBuf.DecRef()
 
 	// We've now delivered this to netstack, so we're done.
@@ -1216,3 +1208,40 @@ func ipPortOfNetstackAddr(a tcpip.Address, port uint16) (ipp netip.AddrPort, ok 
 		return ipp, false
 	}
 }
+
+// protectedLinkEndpoint guards use of the dispatcher via mutex and forwards
+// everything except Attach/InjectInbound to the underlying *channel.Endpoint.
+type protectedLinkEndpoint struct {
+	mu         sync.RWMutex
+	dispatcher stack.NetworkDispatcher
+	*channel.Endpoint
+}
+
+// InjectInbound injects an inbound packet.
+func (e *protectedLinkEndpoint) InjectInbound(protocol tcpip.NetworkProtocolNumber, pkt stack.PacketBufferPtr) {
+	e.mu.RLock()
+	dispatcher := e.dispatcher
+	e.mu.RUnlock()
+	if dispatcher != nil {
+		dispatcher.DeliverNetworkPacket(protocol, pkt)
+	}
+}
+
+// Attach saves the stack network-layer dispatcher for use later when packets
+// are injected.
+func (e *protectedLinkEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	// No need to attach the underlying channel.Endpoint, since we hijack
+	// InjectInbound.
+	e.dispatcher = dispatcher
+}
+
+// IsAttached implements stack.LinkEndpoint.IsAttached.
+func (e *protectedLinkEndpoint) IsAttached() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.dispatcher != nil
+}
+
+var _ stack.LinkEndpoint = (*protectedLinkEndpoint)(nil)
