@@ -320,7 +320,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 			urlStr = c.urlString(reg.Nodes[0])
 		}
 		c.logf("%s: connecting websocket to %v", caller, urlStr)
-		conn, err := dialWebsocketFunc(ctx, urlStr, c.tlsConfig(node))
+		conn, err := dialWebsocketFunc(ctx, urlStr, c.tlsConfig(reg.Nodes[0]))
 		if err != nil {
 			c.logf("%s: websocket to %v error: %v", caller, urlStr, err)
 			return nil, 0, err
