@@ -316,13 +316,16 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 	switch {
 	case c.useWebsockets():
 		var urlStr string
+		var tlsConfig *tls.Config
 		if c.url != nil {
 			urlStr = c.url.String()
+			tlsConfig = c.tlsConfig(nil)
 		} else {
 			urlStr = c.urlString(reg.Nodes[0])
+			tlsConfig = c.tlsConfig(reg.Nodes[0])
 		}
 		c.logf("%s: connecting websocket to %v", caller, urlStr)
-		conn, err := dialWebsocketFunc(ctx, urlStr, c.tlsConfig(reg.Nodes[0]))
+		conn, err := dialWebsocketFunc(ctx, urlStr, tlsConfig)
 		if err != nil {
 			c.logf("%s: websocket to %v error: %v", caller, urlStr, err)
 			return nil, 0, err
