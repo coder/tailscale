@@ -200,6 +200,17 @@ func (c *Client) urlString(node *tailcfg.DERPNode) string {
 	if c.url != nil {
 		return c.url.String()
 	}
+	if node.HostName == "" {
+		url := &url.URL{
+			Scheme: "https",
+			Host:   fmt.Sprintf("%s:%d", node.IPv4, node.DERPPort),
+			Path:   "/derp",
+		}
+		if node.ForceHTTP {
+			url.Scheme = "http"
+		}
+		return url.String()
+	}
 	return fmt.Sprintf("https://%s/derp", node.HostName)
 }
 
@@ -230,7 +241,7 @@ func (c *Client) preferIPv6() bool {
 }
 
 // dialWebsocketFunc is non-nil (set by websocket.go's init) when compiled in.
-var dialWebsocketFunc func(ctx context.Context, urlStr string) (net.Conn, error)
+var dialWebsocketFunc func(ctx context.Context, urlStr string, tlsConfig *tls.Config) (net.Conn, error)
 
 func (c *Client) useWebsockets() bool {
 	if runtime.GOOS == "js" {
@@ -306,7 +317,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 			urlStr = c.urlString(reg.Nodes[0])
 		}
 		c.logf("%s: connecting websocket to %v", caller, urlStr)
-		conn, err := dialWebsocketFunc(ctx, urlStr)
+		conn, err := dialWebsocketFunc(ctx, urlStr, c.tlsConfig(node))
 		if err != nil {
 			c.logf("%s: websocket to %v error: %v", caller, urlStr, err)
 			return nil, 0, err
@@ -539,7 +550,7 @@ func (c *Client) dialRegion(ctx context.Context, reg *tailcfg.DERPRegion) (net.C
 	return nil, nil, firstErr
 }
 
-func (c *Client) tlsClient(nc net.Conn, node *tailcfg.DERPNode) *tls.Conn {
+func (c *Client) tlsConfig(node *tailcfg.DERPNode) *tls.Config {
 	tlsConf := tlsdial.Config(c.tlsServerName(node), c.TLSConfig)
 	if node != nil {
 		if node.InsecureForTests {
@@ -550,7 +561,11 @@ func (c *Client) tlsClient(nc net.Conn, node *tailcfg.DERPNode) *tls.Conn {
 			tlsdial.SetConfigExpectedCert(tlsConf, node.CertName)
 		}
 	}
-	return tls.Client(nc, tlsConf)
+	return tlsConf
+}
+
+func (c *Client) tlsClient(nc net.Conn, node *tailcfg.DERPNode) *tls.Conn {
+	return tls.Client(nc, c.tlsConfig(node))
 }
 
 // DialRegionTLS returns a TLS connection to a DERP node in the given region.
