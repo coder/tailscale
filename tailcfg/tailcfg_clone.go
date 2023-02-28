@@ -184,6 +184,7 @@ var _NetInfoCloneNeedsRegeneration = NetInfo(struct {
 	PreferredDERP         int
 	LinkType              string
 	DERPLatency           map[string]float64
+	DERPForcedWebsocket   map[int]string
 }{})
 
 // Clone makes a deep copy of Login.

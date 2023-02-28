@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go4.org/mem"
@@ -47,10 +48,11 @@ import (
 // Send/Recv will completely re-establish the connection (unless Close
 // has been called).
 type Client struct {
-	TLSConfig *tls.Config        // optional; nil means default
-	DNSCache  *dnscache.Resolver // optional; nil means no caching
-	MeshKey   string             // optional; for trusted clients
-	IsProber  bool               // optional; for probers to optional declare themselves as such
+	TLSConfig      *tls.Config            // optional; nil means default
+	DNSCache       *dnscache.Resolver     // optional; nil means no caching
+	MeshKey        string                 // optional; for trusted clients
+	IsProber       bool                   // optional; for probers to optional declare themselves as such
+	ForceWebsocket atomic.Pointer[string] // optional; set if the server has failed to upgrade the connection on the DERP server
 
 	privateKey key.NodePrivate
 	logf       logger.Logf
@@ -230,8 +232,11 @@ func (c *Client) preferIPv6() bool {
 // dialWebsocketFunc is non-nil (set by websocket.go's init) when compiled in.
 var dialWebsocketFunc func(ctx context.Context, urlStr string) (net.Conn, error)
 
-func useWebsockets() bool {
+func (c *Client) useWebsockets() bool {
 	if runtime.GOOS == "js" {
+		return true
+	}
+	if c.ForceWebsocket.Load() != nil {
 		return true
 	}
 	if dialWebsocketFunc != nil {
@@ -293,7 +298,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 
 	var node *tailcfg.DERPNode // nil when using c.url to dial
 	switch {
-	case useWebsockets():
+	case c.useWebsockets():
 		var urlStr string
 		if c.url != nil {
 			urlStr = c.url.String()
@@ -435,6 +440,15 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		if resp.StatusCode != http.StatusSwitchingProtocols {
 			b, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+
+			// Only on StatusCode < 500 in case a gateway timeout
+			// or network intermittency occurs!
+			if resp.StatusCode < 500 {
+				reason := fmt.Sprintf("GET failed with status code %d: %s", resp.StatusCode, b)
+				c.logf("We'll use WebSockets on the next connection attempt. A proxy could be disallowing the use of 'Upgrade: derp': %s", reason)
+				c.ForceWebsocket.Store(&reason)
+			}
+
 			return nil, 0, fmt.Errorf("GET failed: %v: %s", err, b)
 		}
 	}

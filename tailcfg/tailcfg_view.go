@@ -405,6 +405,7 @@ var _NetInfoViewNeedsRegeneration = NetInfo(struct {
 	PreferredDERP         int
 	LinkType              string
 	DERPLatency           map[string]float64
+	DERPForcedWebsocket   map[int]string
 }{})
 
 // View returns a readonly view of Login.

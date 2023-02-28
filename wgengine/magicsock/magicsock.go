@@ -829,6 +829,7 @@ func (c *Conn) updateNetInfo(ctx context.Context) (*netcheck.Report, error) {
 
 	ni := &tailcfg.NetInfo{
 		DERPLatency:           map[string]float64{},
+		DERPForcedWebsocket:   map[int]string{},
 		MappingVariesByDestIP: report.MappingVariesByDestIP,
 		HairPinning:           report.HairPinning,
 		UPnP:                  report.UPnP,
@@ -842,6 +843,15 @@ func (c *Conn) updateNetInfo(ctx context.Context) (*netcheck.Report, error) {
 	for rid, d := range report.RegionV6Latency {
 		ni.DERPLatency[fmt.Sprintf("%d-v6", rid)] = d.Seconds()
 	}
+	c.mu.Lock()
+	for rid, derp := range c.activeDerp {
+		usingWebsockets := derp.c.ForceWebsocket.Load()
+		if usingWebsockets != nil {
+			ni.DERPForcedWebsocket[rid] = *usingWebsockets
+		}
+	}
+	c.mu.Unlock()
+
 	ni.WorkingIPv6.Set(report.IPv6)
 	ni.OSHasIPv6.Set(report.OSHasIPv6)
 	ni.WorkingUDP.Set(report.UDP)

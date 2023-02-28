@@ -628,6 +628,13 @@ type NetInfo struct {
 	// the control plane.
 	DERPLatency map[string]float64 `json:",omitempty"`
 
+	// DERPForcedWebsocket contains regions when the client is
+	// forced to use a WebSocket because of a failed connection
+	// upgrade.
+	//
+	// The string value is the failure reason.
+	DERPForcedWebsocket map[int]string `json:",omitempty"`
+
 	// Update BasicallyEqual when adding fields.
 }
 
