@@ -48,11 +48,13 @@ import (
 // Send/Recv will completely re-establish the connection (unless Close
 // has been called).
 type Client struct {
-	TLSConfig      *tls.Config            // optional; nil means default
-	DNSCache       *dnscache.Resolver     // optional; nil means no caching
-	MeshKey        string                 // optional; for trusted clients
-	IsProber       bool                   // optional; for probers to optional declare themselves as such
-	ForceWebsocket atomic.Pointer[string] // optional; set if the server has failed to upgrade the connection on the DERP server
+	TLSConfig *tls.Config        // optional; nil means default
+	DNSCache  *dnscache.Resolver // optional; nil means no caching
+	MeshKey   string             // optional; for trusted clients
+	IsProber  bool               // optional; for probers to optional declare themselves as such
+
+	forcedWebsocket         atomic.Bool // optional; set if the server has failed to upgrade the connection on the DERP server
+	forcedWebsocketCallback func(int, string)
 
 	privateKey key.NodePrivate
 	logf       logger.Logf
@@ -250,7 +252,7 @@ func (c *Client) useWebsockets() bool {
 	if runtime.GOOS == "js" {
 		return true
 	}
-	if c.ForceWebsocket.Load() != nil {
+	if c.forcedWebsocket.Load() {
 		return true
 	}
 	if dialWebsocketFunc != nil {
@@ -460,7 +462,8 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 			if resp.StatusCode < 500 {
 				reason := fmt.Sprintf("GET failed with status code %d: %s", resp.StatusCode, b)
 				c.logf("We'll use WebSockets on the next connection attempt. A proxy could be disallowing the use of 'Upgrade: derp': %s", reason)
-				c.ForceWebsocket.Store(&reason)
+				c.forcedWebsocket.Store(true)
+				go c.forcedWebsocketCallback(reg.RegionID, reason)
 			}
 
 			return nil, 0, fmt.Errorf("GET failed: %v: %s", err, b)
@@ -498,6 +501,12 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 // other over a VPC network.
 func (c *Client) SetURLDialer(dialer func(ctx context.Context, network, addr string) (net.Conn, error)) {
 	c.dialer = dialer
+}
+
+// SetForcedWebsocketCallback is a callback that is called when the client
+// decides to force WebSockets on the next connection attempt.
+func (c *Client) SetForcedWebsocketCallback(callback func(region int, reason string)) {
+	c.forcedWebsocketCallback = callback
 }
 
 func (c *Client) dialURL(ctx context.Context) (net.Conn, error) {
