@@ -1,7 +1,7 @@
 // Copyright (c) Tailscale Inc & AUTHORS
 // SPDX-License-Identifier: BSD-3-Clause
 
-//go:build linux || js
+//go:build linux || js || darwin || windows
 
 package derphttp
 
