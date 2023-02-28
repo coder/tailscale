@@ -193,6 +193,9 @@ func (c *Client) tlsServerName(node *tailcfg.DERPNode) string {
 	if c.url != nil {
 		return c.url.Host
 	}
+	if node == nil {
+		return ""
+	}
 	return node.HostName
 }
 
