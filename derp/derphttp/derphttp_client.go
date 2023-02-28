@@ -54,7 +54,7 @@ type Client struct {
 	IsProber  bool               // optional; for probers to optional declare themselves as such
 
 	forcedWebsocket         atomic.Bool // optional; set if the server has failed to upgrade the connection on the DERP server
-	forcedWebsocketCallback func(int, string)
+	forcedWebsocketCallback atomic.Pointer[func(int, string)]
 
 	privateKey key.NodePrivate
 	logf       logger.Logf
@@ -463,7 +463,10 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 				reason := fmt.Sprintf("GET failed with status code %d: %s", resp.StatusCode, b)
 				c.logf("We'll use WebSockets on the next connection attempt. A proxy could be disallowing the use of 'Upgrade: derp': %s", reason)
 				c.forcedWebsocket.Store(true)
-				go c.forcedWebsocketCallback(reg.RegionID, reason)
+				forcedWebsocketCallback := c.forcedWebsocketCallback.Load()
+				if forcedWebsocketCallback != nil {
+					go (*forcedWebsocketCallback)(reg.RegionID, reason)
+				}
 			}
 
 			return nil, 0, fmt.Errorf("GET failed: %v: %s", err, b)
@@ -506,7 +509,7 @@ func (c *Client) SetURLDialer(dialer func(ctx context.Context, network, addr str
 // SetForcedWebsocketCallback is a callback that is called when the client
 // decides to force WebSockets on the next connection attempt.
 func (c *Client) SetForcedWebsocketCallback(callback func(region int, reason string)) {
-	c.forcedWebsocketCallback = callback
+	c.forcedWebsocketCallback.Store(&callback)
 }
 
 func (c *Client) dialURL(ctx context.Context) (net.Conn, error) {
