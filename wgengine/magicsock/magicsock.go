@@ -448,6 +448,10 @@ type Conn struct {
 	// peerLastDerp tracks which DERP node we last used to speak with a
 	// peer. It's only used to quiet logging, so we only log on change.
 	peerLastDerp map[key.NodePublic]int
+
+	// derpForcedWebsocketFunc is a callback that is called when a DERP
+	// connection is forced to use WebSockets.
+	derpForcedWebsocketFunc func(region int, reason string)
 }
 
 // SetDebugLoggingEnabled controls whether spammy debug logging is enabled.
@@ -842,6 +846,7 @@ func (c *Conn) updateNetInfo(ctx context.Context) (*netcheck.Report, error) {
 	for rid, d := range report.RegionV6Latency {
 		ni.DERPLatency[fmt.Sprintf("%d-v6", rid)] = d.Seconds()
 	}
+
 	ni.WorkingIPv6.Set(report.IPv6)
 	ni.OSHasIPv6.Set(report.OSHasIPv6)
 	ni.WorkingUDP.Set(report.UDP)
@@ -950,6 +955,20 @@ func (c *Conn) SetNetInfoCallback(fn func(*tailcfg.NetInfo)) {
 	if last != nil {
 		fn(last)
 	}
+}
+
+// SetDERPForcedWebsocketCallback is called when a DERP connection
+// switches to using WebSockets.
+func (c *Conn) SetDERPForcedWebsocketCallback(fn func(region int, reason string)) {
+	if fn == nil {
+		panic("nil DERPClientForcedWebsocketCallback")
+	}
+	c.mu.Lock()
+	c.derpForcedWebsocketFunc = fn
+	for _, a := range c.activeDerp {
+		a.c.SetForcedWebsocketCallback(fn)
+	}
+	c.mu.Unlock()
 }
 
 // LastRecvActivityOfNodeKey describes the time we last got traffic from
@@ -1486,6 +1505,7 @@ func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) cha
 	dc.SetCanAckPings(true)
 	dc.NotePreferred(c.myDerp == regionID)
 	dc.SetAddressFamilySelector(derpAddrFamSelector{c})
+	dc.SetForcedWebsocketCallback(c.derpForcedWebsocketFunc)
 	dc.DNSCache = dnscache.Get()
 
 	ctx, cancel := context.WithCancel(c.connCtx)

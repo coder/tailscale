@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go4.org/mem"
@@ -51,6 +52,9 @@ type Client struct {
 	DNSCache  *dnscache.Resolver // optional; nil means no caching
 	MeshKey   string             // optional; for trusted clients
 	IsProber  bool               // optional; for probers to optional declare themselves as such
+
+	forcedWebsocket         atomic.Bool // optional; set if the server has failed to upgrade the connection on the DERP server
+	forcedWebsocketCallback atomic.Pointer[func(int, string)]
 
 	privateKey key.NodePrivate
 	logf       logger.Logf
@@ -191,12 +195,26 @@ func (c *Client) tlsServerName(node *tailcfg.DERPNode) string {
 	if c.url != nil {
 		return c.url.Host
 	}
+	if node == nil {
+		return ""
+	}
 	return node.HostName
 }
 
 func (c *Client) urlString(node *tailcfg.DERPNode) string {
 	if c.url != nil {
 		return c.url.String()
+	}
+	if node.HostName == "" {
+		url := &url.URL{
+			Scheme: "https",
+			Host:   fmt.Sprintf("%s:%d", node.IPv4, node.DERPPort),
+			Path:   "/derp",
+		}
+		if node.ForceHTTP {
+			url.Scheme = "http"
+		}
+		return url.String()
 	}
 	return fmt.Sprintf("https://%s/derp", node.HostName)
 }
@@ -228,10 +246,13 @@ func (c *Client) preferIPv6() bool {
 }
 
 // dialWebsocketFunc is non-nil (set by websocket.go's init) when compiled in.
-var dialWebsocketFunc func(ctx context.Context, urlStr string) (net.Conn, error)
+var dialWebsocketFunc func(ctx context.Context, urlStr string, tlsConfig *tls.Config) (net.Conn, error)
 
-func useWebsockets() bool {
+func (c *Client) useWebsockets() bool {
 	if runtime.GOOS == "js" {
+		return true
+	}
+	if c.forcedWebsocket.Load() {
 		return true
 	}
 	if dialWebsocketFunc != nil {
@@ -293,15 +314,18 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 
 	var node *tailcfg.DERPNode // nil when using c.url to dial
 	switch {
-	case useWebsockets():
+	case c.useWebsockets():
 		var urlStr string
+		var tlsConfig *tls.Config
 		if c.url != nil {
 			urlStr = c.url.String()
+			tlsConfig = c.tlsConfig(nil)
 		} else {
 			urlStr = c.urlString(reg.Nodes[0])
+			tlsConfig = c.tlsConfig(reg.Nodes[0])
 		}
 		c.logf("%s: connecting websocket to %v", caller, urlStr)
-		conn, err := dialWebsocketFunc(ctx, urlStr)
+		conn, err := dialWebsocketFunc(ctx, urlStr, tlsConfig)
 		if err != nil {
 			c.logf("%s: websocket to %v error: %v", caller, urlStr, err)
 			return nil, 0, err
@@ -435,6 +459,19 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		if resp.StatusCode != http.StatusSwitchingProtocols {
 			b, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+
+			// Only on StatusCode < 500 in case a gateway timeout
+			// or network intermittency occurs!
+			if resp.StatusCode < 500 {
+				reason := fmt.Sprintf("GET failed with status code %d: %s", resp.StatusCode, b)
+				c.logf("We'll use WebSockets on the next connection attempt. A proxy could be disallowing the use of 'Upgrade: derp': %s", reason)
+				c.forcedWebsocket.Store(true)
+				forcedWebsocketCallback := c.forcedWebsocketCallback.Load()
+				if forcedWebsocketCallback != nil {
+					go (*forcedWebsocketCallback)(reg.RegionID, reason)
+				}
+			}
+
 			return nil, 0, fmt.Errorf("GET failed: %v: %s", err, b)
 		}
 	}
@@ -470,6 +507,12 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 // other over a VPC network.
 func (c *Client) SetURLDialer(dialer func(ctx context.Context, network, addr string) (net.Conn, error)) {
 	c.dialer = dialer
+}
+
+// SetForcedWebsocketCallback is a callback that is called when the client
+// decides to force WebSockets on the next connection attempt.
+func (c *Client) SetForcedWebsocketCallback(callback func(region int, reason string)) {
+	c.forcedWebsocketCallback.Store(&callback)
 }
 
 func (c *Client) dialURL(ctx context.Context) (net.Conn, error) {
@@ -525,7 +568,7 @@ func (c *Client) dialRegion(ctx context.Context, reg *tailcfg.DERPRegion) (net.C
 	return nil, nil, firstErr
 }
 
-func (c *Client) tlsClient(nc net.Conn, node *tailcfg.DERPNode) *tls.Conn {
+func (c *Client) tlsConfig(node *tailcfg.DERPNode) *tls.Config {
 	tlsConf := tlsdial.Config(c.tlsServerName(node), c.TLSConfig)
 	if node != nil {
 		if node.InsecureForTests {
@@ -536,7 +579,11 @@ func (c *Client) tlsClient(nc net.Conn, node *tailcfg.DERPNode) *tls.Conn {
 			tlsdial.SetConfigExpectedCert(tlsConf, node.CertName)
 		}
 	}
-	return tls.Client(nc, tlsConf)
+	return tlsConf
+}
+
+func (c *Client) tlsClient(nc net.Conn, node *tailcfg.DERPNode) *tls.Conn {
+	return tls.Client(nc, c.tlsConfig(node))
 }
 
 // DialRegionTLS returns a TLS connection to a DERP node in the given region.
