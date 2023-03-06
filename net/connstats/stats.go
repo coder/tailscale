@@ -67,7 +67,7 @@ func NewStatistics(maxPeriod time.Duration, maxConns int, dump func(start, end t
 			case <-s.shutdownCtx.Done():
 				cc = s.extract()
 			}
-			if len(cc.virtual)+len(cc.physical) > 0 && dump != nil {
+			if dump != nil {
 				dump(cc.start, cc.end, cc.virtual, cc.physical)
 			}
 			if s.shutdownCtx.Err() != nil {
