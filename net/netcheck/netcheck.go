@@ -960,10 +960,6 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap) (_ *Report,
 		}
 	}
 
-	// Never perform the captive portal check. We don't use
-	// this in Coder, so it just adds time to the initial connect.
-	captivePortalStop()
-
 	wg := syncs.NewWaitGroupChan()
 	wg.Add(len(plan))
 	for _, probeSet := range plan {
