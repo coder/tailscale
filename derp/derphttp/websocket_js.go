@@ -19,8 +19,9 @@ func init() {
 	dialWebsocketFunc = dialWebsocket
 }
 
-func dialWebsocket(ctx context.Context, urlStr string, _ *tls.Config) (net.Conn, error) {
+func dialWebsocket(ctx context.Context, urlStr string, _ *tls.Config, httpHeader http.Header) (net.Conn, error) {
 	c, res, err := websocket.Dial(ctx, urlStr, &websocket.DialOptions{
+		HTTPHeader: httpHeader
 		Subprotocols: []string{"derp"},
 	})
 	if err != nil {
