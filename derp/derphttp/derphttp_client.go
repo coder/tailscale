@@ -247,7 +247,7 @@ func (c *Client) preferIPv6() bool {
 }
 
 // dialWebsocketFunc is non-nil (set by websocket.go's init) when compiled in.
-var dialWebsocketFunc func(ctx context.Context, urlStr string, tlsConfig *tls.Config) (net.Conn, error)
+var dialWebsocketFunc func(ctx context.Context, urlStr string, tlsConfig *tls.Config, httpHeader http.Header) (net.Conn, error)
 
 func (c *Client) useWebsockets() bool {
 	if runtime.GOOS == "js" {
@@ -326,7 +326,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 			tlsConfig = c.tlsConfig(reg.Nodes[0])
 		}
 		c.logf("%s: connecting websocket to %v", caller, urlStr)
-		conn, err := dialWebsocketFunc(ctx, urlStr, tlsConfig)
+		conn, err := dialWebsocketFunc(ctx, urlStr, tlsConfig, c.Header)
 		if err != nil {
 			c.logf("%s: websocket to %v error: %v", caller, urlStr, err)
 			return nil, 0, err

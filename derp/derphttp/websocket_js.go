@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"log"
 	"net"
+	"net/http"
 
 	"nhooyr.io/websocket"
 	"tailscale.com/net/wsconn"
@@ -19,7 +20,7 @@ func init() {
 	dialWebsocketFunc = dialWebsocket
 }
 
-func dialWebsocket(ctx context.Context, urlStr string, _ *tls.Config) (net.Conn, error) {
+func dialWebsocket(ctx context.Context, urlStr string, _ *tls.Config, _ http.Header) (net.Conn, error) {
 	c, res, err := websocket.Dial(ctx, urlStr, &websocket.DialOptions{
 		Subprotocols: []string{"derp"},
 	})
