@@ -349,6 +349,9 @@ type Conn struct {
 	// headers that are passed to the DERP HTTP client
 	derpHeader atomic.Pointer[http.Header]
 
+	// derpRegionDialer is passed to the DERP client
+	derpRegionDialer atomic.Pointer[func(ctx context.Context, region *tailcfg.DERPRegion) net.Conn]
+
 	// stats maintains per-connection counters.
 	stats atomic.Pointer[connstats.Statistics]
 
@@ -1514,6 +1517,10 @@ func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) cha
 	if header != nil {
 		dc.Header = header.Clone()
 	}
+	dialer := c.derpRegionDialer.Load()
+	if dialer != nil {
+		dc.SetRegionDialer(*dialer)
+	}
 
 	ctx, cancel := context.WithCancel(c.connCtx)
 	ch := make(chan derpWriteRequest, bufferedDerpWritesBeforeDrop)
@@ -2365,6 +2372,15 @@ func (c *Conn) discoInfoLocked(k key.DiscoPublic) *discoInfo {
 
 func (c *Conn) SetDERPHeader(header http.Header) {
 	c.derpHeader.Store(&header)
+}
+
+func (c *Conn) SetDERPRegionDialer(dialer func(ctx context.Context, region *tailcfg.DERPRegion) net.Conn) {
+	c.derpRegionDialer.Store(&dialer)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, d := range c.activeDerp {
+		d.c.SetRegionDialer(dialer)
+	}
 }
 
 func (c *Conn) SetNetworkUp(up bool) {

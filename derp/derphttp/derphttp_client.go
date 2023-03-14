@@ -61,6 +61,10 @@ type Client struct {
 	logf       logger.Logf
 	dialer     func(ctx context.Context, network, addr string) (net.Conn, error)
 
+	// regionDialer allows the caller to override the dialer used to
+	// connect to DERP regions. If nil, the default dialer is used.
+	regionDialer func(ctx context.Context, r *tailcfg.DERPRegion) net.Conn
+
 	// Either url or getRegion is non-nil:
 	url       *url.URL
 	getRegion func() *tailcfg.DERPRegion
@@ -313,6 +317,31 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		}
 	}()
 
+	if c.regionDialer != nil {
+		conn := c.regionDialer(ctx, reg)
+		if conn != nil {
+			brw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+			derpClient, err := derp.NewClient(c.privateKey, conn, brw, c.logf,
+				derp.MeshKey(c.MeshKey),
+				derp.CanAckPings(c.canAckPings),
+				derp.IsProber(c.IsProber),
+			)
+			if err != nil {
+				return nil, 0, err
+			}
+			if c.preferred {
+				// It's important that this happens in a goroutine because
+				// of synchronous I/O woes.
+				go derpClient.NotePreferred(true)
+			}
+			c.serverPubKey = derpClient.ServerPublicKey()
+			c.client = derpClient
+			c.netConn = conn
+			c.connGen++
+			return c.client, c.connGen, nil
+		}
+	}
+
 	var node *tailcfg.DERPNode // nil when using c.url to dial
 	switch {
 	case c.useWebsockets():
@@ -511,6 +540,13 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 // other over a VPC network.
 func (c *Client) SetURLDialer(dialer func(ctx context.Context, network, addr string) (net.Conn, error)) {
 	c.dialer = dialer
+}
+
+// SetRegionDialer sets the dialer to use for dialing DERP regions.
+func (c *Client) SetRegionDialer(dialer func(ctx context.Context, region *tailcfg.DERPRegion) net.Conn) {
+	c.mu.Lock()
+	c.regionDialer = dialer
+	c.mu.Unlock()
 }
 
 // SetForcedWebsocketCallback is a callback that is called when the client
