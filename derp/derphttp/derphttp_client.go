@@ -347,12 +347,26 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 	case c.useWebsockets():
 		var urlStr string
 		var tlsConfig *tls.Config
+		// WebSocket connections require a DERP to proxy.
+		// DERP mappings have no explicit requirements on the ordering
+		// of DERP vs STUNOnly nodes. So we pick the first non-STUNOnly one.
+		var node *tailcfg.DERPNode
+		for _, n := range reg.Nodes {
+			if n.STUNOnly {
+				continue
+			}
+			node = n
+			break
+		}
+		if node == nil {
+			return nil, 0, errors.New("no non-STUN-only nodes in region")
+		}
 		if c.url != nil {
 			urlStr = c.url.String()
 			tlsConfig = c.tlsConfig(nil)
 		} else {
-			urlStr = c.urlString(reg.Nodes[0])
-			tlsConfig = c.tlsConfig(reg.Nodes[0])
+			urlStr = c.urlString(node)
+			tlsConfig = c.tlsConfig(node)
 		}
 		c.logf("%s: connecting websocket to %v", caller, urlStr)
 		conn, err := dialWebsocketFunc(ctx, urlStr, tlsConfig, c.Header)
