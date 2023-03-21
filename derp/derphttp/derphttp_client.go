@@ -507,9 +507,11 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 			b, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 
-			// Only on StatusCode < 500 in case a gateway timeout
-			// or network intermittency occurs!
-			if resp.StatusCode < 500 {
+			// There's a situation where a proxy doesn't have an HTTP handler
+			// registered but is accepting requests, and it returns a 200.
+			// For safety, we'll assume that status codes >= 400 are
+			// proxies that don't support WebSockets.
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 				reason := fmt.Sprintf("GET failed with status code %d: %s", resp.StatusCode, b)
 				c.logf("We'll use WebSockets on the next connection attempt. A proxy could be disallowing the use of 'Upgrade: derp': %s", reason)
 				c.forcedWebsocket.Store(true)
