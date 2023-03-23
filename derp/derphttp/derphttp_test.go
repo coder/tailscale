@@ -4,16 +4,21 @@
 package derphttp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"nhooyr.io/websocket"
 	"tailscale.com/derp"
+	"tailscale.com/net/wsconn"
 	"tailscale.com/types/key"
 )
 
@@ -204,5 +209,65 @@ func TestPing(t *testing.T) {
 	err = c.Ping(context.Background())
 	if err != nil {
 		t.Fatalf("Ping: %v", err)
+	}
+}
+
+func TestHTTP2WebSocketFallback(t *testing.T) {
+	serverPrivateKey := key.NewNode()
+	s := derp.NewServer(serverPrivateKey, t.Logf)
+	defer s.Close()
+
+	httpsrv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		up := r.Header.Get("Upgrade")
+		if up != "websocket" {
+			Handler(s).ServeHTTP(w, r)
+			return
+		}
+
+		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{})
+		if err != nil {
+			t.Errorf("websocket.Accept: %v", err)
+			return
+		}
+		defer c.Close(websocket.StatusInternalError, "closing")
+		wc := wsconn.NetConn(context.Background(), c, websocket.MessageBinary)
+		brw := bufio.NewReadWriter(bufio.NewReader(wc), bufio.NewWriter(wc))
+		s.Accept(context.Background(), wc, brw, r.RemoteAddr)
+	}))
+	httpsrv.TLS = &tls.Config{
+		NextProtos: []string{"h2", "http/1.1"},
+	}
+	httpsrv.StartTLS()
+
+	serverURL := httpsrv.URL
+	t.Logf("server URL: %s", serverURL)
+
+	c, err := NewClient(key.NewNode(), serverURL, t.Logf)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	c.TLSConfig = &tls.Config{
+		ServerName: "example.com",
+		RootCAs:    httpsrv.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs,
+	}
+	defer c.Close()
+	reasonCh := make(chan string, 1)
+	c.SetForcedWebsocketCallback(func(region int, reason string) {
+		select {
+		case reasonCh <- reason:
+		default:
+		}
+	})
+	err = c.Connect(context.Background())
+	if err == nil {
+		// Expect an error!
+		t.Fatal("client didn't error on initial connect")
+	}
+	reason := <-reasonCh
+	if !strings.Contains(reason, "wanted us to use HTTP/2") {
+		t.Fatalf("reason doesn't contain message: %s", reason)
+	}
+	if err := c.Connect(context.Background()); err != nil {
+		t.Fatalf("client Connect: %v", err)
 	}
 }
