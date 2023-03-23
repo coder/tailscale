@@ -347,26 +347,26 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 	case c.useWebsockets():
 		var urlStr string
 		var tlsConfig *tls.Config
-		// WebSocket connections require a DERP to proxy.
-		// DERP mappings have no explicit requirements on the ordering
-		// of DERP vs STUNOnly nodes. So we pick the first non-STUNOnly one.
-		var node *tailcfg.DERPNode
-		for _, n := range reg.Nodes {
-			if n.STUNOnly {
-				continue
+		if reg != nil {
+			// WebSocket connections require a DERP to proxy.
+			// DERP mappings have no explicit requirements on the ordering
+			// of DERP vs STUNOnly nodes. So we pick the first non-STUNOnly one.
+			var node *tailcfg.DERPNode
+			for _, n := range reg.Nodes {
+				if n.STUNOnly {
+					continue
+				}
+				node = n
+				break
 			}
-			node = n
-			break
-		}
-		if node == nil {
-			return nil, 0, errors.New("no non-STUN-only nodes in region")
-		}
-		if c.url != nil {
-			urlStr = c.url.String()
-			tlsConfig = c.tlsConfig(nil)
-		} else {
+			if node == nil {
+				return nil, 0, errors.New("no non-STUN-only nodes in region")
+			}
 			urlStr = c.urlString(node)
 			tlsConfig = c.tlsConfig(node)
+		} else if c.url != nil {
+			urlStr = c.url.String()
+			tlsConfig = c.tlsConfig(nil)
 		}
 		c.logf("%s: connecting websocket to %v", caller, urlStr)
 		conn, err := dialWebsocketFunc(ctx, urlStr, tlsConfig, c.Header)
@@ -492,6 +492,17 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		// No need to flush the HTTP request. the derp.Client's initial
 		// client auth frame will flush it.
 	} else {
+		regionID := 0
+		if reg != nil {
+			regionID = reg.RegionID
+		}
+
+		if tlsState != nil && tlsState.NegotiatedProtocol == "h2" {
+			reason := fmt.Sprintf("The server wanted us to use HTTP/2, but DERP requires Upgrade which needs HTTP/1.1")
+			c.forceWebsockets(regionID, reason)
+			return nil, 0, fmt.Errorf("DERP server did not switch protocols: %s", reason)
+		}
+
 		if err := req.Write(brw); err != nil {
 			return nil, 0, err
 		}
@@ -512,17 +523,12 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 			// For safety, we'll assume that status codes >= 400 are
 			// proxies that don't support WebSockets.
 			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-				reason := fmt.Sprintf("GET failed with status code %d: %s", resp.StatusCode, b)
-				c.logf("We'll use WebSockets on the next connection attempt. A proxy could be disallowing the use of 'Upgrade: derp': %s", reason)
-				c.forcedWebsocket.Store(true)
-				forcedWebsocketCallback := c.forcedWebsocketCallback.Load()
-				if forcedWebsocketCallback != nil {
-					go (*forcedWebsocketCallback)(reg.RegionID, reason)
-				}
+				c.forceWebsockets(regionID, fmt.Sprintf("GET failed with status code %d (a proxy could be disallowing the use of 'Upgrade: derp'): %s", resp.StatusCode, b))
 			}
 
 			return nil, 0, fmt.Errorf("GET failed: %v: %s", err, b)
 		}
+
 	}
 	derpClient, err = derp.NewClient(c.privateKey, httpConn, brw, c.logf,
 		derp.MeshKey(c.MeshKey),
@@ -569,6 +575,15 @@ func (c *Client) SetRegionDialer(dialer func(ctx context.Context, region *tailcf
 // decides to force WebSockets on the next connection attempt.
 func (c *Client) SetForcedWebsocketCallback(callback func(region int, reason string)) {
 	c.forcedWebsocketCallback.Store(&callback)
+}
+
+func (c *Client) forceWebsockets(regionID int, reason string) {
+	c.logf("We'll use WebSockets on the next connection attempt: %s", reason)
+	c.forcedWebsocket.Store(true)
+	forcedWebsocketCallback := c.forcedWebsocketCallback.Load()
+	if forcedWebsocketCallback != nil {
+		go (*forcedWebsocketCallback)(regionID, reason)
+	}
 }
 
 func (c *Client) dialURL(ctx context.Context) (net.Conn, error) {
@@ -635,6 +650,7 @@ func (c *Client) tlsConfig(node *tailcfg.DERPNode) *tls.Config {
 			tlsdial.SetConfigExpectedCert(tlsConf, node.CertName)
 		}
 	}
+	tlsConf.NextProtos = []string{"h2", "http/1.1"}
 	return tlsConf
 }
 
