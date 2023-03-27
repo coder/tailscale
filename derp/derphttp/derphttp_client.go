@@ -477,6 +477,16 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 	req.Header.Set("Upgrade", "DERP")
 	req.Header.Set("Connection", "Upgrade")
 
+	regionID := 0
+	if reg != nil {
+		regionID = reg.RegionID
+	}
+	if tlsState != nil && tlsState.NegotiatedProtocol == "h2" {
+		reason := "The server wanted us to use HTTP/2, but DERP requires Upgrade which needs HTTP/1.1"
+		c.forceWebsockets(regionID, reason)
+		return nil, 0, fmt.Errorf("DERP server did not switch protocols: %s", reason)
+	}
+
 	if !serverPub.IsZero() && serverProtoVersion != 0 {
 		// parseMetaCert found the server's public key (no TLS
 		// middlebox was in the way), so skip the HTTP upgrade
@@ -492,17 +502,6 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		// No need to flush the HTTP request. the derp.Client's initial
 		// client auth frame will flush it.
 	} else {
-		regionID := 0
-		if reg != nil {
-			regionID = reg.RegionID
-		}
-
-		if tlsState != nil && tlsState.NegotiatedProtocol == "h2" {
-			reason := fmt.Sprintf("The server wanted us to use HTTP/2, but DERP requires Upgrade which needs HTTP/1.1")
-			c.forceWebsockets(regionID, reason)
-			return nil, 0, fmt.Errorf("DERP server did not switch protocols: %s", reason)
-		}
-
 		if err := req.Write(brw); err != nil {
 			return nil, 0, err
 		}
@@ -650,7 +649,7 @@ func (c *Client) tlsConfig(node *tailcfg.DERPNode) *tls.Config {
 			tlsdial.SetConfigExpectedCert(tlsConf, node.CertName)
 		}
 	}
-	tlsConf.NextProtos = []string{"h2", "http/1.1"}
+	tlsConf.NextProtos = []string{"http/1.1", "h2"}
 	return tlsConf
 }
 

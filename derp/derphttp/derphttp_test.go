@@ -235,7 +235,13 @@ func TestHTTP2WebSocketFallback(t *testing.T) {
 		s.Accept(context.Background(), wc, brw, r.RemoteAddr)
 	}))
 	httpsrv.TLS = &tls.Config{
-		NextProtos: []string{"h2", "http/1.1"},
+		NextProtos: []string{"h2"},
+		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			// Add this to ensure fast start works!
+			cert := httpsrv.TLS.Certificates[0]
+			cert.Certificate = append(cert.Certificate, s.MetaCert())
+			return &cert, nil
+		},
 	}
 	httpsrv.StartTLS()
 
@@ -264,7 +270,7 @@ func TestHTTP2WebSocketFallback(t *testing.T) {
 		t.Fatal("client didn't error on initial connect")
 	}
 	reason := <-reasonCh
-	if !strings.Contains(reason, "wanted us to use HTTP/2") {
+	if !strings.Contains(reason, "DERP requires Upgrade which needs HTTP/1.1") {
 		t.Fatalf("reason doesn't contain message: %s", reason)
 	}
 	if err := c.Connect(context.Background()); err != nil {
