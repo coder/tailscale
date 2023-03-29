@@ -649,7 +649,7 @@ func (c *Client) tlsConfig(node *tailcfg.DERPNode) *tls.Config {
 			tlsdial.SetConfigExpectedCert(tlsConf, node.CertName)
 		}
 	}
-	tlsConf.NextProtos = []string{"http/1.1", "h2"}
+	tlsConf.NextProtos = []string{"http/1.1"}
 	return tlsConf
 }
 
