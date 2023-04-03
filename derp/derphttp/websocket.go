@@ -8,7 +8,6 @@ package derphttp
 import (
 	"context"
 	"crypto/tls"
-	"log"
 	"net"
 	"net/http"
 
@@ -21,7 +20,7 @@ func init() {
 }
 
 func dialWebsocket(ctx context.Context, urlStr string, tlsConfig *tls.Config, httpHeader http.Header) (net.Conn, error) {
-	c, res, err := websocket.Dial(ctx, urlStr, &websocket.DialOptions{
+	c, _, err := websocket.Dial(ctx, urlStr, &websocket.DialOptions{
 		Subprotocols: []string{"derp"},
 		HTTPHeader:   httpHeader,
 		HTTPClient: &http.Client{
@@ -30,11 +29,11 @@ func dialWebsocket(ctx context.Context, urlStr string, tlsConfig *tls.Config, ht
 			},
 		},
 	})
+	// We can't log anything here, otherwise it'll appear in SSH output!
 	if err != nil {
-		log.Printf("websocket Dial: %v, %+v", err, res)
+		// log.Printf("websocket Dial: %v, %+v", err, res)
 		return nil, err
 	}
-	// We can't log anything here, otherwise it'll appear in SSH output!
 	// log.Printf("websocket: connected to %v", urlStr)
 	netConn := wsconn.NetConn(context.Background(), c, websocket.MessageBinary)
 	return netConn, nil
