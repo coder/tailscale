@@ -34,7 +34,8 @@ func dialWebsocket(ctx context.Context, urlStr string, tlsConfig *tls.Config, ht
 		log.Printf("websocket Dial: %v, %+v", err, res)
 		return nil, err
 	}
-	log.Printf("websocket: connected to %v", urlStr)
+	// We can't log anything here, otherwise it'll appear in SSH output!
+	// log.Printf("websocket: connected to %v", urlStr)
 	netConn := wsconn.NetConn(context.Background(), c, websocket.MessageBinary)
 	return netConn, nil
 }
