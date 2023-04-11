@@ -109,9 +109,8 @@ func Config(host string, base *tls.Config) *tls.Config {
 		// detecting SSL MiTM.
 		opts.Roots = bakedInRoots()
 		_, bakedErr := cs.PeerCertificates[0].Verify(opts)
-		if debug() {
+		if bakedErr != nil && debug() {
 			log.Printf("tlsdial(bake %q): %v", host, bakedErr)
-		} else if bakedErr != nil {
 			if _, loaded := tlsdialWarningPrinted.LoadOrStore(host, true); !loaded {
 				if errSys == nil {
 					log.Printf("tlsdial: warning: server cert for %q is not a Let's Encrypt cert", host)
