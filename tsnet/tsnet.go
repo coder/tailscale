@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"golang.org/x/exp/slices"
+	"gvisor.dev/gvisor/pkg/tcpip"
 	"tailscale.com/client/tailscale"
 	"tailscale.com/control/controlclient"
 	"tailscale.com/envknob"
@@ -739,12 +740,12 @@ func (s *Server) getTCPHandlerForFunnelFlow(src netip.AddrPort, dstPort uint16) 
 	return ln.handle
 }
 
-func (s *Server) getTCPHandlerForFlow(src, dst netip.AddrPort) (handler func(net.Conn), intercept bool) {
+func (s *Server) getTCPHandlerForFlow(src, dst netip.AddrPort) (handler func(net.Conn), opts []tcpip.SettableSocketOption, intercept bool) {
 	ln, ok := s.listenerForDstAddr("tcp", dst, false)
 	if !ok {
-		return nil, true // don't handle, don't forward to localhost
+		return nil, nil, true // don't handle, don't forward to localhost
 	}
-	return ln.handle, true
+	return ln.handle, nil, true
 }
 
 func (s *Server) getUDPHandlerForFlow(src, dst netip.AddrPort) (handler func(nettype.ConnPacketConn), intercept bool) {

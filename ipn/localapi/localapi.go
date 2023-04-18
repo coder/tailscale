@@ -683,7 +683,7 @@ func (h *Handler) serveDebugPortmap(w http.ResponseWriter, r *http.Request) {
 		logf("portmapping changed.")
 		logf("have mapping: %v", c.HaveMapping())
 
-		if ext, ok := c.GetCachedMappingOrStartCreatingOne(); ok {
+		if ext, ok := c.GetCachedMappingOrStartCreatingOne(ctx); ok {
 			logf("cb: mapping: %v", ext)
 			select {
 			case done <- true:
@@ -738,7 +738,7 @@ func (h *Handler) serveDebugPortmap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if ext, ok := c.GetCachedMappingOrStartCreatingOne(); ok {
+	if ext, ok := c.GetCachedMappingOrStartCreatingOne(ctx); ok {
 		logf("mapping: %v", ext)
 	} else {
 		logf("no mapping")
