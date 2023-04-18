@@ -108,10 +108,11 @@
           graphviz
           perl
           go_1_20
+          yarn
         ];
       };
     };
   in
     flake-utils.lib.eachDefaultSystem (system: flakeForSystem nixpkgs system);
 }
-# nix-direnv cache busting line: sha256-Y4HgqikudINw28LcX4EVONxmtR0CEGKM3M76ahzfuFY=
+# nix-direnv cache busting line: sha256-LfHkNXQbg7/u6y882gtINuQtwinYakg3abKJTDrrADo=

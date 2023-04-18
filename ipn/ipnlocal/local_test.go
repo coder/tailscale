@@ -21,7 +21,9 @@ import (
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tstest"
+	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
+	"tailscale.com/types/logid"
 	"tailscale.com/types/netmap"
 	"tailscale.com/wgengine"
 	"tailscale.com/wgengine/filter"
@@ -333,10 +335,25 @@ func TestPeerRoutes(t *testing.T) {
 				pp("100.64.0.2/32"),
 			},
 		},
+		{
+			name: "skip-unmasked-prefixes",
+			peers: []wgcfg.Peer{
+				{
+					PublicKey: key.NewNode().Public(),
+					AllowedIPs: []netip.Prefix{
+						pp("100.64.0.2/32"),
+						pp("10.0.0.100/16"),
+					},
+				},
+			},
+			want: []netip.Prefix{
+				pp("100.64.0.2/32"),
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := peerRoutes(tt.peers, 2)
+			got := peerRoutes(t.Logf, tt.peers, 2)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("got = %v; want %v", got, tt.want)
 			}
@@ -481,8 +498,7 @@ func (panicOnUseTransport) RoundTrip(*http.Request) (*http.Response, error) {
 
 // Issue 1573: don't generate a machine key if we don't want to be running.
 func TestLazyMachineKeyGeneration(t *testing.T) {
-	defer func(old func() bool) { panicOnMachineKeyGeneration = old }(panicOnMachineKeyGeneration)
-	panicOnMachineKeyGeneration = func() bool { return true }
+	tstest.Replace(t, &panicOnMachineKeyGeneration, func() bool { return true })
 
 	var logf logger.Logf = logger.Discard
 	store := new(mem.Store)
@@ -491,7 +507,7 @@ func TestLazyMachineKeyGeneration(t *testing.T) {
 		t.Fatalf("NewFakeUserspaceEngine: %v", err)
 	}
 	t.Cleanup(eng.Close)
-	lb, err := NewLocalBackend(logf, "logid", store, nil, eng, 0)
+	lb, err := NewLocalBackend(logf, logid.PublicID{}, store, nil, eng, 0)
 	if err != nil {
 		t.Fatalf("NewLocalBackend: %v", err)
 	}
@@ -755,7 +771,7 @@ func TestStatusWithoutPeers(t *testing.T) {
 	}
 	t.Cleanup(e.Close)
 
-	b, err := NewLocalBackend(logf, "logid", store, nil, e, 0)
+	b, err := NewLocalBackend(logf, logid.PublicID{}, store, nil, e, 0)
 	if err != nil {
 		t.Fatalf("NewLocalBackend: %v", err)
 	}

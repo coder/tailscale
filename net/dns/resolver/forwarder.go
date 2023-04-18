@@ -26,6 +26,7 @@ import (
 	"tailscale.com/net/dnscache"
 	"tailscale.com/net/neterror"
 	"tailscale.com/net/netns"
+	"tailscale.com/net/sockstats"
 	"tailscale.com/net/tsdial"
 	"tailscale.com/types/dnstype"
 	"tailscale.com/types/logger"
@@ -383,6 +384,7 @@ func (f *forwarder) getKnownDoHClientForProvider(urlBase string) (c *http.Client
 	dialer := dnscache.Dialer(nsDialer.DialContext, &dnscache.Resolver{
 		SingleHost:             dohURL.Hostname(),
 		SingleHostStaticResult: allIPs,
+		Logf:                   f.logf,
 	})
 	c = &http.Client{
 		Transport: &http.Transport{
@@ -406,6 +408,7 @@ func (f *forwarder) getKnownDoHClientForProvider(urlBase string) (c *http.Client
 const dohType = "application/dns-message"
 
 func (f *forwarder) sendDoH(ctx context.Context, urlBase string, c *http.Client, packet []byte) ([]byte, error) {
+	ctx = sockstats.WithSockStats(ctx, sockstats.LabelDNSForwarderDoH, f.logf)
 	metricDNSFwdDoH.Add(1)
 	req, err := http.NewRequestWithContext(ctx, "POST", urlBase, bytes.NewReader(packet))
 	if err != nil {
@@ -413,7 +416,7 @@ func (f *forwarder) sendDoH(ctx context.Context, urlBase string, c *http.Client,
 	}
 	req.Header.Set("Content-Type", dohType)
 	req.Header.Set("Accept", dohType)
-	req.Header.Set("User-Agent", "tailscaled/"+version.Long)
+	req.Header.Set("User-Agent", "tailscaled/"+version.Long())
 
 	hres, err := c.Do(req)
 	if err != nil {
@@ -485,6 +488,7 @@ func (f *forwarder) sendUDP(ctx context.Context, fq *forwardQuery, rr resolverAn
 		return nil, fmt.Errorf("unrecognized resolver type %q", rr.name.Addr)
 	}
 	metricDNSFwdUDP.Add(1)
+	ctx = sockstats.WithSockStats(ctx, sockstats.LabelDNSForwarderUDP, f.logf)
 
 	ln, err := f.packetListener(ipp.Addr())
 	if err != nil {
@@ -517,7 +521,7 @@ func (f *forwarder) sendUDP(ctx context.Context, fq *forwardQuery, rr resolverAn
 
 	// The 1 extra byte is to detect packet truncation.
 	out := make([]byte, maxResponseBytes+1)
-	n, _, err := conn.ReadFrom(out)
+	n, _, err := conn.ReadFromUDPAddrPort(out)
 	if err != nil {
 		if err := ctx.Err(); err != nil {
 			return nil, err

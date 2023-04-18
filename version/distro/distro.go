@@ -11,7 +11,7 @@ import (
 	"runtime"
 	"strconv"
 
-	"tailscale.com/syncs"
+	"tailscale.com/types/lazy"
 	"tailscale.com/util/lineread"
 )
 
@@ -31,22 +31,30 @@ const (
 	WDMyCloud = Distro("wdmycloud")
 )
 
-var distroAtomic syncs.AtomicValue[Distro]
+var distro lazy.SyncValue[Distro]
+var isWSL lazy.SyncValue[bool]
 
 // Get returns the current distro, or the empty string if unknown.
 func Get() Distro {
-	if d, ok := distroAtomic.LoadOk(); ok {
-		return d
-	}
-	var d Distro
-	switch runtime.GOOS {
-	case "linux":
-		d = linuxDistro()
-	case "freebsd":
-		d = freebsdDistro()
-	}
-	distroAtomic.Store(d) // even if empty
-	return d
+	return distro.Get(func() Distro {
+		switch runtime.GOOS {
+		case "linux":
+			return linuxDistro()
+		case "freebsd":
+			return freebsdDistro()
+		default:
+			return Distro("")
+		}
+	})
+}
+
+// IsWSL reports whether we're running in the Windows Subsystem for Linux.
+func IsWSL() bool {
+	return runtime.GOOS == "linux" && isWSL.Get(func() bool {
+		// We could look for $WSL_INTEROP instead, however that may be missing if
+		// the user has started to use systemd in WSL2.
+		return have("/proc/sys/fs/binfmt_misc/WSLInterop") || have("/mnt/wsl")
+	})
 }
 
 func have(file string) bool {
@@ -99,7 +107,7 @@ func freebsdDistro() Distro {
 	return ""
 }
 
-var dsmVersion syncs.AtomicValue[int]
+var dsmVersion lazy.SyncValue[int]
 
 // DSMVersion reports the Synology DSM major version.
 //
@@ -108,33 +116,28 @@ func DSMVersion() int {
 	if runtime.GOOS != "linux" {
 		return 0
 	}
-	if Get() != Synology {
-		return 0
-	}
-	if v, ok := dsmVersion.LoadOk(); ok && v != 0 {
-		return v
-	}
-	// This is set when running as a package:
-	v, _ := strconv.Atoi(os.Getenv("SYNOPKG_DSM_VERSION_MAJOR"))
-	if v != 0 {
-		dsmVersion.Store(v)
-		return v
-	}
-	// But when run from the command line, we have to read it from the file:
-	lineread.File("/etc/VERSION", func(line []byte) error {
-		line = bytes.TrimSpace(line)
-		if string(line) == `majorversion="7"` {
-			v = 7
-			return io.EOF
+	return dsmVersion.Get(func() int {
+		if Get() != Synology {
+			return 0
 		}
-		if string(line) == `majorversion="6"` {
-			v = 6
-			return io.EOF
+		// This is set when running as a package:
+		v, _ := strconv.Atoi(os.Getenv("SYNOPKG_DSM_VERSION_MAJOR"))
+		if v != 0 {
+			return v
 		}
-		return nil
+		// But when run from the command line, we have to read it from the file:
+		lineread.File("/etc/VERSION", func(line []byte) error {
+			line = bytes.TrimSpace(line)
+			if string(line) == `majorversion="7"` {
+				v = 7
+				return io.EOF
+			}
+			if string(line) == `majorversion="6"` {
+				v = 6
+				return io.EOF
+			}
+			return nil
+		})
+		return v
 	})
-	if v != 0 {
-		dsmVersion.Store(v)
-	}
-	return v
 }

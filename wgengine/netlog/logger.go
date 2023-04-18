@@ -19,9 +19,11 @@ import (
 	"tailscale.com/logpolicy"
 	"tailscale.com/logtail"
 	"tailscale.com/net/connstats"
+	"tailscale.com/net/sockstats"
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/smallzstd"
 	"tailscale.com/tailcfg"
+	"tailscale.com/types/logid"
 	"tailscale.com/types/netlogtype"
 	"tailscale.com/util/multierr"
 	"tailscale.com/wgengine/router"
@@ -89,7 +91,7 @@ var testClient *http.Client
 // is a non-tailscale IP address to contact for that particular tailscale node.
 // The IP protocol and source port are always zero.
 // The sock is used to populated the PhysicalTraffic field in Message.
-func (nl *Logger) Startup(nodeID tailcfg.StableNodeID, nodeLogID, domainLogID logtail.PrivateID, tun, sock Device) error {
+func (nl *Logger) Startup(nodeID tailcfg.StableNodeID, nodeLogID, domainLogID logid.PrivateID, tun, sock Device) error {
 	nl.mu.Lock()
 	defer nl.mu.Unlock()
 	if nl.logger != nil {
@@ -120,6 +122,7 @@ func (nl *Logger) Startup(nodeID tailcfg.StableNodeID, nodeLogID, domainLogID lo
 		IncludeProcID:       true,
 		IncludeProcSequence: true,
 	}, log.Printf)
+	nl.logger.SetSockstatsLabel(sockstats.LabelNetlogLogger)
 
 	// Startup a data structure to track per-connection statistics.
 	// There is a maximum size for individual log messages that logtail

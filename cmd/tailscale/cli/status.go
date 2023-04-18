@@ -258,6 +258,7 @@ func printFunnelStatus(ctx context.Context) {
 		}
 		printf("#     - %s\n", url)
 	}
+	outln()
 }
 
 // isRunningOrStarting reports whether st is in state Running or Starting.
@@ -275,7 +276,7 @@ func isRunningOrStarting(st *ipnstate.Status) (description string, ok bool) {
 		}
 		return s, false
 	case ipn.NeedsMachineAuth.String():
-		return "Machine is not yet authorized by tailnet admin.", false
+		return "Machine is not yet approved by tailnet admin.", false
 	case ipn.Running.String(), ipn.Starting.String():
 		return st.BackendState, true
 	}

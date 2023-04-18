@@ -29,6 +29,7 @@ import (
 	"tailscale.com/net/flowtrack"
 	"tailscale.com/net/interfaces"
 	"tailscale.com/net/packet"
+	"tailscale.com/net/sockstats"
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/net/tsdial"
 	"tailscale.com/net/tshttpproxy"
@@ -44,6 +45,7 @@ import (
 	"tailscale.com/util/clientmetric"
 	"tailscale.com/util/deephash"
 	"tailscale.com/util/mak"
+	"tailscale.com/wgengine/capture"
 	"tailscale.com/wgengine/filter"
 	"tailscale.com/wgengine/magicsock"
 	"tailscale.com/wgengine/monitor"
@@ -137,9 +139,9 @@ type userspaceEngine struct {
 	// pongCallback is the map of response handlers waiting for disco or TSMP
 	// pong callbacks. The map key is a random slice of bytes.
 	pongCallback map[[8]byte]func(packet.TSMPPongReply)
-	// icmpEchoResponseCallback is the map of reponse handlers waiting for ICMP
+	// icmpEchoResponseCallback is the map of response handlers waiting for ICMP
 	// echo responses. The map key is a random uint32 that is the little endian
-	// value of the ICMP identifer and sequence number concatenated.
+	// value of the ICMP identifier and sequence number concatenated.
 	icmpEchoResponseCallback map[uint32]func()
 
 	// networkLogger logs statistics about network connections.
@@ -331,6 +333,9 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 	conf.Dialer.SetLinkMonitor(e.linkMon)
 	e.dns = dns.NewManager(logf, conf.DNS, e.linkMon, conf.Dialer, fwdDNSLinkSelector{e, tunName})
 
+	// TODO: there's probably a better place for this
+	sockstats.SetLinkMonitor(e.linkMon)
+
 	logf("link state: %+v", e.linkMon.InterfaceState())
 
 	unregisterMonWatch := e.linkMon.RegisterChangeCallback(func(changed bool, st *interfaces.State) {
@@ -368,19 +373,19 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 	tsTUNDev.SetDiscoKey(e.magicConn.DiscoPublicKey())
 
 	if conf.RespondToPing {
-		e.tundev.PostFilterIn = echoRespondToAll
+		e.tundev.PostFilterPacketInboundFromWireGaurd = echoRespondToAll
 	}
-	e.tundev.PreFilterFromTunToEngine = e.handleLocalPackets
+	e.tundev.PreFilterPacketOutboundToWireGuardEngineIntercept = e.handleLocalPackets
 
 	if envknob.BoolDefaultTrue("TS_DEBUG_CONNECT_FAILURES") {
-		if e.tundev.PreFilterIn != nil {
+		if e.tundev.PreFilterPacketInboundFromWireGuard != nil {
 			return nil, errors.New("unexpected PreFilterIn already set")
 		}
-		e.tundev.PreFilterIn = e.trackOpenPreFilterIn
-		if e.tundev.PostFilterOut != nil {
+		e.tundev.PreFilterPacketInboundFromWireGuard = e.trackOpenPreFilterIn
+		if e.tundev.PostFilterPacketOutboundToWireGuard != nil {
 			return nil, errors.New("unexpected PostFilterOut already set")
 		}
-		e.tundev.PostFilterOut = e.trackOpenPostFilterOut
+		e.tundev.PostFilterPacketOutboundToWireGuard = e.trackOpenPostFilterOut
 	}
 
 	e.wgLogger = wglog.NewLogger(logf)
@@ -802,6 +807,7 @@ func (e *userspaceEngine) Reconfig(cfg *wgcfg.Config, routerCfg *router.Config, 
 
 	e.wgLock.Lock()
 	defer e.wgLock.Unlock()
+	e.tundev.SetWGConfig(cfg)
 	e.lastDNSConfig = dnsCfg
 
 	peerSet := make(map[key.NodePublic]struct{}, len(cfg.Peers))
@@ -1580,6 +1586,7 @@ var (
 	metricNumMinorChanges = clientmetric.NewCounter("wgengine_minor_changes")
 )
 
-func (e *userspaceEngine) InstallCaptureHook(cb CaptureCallback) {
-	e.tundev.InstallCaptureHook(tstun.CaptureFunc(cb))
+func (e *userspaceEngine) InstallCaptureHook(cb capture.Callback) {
+	e.tundev.InstallCaptureHook(cb)
+	e.magicConn.InstallCaptureHook(cb)
 }

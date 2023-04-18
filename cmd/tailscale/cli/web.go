@@ -60,6 +60,15 @@ type tmplData struct {
 	LicensesURL       string
 	TUNMode           bool
 	IsSynology        bool
+	DSMVersion        int // 6 or 7, if IsSynology=true
+	IPNVersion        string
+}
+
+type postedData struct {
+	AdvertiseRoutes   string
+	AdvertiseExitNode bool
+	Reauthenticate    bool
+	ForceLogout       bool
 }
 
 var webCmd = &ffcli.Command{
@@ -133,7 +142,7 @@ func runWeb(ctx context.Context, args []string) error {
 			Handler:   http.HandlerFunc(webHandler),
 		}
 
-		log.Printf("web server runNIng on: https://%s", server.Addr)
+		log.Printf("web server running on: https://%s", server.Addr)
 		return server.ListenAndServeTLS("", "")
 	} else {
 		log.Printf("web server running on: %s", urlOfListenAddr(webArgs.listen))
@@ -219,33 +228,48 @@ func qnapAuthn(r *http.Request) (string, *qnapAuthResponse, error) {
 	return "", nil, fmt.Errorf("not authenticated by any mechanism")
 }
 
+// qnapAuthnURL returns the auth URL to use by inferring where the UI is
+// running based on the request URL. This is necessary because QNAP has so
+// many options, see https://github.com/tailscale/tailscale/issues/7108
+// and https://github.com/tailscale/tailscale/issues/6903
+func qnapAuthnURL(requestUrl string, query url.Values) string {
+	in, err := url.Parse(requestUrl)
+	scheme := ""
+	host := ""
+	if err != nil || in.Scheme == "" {
+		log.Printf("Cannot parse QNAP login URL %v", err)
+
+		// try localhost and hope for the best
+		scheme = "http"
+		host = "localhost"
+	} else {
+		scheme = in.Scheme
+		host = in.Host
+	}
+
+	u := url.URL{
+		Scheme:   scheme,
+		Host:     host,
+		Path:     "/cgi-bin/authLogin.cgi",
+		RawQuery: query.Encode(),
+	}
+
+	return u.String()
+}
+
 func qnapAuthnQtoken(r *http.Request, user, token string) (string, *qnapAuthResponse, error) {
 	query := url.Values{
 		"qtoken": []string{token},
 		"user":   []string{user},
 	}
-	u := url.URL{
-		Scheme:   "http",
-		Host:     "127.0.0.1:8080",
-		Path:     "/cgi-bin/authLogin.cgi",
-		RawQuery: query.Encode(),
-	}
-
-	return qnapAuthnFinish(user, u.String())
+	return qnapAuthnFinish(user, qnapAuthnURL(r.URL.String(), query))
 }
 
 func qnapAuthnSid(r *http.Request, user, sid string) (string, *qnapAuthResponse, error) {
 	query := url.Values{
 		"sid": []string{sid},
 	}
-	u := url.URL{
-		Scheme:   "http",
-		Host:     "127.0.0.1:8080",
-		Path:     "/cgi-bin/authLogin.cgi",
-		RawQuery: query.Encode(),
-	}
-
-	return qnapAuthnFinish(user, u.String())
+	return qnapAuthnFinish(user, qnapAuthnURL(r.URL.String(), query))
 }
 
 func qnapAuthnFinish(user, url string) (string, *qnapAuthResponse, error) {
@@ -353,11 +377,7 @@ func webHandler(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == "POST" {
 		defer r.Body.Close()
-		var postData struct {
-			AdvertiseRoutes   string
-			AdvertiseExitNode bool
-			Reauthenticate    bool
-		}
+		var postData postedData
 		type mi map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&postData); err != nil {
 			w.WriteHeader(400)
@@ -386,8 +406,15 @@ func webHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		log.Printf("tailscaleUp(reauth=%v) ...", postData.Reauthenticate)
-		url, err := tailscaleUp(r.Context(), st, postData.Reauthenticate)
+		var reauth, logout bool
+		if postData.Reauthenticate {
+			reauth = true
+		}
+		if postData.ForceLogout {
+			logout = true
+		}
+		log.Printf("tailscaleUp(reauth=%v, logout=%v) ...", reauth, logout)
+		url, err := tailscaleUp(r.Context(), st, postData)
 		log.Printf("tailscaleUp = (URL %v, %v)", url != "", err)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -404,6 +431,7 @@ func webHandler(w http.ResponseWriter, r *http.Request) {
 
 	profile := st.User[st.Self.UserID]
 	deviceName := strings.Split(st.Self.DNSName, ".")[0]
+	versionShort := strings.Split(st.Version, "-")[0]
 	data := tmplData{
 		SynologyUser: user,
 		Profile:      profile,
@@ -412,6 +440,8 @@ func webHandler(w http.ResponseWriter, r *http.Request) {
 		LicensesURL:  licensesURL(),
 		TUNMode:      st.TUN,
 		IsSynology:   distro.Get() == distro.Synology || envknob.Bool("TS_FAKE_SYNOLOGY"),
+		DSMVersion:   distro.DSMVersion(),
+		IPNVersion:   versionShort,
 	}
 	exitNodeRouteV4 := netip.MustParsePrefix("0.0.0.0/0")
 	exitNodeRouteV6 := netip.MustParsePrefix("::/0")
@@ -437,10 +467,18 @@ func webHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(buf.Bytes())
 }
 
-func tailscaleUp(ctx context.Context, st *ipnstate.Status, forceReauth bool) (authURL string, retErr error) {
+func tailscaleUp(ctx context.Context, st *ipnstate.Status, postData postedData) (authURL string, retErr error) {
+	if postData.ForceLogout {
+		if err := localClient.Logout(ctx); err != nil {
+			return "", fmt.Errorf("Logout error: %w", err)
+		}
+		return "", nil
+	}
+
 	origAuthURL := st.AuthURL
 	isRunning := st.BackendState == ipn.Running.String()
 
+	forceReauth := postData.Reauthenticate
 	if !forceReauth {
 		if origAuthURL != "" {
 			return origAuthURL, nil

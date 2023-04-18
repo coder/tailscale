@@ -34,12 +34,12 @@ import (
 
 	"go4.org/mem"
 	"golang.org/x/sync/errgroup"
-	"golang.org/x/time/rate"
 	"tailscale.com/client/tailscale"
 	"tailscale.com/disco"
 	"tailscale.com/envknob"
 	"tailscale.com/metrics"
 	"tailscale.com/syncs"
+	"tailscale.com/tstime/rate"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 	"tailscale.com/version"
@@ -122,7 +122,8 @@ type Server struct {
 	_                            align64
 	packetsForwardedOut          expvar.Int
 	packetsForwardedIn           expvar.Int
-	peerGoneFrames               expvar.Int // number of peer gone frames sent
+	peerGoneDisconnectedFrames   expvar.Int // number of peer disconnected frames sent
+	peerGoneNotHereFrames        expvar.Int // number of peer not here frames sent
 	gotPing                      expvar.Int // number of ping frames from client
 	sentPong                     expvar.Int // number of pong frames enqueued to client
 	accepts                      expvar.Int
@@ -279,6 +280,7 @@ func (s *dupClientSet) removeClient(c *sclient) bool {
 // public key gets more than one PacketForwarder registered for it.
 type PacketForwarder interface {
 	ForwardPacket(src, dst key.NodePublic, payload []byte) error
+	String() string
 }
 
 // Conn is the subset of the underlying net.Conn the DERP Server needs.
@@ -323,7 +325,8 @@ func NewServer(privateKey key.NodePrivate, logf logger.Logf) *Server {
 	s.packetsDroppedReasonCounters = []*expvar.Int{
 		s.packetsDroppedReason.Get("unknown_dest"),
 		s.packetsDroppedReason.Get("unknown_dest_on_fwd"),
-		s.packetsDroppedReason.Get("gone"),
+		s.packetsDroppedReason.Get("gone_disconnected"),
+		s.packetsDroppedReason.Get("gone_not_here"),
 		s.packetsDroppedReason.Get("queue_head"),
 		s.packetsDroppedReason.Get("queue_tail"),
 		s.packetsDroppedReason.Get("write_error"),
@@ -495,6 +498,7 @@ func (s *Server) registerClient(c *sclient) {
 	switch set := set.(type) {
 	case nil:
 		s.clients[c.key] = singleClient{c}
+		c.debug("register single client")
 	case singleClient:
 		s.dupClientKeys.Add(1)
 		s.dupClientConns.Add(2) // both old and new count
@@ -510,6 +514,7 @@ func (s *Server) registerClient(c *sclient) {
 			},
 			sendHistory: []*sclient{old},
 		}
+		c.debug("register duplicate client")
 	case *dupClientSet:
 		s.dupClientConns.Add(1)     // the gauge
 		s.dupClientConnTotal.Add(1) // the counter
@@ -517,6 +522,7 @@ func (s *Server) registerClient(c *sclient) {
 		set.set[c] = true
 		set.last = c
 		set.sendHistory = append(set.sendHistory, c)
+		c.debug("register another duplicate client")
 	}
 
 	if _, ok := s.clientsMesh[c.key]; !ok {
@@ -549,7 +555,7 @@ func (s *Server) unregisterClient(c *sclient) {
 	case nil:
 		c.logf("[unexpected]; clients map is empty")
 	case singleClient:
-		c.logf("removing connection")
+		c.logf("removed connection")
 		delete(s.clients, c.key)
 		if v, ok := s.clientsMesh[c.key]; ok && v == nil {
 			delete(s.clientsMesh, c.key)
@@ -557,6 +563,7 @@ func (s *Server) unregisterClient(c *sclient) {
 		}
 		s.broadcastPeerStateChangeLocked(c.key, false)
 	case *dupClientSet:
+		c.debug("removed duplicate client")
 		if set.removeClient(c) {
 			s.dupClientConns.Add(-1)
 		} else {
@@ -610,11 +617,24 @@ func (s *Server) notePeerGoneFromRegionLocked(key key.NodePublic) {
 		}
 		set.ForeachClient(func(peer *sclient) {
 			if peer.connNum == connNum {
-				go peer.requestPeerGoneWrite(key)
+				go peer.requestPeerGoneWrite(key, PeerGoneReasonDisconnected)
 			}
 		})
 	}
 	delete(s.sentTo, key)
+}
+
+// requestPeerGoneWriteLimited sends a request to write a "peer gone"
+// frame, but only in reply to a disco packet, and only if we haven't
+// sent one recently.
+func (c *sclient) requestPeerGoneWriteLimited(peer key.NodePublic, contents []byte, reason PeerGoneReasonType) {
+	if disco.LooksLikeDiscoWrapper(contents) != true {
+		return
+	}
+
+	if c.peerGoneLim.Allow() {
+		go c.requestPeerGoneWrite(peer, reason)
+	}
 }
 
 func (s *Server) addWatcher(c *sclient) {
@@ -673,7 +693,7 @@ func (s *Server) accept(ctx context.Context, nc Conn, brw *bufio.ReadWriter, rem
 		nc:             nc,
 		br:             br,
 		bw:             bw,
-		logf:           logger.WithPrefix(s.logf, fmt.Sprintf("derp client %v/%x: ", remoteAddr, clientKey)),
+		logf:           logger.WithPrefix(s.logf, fmt.Sprintf("derp client %v%s: ", remoteAddr, clientKey.ShortString())),
 		done:           ctx.Done(),
 		remoteAddr:     remoteAddr,
 		remoteIPPort:   remoteIPPort,
@@ -681,8 +701,9 @@ func (s *Server) accept(ctx context.Context, nc Conn, brw *bufio.ReadWriter, rem
 		sendQueue:      make(chan pkt, perClientSendQueueDepth),
 		discoSendQueue: make(chan pkt, perClientSendQueueDepth),
 		sendPongCh:     make(chan [8]byte, 1),
-		peerGone:       make(chan key.NodePublic),
+		peerGone:       make(chan peerGoneMsg),
 		canMesh:        clientInfo.MeshKey != "" && clientInfo.MeshKey == s.meshKey,
+		peerGoneLim:    rate.NewLimiter(rate.Every(time.Second), 3),
 	}
 
 	if c.canMesh {
@@ -690,6 +711,9 @@ func (s *Server) accept(ctx context.Context, nc Conn, brw *bufio.ReadWriter, rem
 	}
 	if clientInfo != nil {
 		c.info = *clientInfo
+		if envknob.Bool("DERP_PROBER_DEBUG_LOGS") && clientInfo.IsProber {
+			c.debugLogging = true
+		}
 	}
 
 	s.registerClient(c)
@@ -726,6 +750,7 @@ func (c *sclient) run(ctx context.Context) error {
 
 	for {
 		ft, fl, err := readFrameHeader(c.br)
+		c.debug("read frame type %d len %d err %v", ft, fl, err)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				c.logf("read EOF")
@@ -735,7 +760,7 @@ func (c *sclient) run(ctx context.Context) error {
 				c.logf("closing; server closed")
 				return nil
 			}
-			return fmt.Errorf("client %x: readFrameHeader: %w", c.key, err)
+			return fmt.Errorf("client %s: readFrameHeader: %w", c.key.ShortString(), err)
 		}
 		c.s.noteClientActivity(c)
 		switch ft {
@@ -878,10 +903,14 @@ func (c *sclient) handleFrameForwardPacket(ft frameType, fl uint32) error {
 		reason := dropReasonUnknownDestOnFwd
 		if dstLen > 1 {
 			reason = dropReasonDupClient
+		} else {
+			c.requestPeerGoneWriteLimited(dstKey, contents, PeerGoneReasonNotHere)
 		}
 		s.recordDrop(contents, srcKey, dstKey, reason)
 		return nil
 	}
+
+	dst.debug("received forwarded packet from %s via %s", srcKey.ShortString(), c.key.ShortString())
 
 	return c.sendPkt(dst, pkt{
 		bs:         contents,
@@ -930,7 +959,9 @@ func (c *sclient) handleFrameSendPacket(ft frameType, fl uint32) error {
 	if dst == nil {
 		if fwd != nil {
 			s.packetsForwardedOut.Add(1)
-			if err := fwd.ForwardPacket(c.key, dstKey, contents); err != nil {
+			err := fwd.ForwardPacket(c.key, dstKey, contents)
+			c.debug("SendPacket for %s, forwarding via %s: %v", dstKey.ShortString(), fwd, err)
+			if err != nil {
 				// TODO:
 				return nil
 			}
@@ -939,10 +970,14 @@ func (c *sclient) handleFrameSendPacket(ft frameType, fl uint32) error {
 		reason := dropReasonUnknownDest
 		if dstLen > 1 {
 			reason = dropReasonDupClient
+		} else {
+			c.requestPeerGoneWriteLimited(dstKey, contents, PeerGoneReasonNotHere)
 		}
 		s.recordDrop(contents, c.key, dstKey, reason)
+		c.debug("SendPacket for %s, dropping with reason=%s", dstKey.ShortString(), reason)
 		return nil
 	}
+	c.debug("SendPacket for %s, sending directly", dstKey.ShortString())
 
 	p := pkt{
 		bs:         contents,
@@ -950,6 +985,12 @@ func (c *sclient) handleFrameSendPacket(ft frameType, fl uint32) error {
 		src:        c.key,
 	}
 	return c.sendPkt(dst, p)
+}
+
+func (c *sclient) debug(format string, v ...any) {
+	if c.debugLogging {
+		c.logf(format, v...)
+	}
 }
 
 // dropReason is why we dropped a DERP frame.
@@ -960,7 +1001,7 @@ type dropReason int
 const (
 	dropReasonUnknownDest      dropReason = iota // unknown destination pubkey
 	dropReasonUnknownDestOnFwd                   // unknown destination pubkey on a derp-forwarded packet
-	dropReasonGone                               // destination tailscaled disconnected before we could send
+	dropReasonGoneDisconnected                   // destination tailscaled disconnected before we could send
 	dropReasonQueueHead                          // destination queue is full, dropped packet at queue head
 	dropReasonQueueTail                          // destination queue is full, dropped packet at queue tail
 	dropReasonWriteError                         // OS write() failed
@@ -1002,12 +1043,14 @@ func (c *sclient) sendPkt(dst *sclient, p pkt) error {
 	for attempt := 0; attempt < 3; attempt++ {
 		select {
 		case <-dst.done:
-			s.recordDrop(p.bs, c.key, dstKey, dropReasonGone)
+			s.recordDrop(p.bs, c.key, dstKey, dropReasonGoneDisconnected)
+			dst.debug("sendPkt attempt %d dropped, dst gone", attempt)
 			return nil
 		default:
 		}
 		select {
 		case sendQueue <- p:
+			dst.debug("sendPkt attempt %d enqueued", attempt)
 			return nil
 		default:
 		}
@@ -1023,16 +1066,20 @@ func (c *sclient) sendPkt(dst *sclient, p pkt) error {
 	// contended queue with racing writers. Give up and tail-drop in
 	// this case to keep reader unblocked.
 	s.recordDrop(p.bs, c.key, dstKey, dropReasonQueueTail)
+	dst.debug("sendPkt attempt %d dropped, queue full")
 
 	return nil
 }
 
 // requestPeerGoneWrite sends a request to write a "peer gone" frame
-// that the provided peer has disconnected. It blocks until either the
+// with an explanation of why it is gone. It blocks until either the
 // write request is scheduled, or the client has closed.
-func (c *sclient) requestPeerGoneWrite(peer key.NodePublic) {
+func (c *sclient) requestPeerGoneWrite(peer key.NodePublic, reason PeerGoneReasonType) {
 	select {
-	case c.peerGone <- peer:
+	case c.peerGone <- peerGoneMsg{
+		peer:   peer,
+		reason: reason,
+	}:
 	case <-c.done:
 	}
 }
@@ -1246,22 +1293,19 @@ type sclient struct {
 	key            key.NodePublic
 	info           clientInfo
 	logf           logger.Logf
-	done           <-chan struct{}     // closed when connection closes
-	remoteAddr     string              // usually ip:port from net.Conn.RemoteAddr().String()
-	remoteIPPort   netip.AddrPort      // zero if remoteAddr is not ip:port.
-	sendQueue      chan pkt            // packets queued to this client; never closed
-	discoSendQueue chan pkt            // important packets queued to this client; never closed
-	sendPongCh     chan [8]byte        // pong replies to send to the client; never closed
-	peerGone       chan key.NodePublic // write request that a previous sender has disconnected (not used by mesh peers)
-	meshUpdate     chan struct{}       // write request to write peerStateChange
-	canMesh        bool                // clientInfo had correct mesh token for inter-region routing
-	isDup          atomic.Bool         // whether more than 1 sclient for key is connected
-	isDisabled     atomic.Bool         // whether sends to this peer are disabled due to active/active dups
+	done           <-chan struct{}  // closed when connection closes
+	remoteAddr     string           // usually ip:port from net.Conn.RemoteAddr().String()
+	remoteIPPort   netip.AddrPort   // zero if remoteAddr is not ip:port.
+	sendQueue      chan pkt         // packets queued to this client; never closed
+	discoSendQueue chan pkt         // important packets queued to this client; never closed
+	sendPongCh     chan [8]byte     // pong replies to send to the client; never closed
+	peerGone       chan peerGoneMsg // write request that a peer is not at this server (not used by mesh peers)
+	meshUpdate     chan struct{}    // write request to write peerStateChange
+	canMesh        bool             // clientInfo had correct mesh token for inter-region routing
+	isDup          atomic.Bool      // whether more than 1 sclient for key is connected
+	isDisabled     atomic.Bool      // whether sends to this peer are disabled due to active/active dups
 
-	// replaceLimiter controls how quickly two connections with
-	// the same client key can kick each other off the server by
-	// taking over ownership of a key.
-	replaceLimiter *rate.Limiter
+	debugLogging bool
 
 	// Owned by run, not thread-safe.
 	br          *bufio.Reader
@@ -1278,6 +1322,11 @@ type sclient struct {
 	// the client for them to update their map of who's connected
 	// to this node.
 	peerStateChange []peerConnState
+
+	// peerGoneLimiter limits how often the server will inform a
+	// client that it's trying to establish a direct connection
+	// through us with a peer we have no record of.
+	peerGoneLim *rate.Limiter
 }
 
 // peerConnState represents whether a peer is connected to the server
@@ -1299,6 +1348,12 @@ type pkt struct {
 	// bs is the data packet bytes.
 	// The memory is owned by pkt.
 	bs []byte
+}
+
+// peerGoneMsg is a request to write a peerGone frame to an sclient
+type peerGoneMsg struct {
+	peer   key.NodePublic
+	reason PeerGoneReasonType
 }
 
 func (c *sclient) setPreferred(v bool) {
@@ -1355,9 +1410,9 @@ func (c *sclient) sendLoop(ctx context.Context) error {
 		for {
 			select {
 			case pkt := <-c.sendQueue:
-				c.s.recordDrop(pkt.bs, pkt.src, c.key, dropReasonGone)
+				c.s.recordDrop(pkt.bs, pkt.src, c.key, dropReasonGoneDisconnected)
 			case pkt := <-c.discoSendQueue:
-				c.s.recordDrop(pkt.bs, pkt.src, c.key, dropReasonGone)
+				c.s.recordDrop(pkt.bs, pkt.src, c.key, dropReasonGoneDisconnected)
 			default:
 				return
 			}
@@ -1378,8 +1433,8 @@ func (c *sclient) sendLoop(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case peer := <-c.peerGone:
-			werr = c.sendPeerGone(peer)
+		case msg := <-c.peerGone:
+			werr = c.sendPeerGone(msg.peer, msg.reason)
 			continue
 		case <-c.meshUpdate:
 			werr = c.sendMeshUpdates()
@@ -1410,8 +1465,8 @@ func (c *sclient) sendLoop(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case peer := <-c.peerGone:
-			werr = c.sendPeerGone(peer)
+		case msg := <-c.peerGone:
+			werr = c.sendPeerGone(msg.peer, msg.reason)
 		case <-c.meshUpdate:
 			werr = c.sendMeshUpdates()
 			continue
@@ -1452,13 +1507,22 @@ func (c *sclient) sendPong(data [8]byte) error {
 }
 
 // sendPeerGone sends a peerGone frame, without flushing.
-func (c *sclient) sendPeerGone(peer key.NodePublic) error {
-	c.s.peerGoneFrames.Add(1)
+func (c *sclient) sendPeerGone(peer key.NodePublic, reason PeerGoneReasonType) error {
+	switch reason {
+	case PeerGoneReasonDisconnected:
+		c.s.peerGoneDisconnectedFrames.Add(1)
+	case PeerGoneReasonNotHere:
+		c.s.peerGoneNotHereFrames.Add(1)
+	}
 	c.setWriteDeadline()
-	if err := writeFrameHeader(c.bw.bw(), framePeerGone, keyLen); err != nil {
+	data := make([]byte, 0, keyLen+1)
+	data = peer.AppendTo(data)
+	data = append(data, byte(reason))
+	if err := writeFrameHeader(c.bw.bw(), framePeerGone, uint32(len(data))); err != nil {
 		return err
 	}
-	_, err := c.bw.Write(peer.AppendTo(nil))
+
+	_, err := c.bw.Write(data)
 	return err
 }
 
@@ -1489,7 +1553,7 @@ func (c *sclient) sendMeshUpdates() error {
 		if pcs.present {
 			err = c.sendPeerPresent(pcs.peer)
 		} else {
-			err = c.sendPeerGone(pcs.peer)
+			err = c.sendPeerGone(pcs.peer, PeerGoneReasonDisconnected)
 		}
 		if err != nil {
 			// Shouldn't happen, though, as we're writing
@@ -1529,6 +1593,7 @@ func (c *sclient) sendPacket(srcKey key.NodePublic, contents []byte) (err error)
 			c.s.packetsSent.Add(1)
 			c.s.bytesSent.Add(int64(len(contents)))
 		}
+		c.debug("sendPacket from %s: %v", srcKey.ShortString(), err)
 	}()
 
 	c.setWriteDeadline()
@@ -1689,6 +1754,10 @@ func (f *multiForwarder) ForwardPacket(src, dst key.NodePublic, payload []byte) 
 	return f.fwd.Load().ForwardPacket(src, dst, payload)
 }
 
+func (f *multiForwarder) String() string {
+	return fmt.Sprintf("<MultiForwarder fwd=%s total=%d>", f.fwd.Load(), len(f.all))
+}
+
 func (s *Server) expVarFunc(f func() any) expvar.Func {
 	return expvar.Func(func() any {
 		s.mu.Lock()
@@ -1725,7 +1794,8 @@ func (s *Server) ExpVar() expvar.Var {
 	m.Set("home_moves_out", &s.homeMovesOut)
 	m.Set("got_ping", &s.gotPing)
 	m.Set("sent_pong", &s.sentPong)
-	m.Set("peer_gone_frames", &s.peerGoneFrames)
+	m.Set("peer_gone_disconnected_frames", &s.peerGoneDisconnectedFrames)
+	m.Set("peer_gone_not_here_frames", &s.peerGoneNotHereFrames)
 	m.Set("packets_forwarded_out", &s.packetsForwardedOut)
 	m.Set("packets_forwarded_in", &s.packetsForwardedIn)
 	m.Set("multiforwarder_created", &s.multiForwarderCreated)
@@ -1736,7 +1806,7 @@ func (s *Server) ExpVar() expvar.Var {
 	}))
 	m.Set("counter_tcp_rtt", &s.tcpRtt)
 	var expvarVersion expvar.String
-	expvarVersion.Set(version.Long)
+	expvarVersion.Set(version.Long())
 	m.Set("version", &expvarVersion)
 	return m
 }

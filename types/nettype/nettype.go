@@ -6,8 +6,10 @@ package nettype
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/netip"
+	"time"
 )
 
 // PacketListener defines the ListenPacket method as implemented
@@ -28,9 +30,16 @@ func (Std) ListenPacket(ctx context.Context, network, address string) (net.Packe
 	return conf.ListenPacket(ctx, network, address)
 }
 
+// PacketConn is like a net.PacketConn but uses the newer netip.AddrPort
+// write/read methods.
 type PacketConn interface {
-	net.PacketConn
 	WriteToUDPAddrPort([]byte, netip.AddrPort) (int, error)
+	ReadFromUDPAddrPort([]byte) (int, netip.AddrPort, error)
+	io.Closer
+	LocalAddr() net.Addr
+	SetDeadline(time.Time) error
+	SetReadDeadline(time.Time) error
+	SetWriteDeadline(time.Time) error
 }
 
 func MakePacketListenerWithNetIP(ln PacketListener) PacketListenerWithNetIP {
@@ -47,4 +56,10 @@ func (a packetListenerAdapter) ListenPacket(ctx context.Context, network, addres
 		return nil, err
 	}
 	return pc.(PacketConn), nil
+}
+
+// ConnPacketConn is the interface that's a superset of net.Conn and net.PacketConn.
+type ConnPacketConn interface {
+	net.Conn
+	net.PacketConn
 }

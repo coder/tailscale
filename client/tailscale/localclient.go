@@ -36,6 +36,7 @@ import (
 	"tailscale.com/tailcfg"
 	"tailscale.com/tka"
 	"tailscale.com/types/key"
+	"tailscale.com/types/tkatype"
 )
 
 // defaultLocalClient is the default LocalClient when using the legacy
@@ -95,8 +96,9 @@ func (lc *LocalClient) defaultDialer(ctx context.Context, network, addr string) 
 		// a TCP server on a random port, find the random port. For HTTP connections,
 		// we don't send the token. It gets added in an HTTP Basic-Auth header.
 		if port, _, err := safesocket.LocalTCPPortAndToken(); err == nil {
+			// We use 127.0.0.1 and not "localhost" (issue 7851).
 			var d net.Dialer
-			return d.DialContext(ctx, "tcp", "localhost:"+strconv.Itoa(port))
+			return d.DialContext(ctx, "tcp", "127.0.0.1:"+strconv.Itoa(port))
 		}
 	}
 	s := safesocket.DefaultConnectionStrategy(lc.socket())
@@ -365,6 +367,34 @@ func (lc *LocalClient) DebugAction(ctx context.Context, action string) error {
 		return fmt.Errorf("error %w: %s", err, body)
 	}
 	return nil
+}
+
+// DebugPortmap invokes the debug-portmap endpoint, and returns an
+// io.ReadCloser that can be used to read the logs that are printed during this
+// process.
+func (lc *LocalClient) DebugPortmap(ctx context.Context, duration time.Duration, ty, gwSelf string) (io.ReadCloser, error) {
+	vals := make(url.Values)
+	vals.Set("duration", duration.String())
+	vals.Set("type", ty)
+	if gwSelf != "" {
+		vals.Set("gateway_and_self", gwSelf)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://"+apitype.LocalAPIHost+"/localapi/v0/debug-portmap?"+vals.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	res, err := lc.doLocalRequestNiceError(req)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode != 200 {
+		body, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		return nil, fmt.Errorf("HTTP %s: %s", res.Status, body)
+	}
+
+	return res.Body, nil
 }
 
 // SetDevStoreKeyValue set a statestore key/value. It's only meant for development.
@@ -821,6 +851,30 @@ func (lc *LocalClient) NetworkLockInit(ctx context.Context, keys []tka.Key, disa
 	return decodeJSON[*ipnstate.NetworkLockStatus](body)
 }
 
+// NetworkLockWrapPreauthKey wraps a pre-auth key with information to
+// enable unattended bringup in the locked tailnet.
+func (lc *LocalClient) NetworkLockWrapPreauthKey(ctx context.Context, preauthKey string, tkaKey key.NLPrivate) (string, error) {
+	encodedPrivate, err := tkaKey.MarshalText()
+	if err != nil {
+		return "", err
+	}
+
+	var b bytes.Buffer
+	type wrapRequest struct {
+		TSKey  string
+		TKAKey string // key.NLPrivate.MarshalText
+	}
+	if err := json.NewEncoder(&b).Encode(wrapRequest{TSKey: preauthKey, TKAKey: string(encodedPrivate)}); err != nil {
+		return "", err
+	}
+
+	body, err := lc.send(ctx, "POST", "/localapi/v0/tka/wrap-preauth-key", 200, &b)
+	if err != nil {
+		return "", fmt.Errorf("error: %w", err)
+	}
+	return string(body), nil
+}
+
 // NetworkLockModify adds and/or removes key(s) to the tailnet key authority.
 func (lc *LocalClient) NetworkLockModify(ctx context.Context, addKeys, removeKeys []tka.Key) error {
 	var b bytes.Buffer
@@ -856,6 +910,15 @@ func (lc *LocalClient) NetworkLockSign(ctx context.Context, nodeKey key.NodePubl
 		return fmt.Errorf("error: %w", err)
 	}
 	return nil
+}
+
+// NetworkLockAffectedSigs returns all signatures signed by the specified keyID.
+func (lc *LocalClient) NetworkLockAffectedSigs(ctx context.Context, keyID tkatype.KeyID) ([]tkatype.MarshaledSignature, error) {
+	body, err := lc.send(ctx, "POST", "/localapi/v0/tka/affected-sigs", 200, bytes.NewReader(keyID))
+	if err != nil {
+		return nil, fmt.Errorf("error: %w", err)
+	}
+	return decodeJSON[[]tkatype.MarshaledSignature](body)
 }
 
 // NetworkLockLog returns up to maxEntries number of changes to network-lock state.
@@ -1039,7 +1102,6 @@ func (lc *LocalClient) StreamDebugCapture(ctx context.Context) (io.ReadCloser, e
 	}
 	res, err := lc.doLocalRequestNiceError(req)
 	if err != nil {
-		res.Body.Close()
 		return nil, err
 	}
 	if res.StatusCode != 200 {

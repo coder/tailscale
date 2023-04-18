@@ -145,11 +145,11 @@ func newUpdater() (*updater, error) {
 		case strings.HasSuffix(os.Getenv("HOME"), "/io.tailscale.ipn.macsys/Data"):
 			up.update = up.updateMacSys
 		default:
-			return nil, errors.New("This is the macOS App Store version of Tailscale; update in the App Store, or see https://tailscale.com/kb/1083/install-unstable/ to use TestFlight or to install the non-App Store version")
+			return nil, errors.New("This is the macOS App Store version of Tailscale; update in the App Store, or see https://tailscale.com/s/unstable-clients to use TestFlight or to install the non-App Store version")
 		}
 	}
 	if up.update == nil {
-		return nil, errors.New("The 'update' command is not supported on this platform; see https://tailscale.com/kb/1067/update/")
+		return nil, errors.New("The 'update' command is not supported on this platform; see https://tailscale.com/s/client-updates")
 	}
 	return up, nil
 }
@@ -160,12 +160,12 @@ type updater struct {
 }
 
 func (up *updater) currentOrDryRun(ver string) bool {
-	if version.Short == ver {
+	if version.Short() == ver {
 		fmt.Printf("already running %v; no update needed\n", ver)
 		return true
 	}
 	if updateArgs.dryRun {
-		fmt.Printf("Current: %v, Latest: %v\n", version.Short, ver)
+		fmt.Printf("Current: %v, Latest: %v\n", version.Short(), ver)
 		return true
 	}
 	return false
@@ -173,11 +173,11 @@ func (up *updater) currentOrDryRun(ver string) bool {
 
 func (up *updater) confirm(ver string) error {
 	if updateArgs.yes {
-		log.Printf("Updating Tailscale from %v to %v; --yes given, continuing without prompts.\n", version.Short, ver)
+		log.Printf("Updating Tailscale from %v to %v; --yes given, continuing without prompts.\n", version.Short(), ver)
 		return nil
 	}
 
-	fmt.Printf("This will update Tailscale from %v to %v. Continue? [y/n] ", version.Short, ver)
+	fmt.Printf("This will update Tailscale from %v to %v. Continue? [y/n] ", version.Short(), ver)
 	var resp string
 	fmt.Scanln(&resp)
 	resp = strings.ToLower(resp)
@@ -430,7 +430,7 @@ func installMSI(msi string) error {
 		if err == nil {
 			break
 		}
-		uninstallVersion := version.Short
+		uninstallVersion := version.Short()
 		if v := os.Getenv("TS_DEBUG_UNINSTALL_VERSION"); v != "" {
 			uninstallVersion = v
 		}

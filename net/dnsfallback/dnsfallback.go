@@ -13,8 +13,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/netip"
@@ -28,12 +26,18 @@ import (
 	"tailscale.com/net/netns"
 	"tailscale.com/net/tlsdial"
 	"tailscale.com/net/tshttpproxy"
-	"tailscale.com/syncs"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/logger"
+	"tailscale.com/util/slicesx"
 )
 
-func Lookup(ctx context.Context, host string) ([]netip.Addr, error) {
+func Lookup(logf logger.Logf) func(ctx context.Context, host string) ([]netip.Addr, error) {
+	return func(ctx context.Context, host string) ([]netip.Addr, error) {
+		return lookup(ctx, host, logf)
+	}
+}
+
+func lookup(ctx context.Context, host string, logf logger.Logf) ([]netip.Addr, error) {
 	if ip, err := netip.ParseAddr(host); err == nil && ip.IsValid() {
 		return []netip.Addr{ip}, nil
 	}
@@ -56,8 +60,8 @@ func Lookup(ctx context.Context, host string) ([]netip.Addr, error) {
 			}
 		}
 	}
-	rand.Shuffle(len(cands4), func(i, j int) { cands4[i], cands4[j] = cands4[j], cands4[i] })
-	rand.Shuffle(len(cands6), func(i, j int) { cands6[i], cands6[j] = cands6[j], cands6[i] })
+	slicesx.Shuffle(cands4)
+	slicesx.Shuffle(cands6)
 
 	const maxCands = 6
 	var cands []nameIP // up to maxCands alternating v4/v6 as long as we have both
@@ -81,12 +85,13 @@ func Lookup(ctx context.Context, host string) ([]netip.Addr, error) {
 		logf("trying bootstrapDNS(%q, %q) for %q ...", cand.dnsName, cand.ip, host)
 		ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
-		dm, err := bootstrapDNSMap(ctx, cand.dnsName, cand.ip, host)
+		dm, err := bootstrapDNSMap(ctx, cand.dnsName, cand.ip, host, logf)
 		if err != nil {
 			logf("bootstrapDNS(%q, %q) for %q error: %v", cand.dnsName, cand.ip, host, err)
 			continue
 		}
 		if ips := dm[host]; len(ips) > 0 {
+			slicesx.Shuffle(ips)
 			logf("bootstrapDNS(%q, %q) for %q = %v", cand.dnsName, cand.ip, host, ips)
 			return ips, nil
 		}
@@ -99,7 +104,7 @@ func Lookup(ctx context.Context, host string) ([]netip.Addr, error) {
 
 // serverName and serverIP of are, say, "derpN.tailscale.com".
 // queryName is the name being sought (e.g. "controlplane.tailscale.com"), passed as hint.
-func bootstrapDNSMap(ctx context.Context, serverName string, serverIP netip.Addr, queryName string) (dnsMap, error) {
+func bootstrapDNSMap(ctx context.Context, serverName string, serverIP netip.Addr, queryName string, logf logger.Logf) (dnsMap, error) {
 	dialer := netns.NewDialer(logf)
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.Proxy = tshttpproxy.ProxyFromEnvironment
@@ -193,7 +198,7 @@ var cachePath string
 // UpdateCache stores the DERP map cache back to disk.
 //
 // The caller must not mutate 'c' after calling this function.
-func UpdateCache(c *tailcfg.DERPMap) {
+func UpdateCache(c *tailcfg.DERPMap, logf logger.Logf) {
 	// Don't do anything if nothing changed.
 	curr := cachedDERPMap.Load()
 	if reflect.DeepEqual(curr, c) {
@@ -226,7 +231,7 @@ func UpdateCache(c *tailcfg.DERPMap) {
 //
 // This function should be called before any calls to UpdateCache, as it is not
 // concurrency-safe.
-func SetCachePath(path string) {
+func SetCachePath(path string, logf logger.Logf) {
 	cachePath = path
 
 	f, err := os.Open(path)
@@ -244,21 +249,4 @@ func SetCachePath(path string) {
 
 	cachedDERPMap.Store(dm)
 	logf("[v2] dnsfallback: SetCachePath loaded cached DERP map")
-}
-
-// logfunc stores the logging function to use for this package.
-var logfunc syncs.AtomicValue[logger.Logf]
-
-// SetLogger sets the logging function that this package will use. The default
-// logger if this function is not called is 'log.Printf'.
-func SetLogger(log logger.Logf) {
-	logfunc.Store(log)
-}
-
-func logf(format string, args ...any) {
-	if lf := logfunc.Load(); lf != nil {
-		lf(format, args...)
-	} else {
-		log.Printf(format, args...)
-	}
 }

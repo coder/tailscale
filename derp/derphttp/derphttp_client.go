@@ -33,6 +33,7 @@ import (
 	"tailscale.com/envknob"
 	"tailscale.com/net/dnscache"
 	"tailscale.com/net/netns"
+	"tailscale.com/net/sockstats"
 	"tailscale.com/net/tlsdial"
 	"tailscale.com/net/tshttpproxy"
 	"tailscale.com/syncs"
@@ -88,6 +89,10 @@ type Client struct {
 	serverPubKey key.NodePublic
 	tlsState     *tls.ConnectionState
 	pingOut      map[derp.PingMessage]chan<- bool // chan to send to on pong
+}
+
+func (c *Client) String() string {
+	return fmt.Sprintf("<derphttp_client.Client %s url=%s>", c.serverPubKey.ShortString(), c.url)
 }
 
 // NewRegionClient returns a new DERP-over-HTTP client. It connects lazily.
@@ -178,6 +183,10 @@ func urlPort(u *url.URL) string {
 	return ""
 }
 
+// debugDERPUseHTTP tells clients to connect to DERP via HTTP on port
+// 3340 instead of HTTPS on 443.
+var debugUseDERPHTTP = envknob.RegisterBool("TS_DEBUG_USE_DERP_HTTP")
+
 func (c *Client) targetString(reg *tailcfg.DERPRegion) string {
 	if c.url != nil {
 		return c.url.String()
@@ -192,6 +201,10 @@ func (c *Client) useHTTPS(node *tailcfg.DERPNode) bool {
 	if c.url != nil && c.url.Scheme == "http" {
 		return false
 	}
+	if debugUseDERPHTTP() {
+		return false
+	}
+
 	return true
 }
 
@@ -221,7 +234,12 @@ func (c *Client) urlString(node *tailcfg.DERPNode) string {
 		}
 		return url.String()
 	}
-	return fmt.Sprintf("https://%s/derp", node.HostName)
+
+	proto := "https"
+	if debugUseDERPHTTP() || node.ForceHTTP {
+		proto = "http"
+	}
+	return fmt.Sprintf("%s://%s/derp", proto, node.HostName)
 }
 
 // AddressFamilySelector decides whether IPv6 is preferred for
@@ -735,6 +753,8 @@ func (c *Client) dialNode(ctx context.Context, n *tailcfg.DERPNode) (net.Conn, e
 	resc := make(chan res) // must be unbuffered
 	ctx, cancel := context.WithTimeout(ctx, dialNodeTimeout)
 	defer cancel()
+
+	ctx = sockstats.WithSockStats(ctx, sockstats.LabelDERPHTTPClient, c.logf)
 
 	nwait := 0
 	startDial := func(dstPrimary, proto string) {

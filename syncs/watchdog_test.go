@@ -5,11 +5,10 @@ package syncs
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
-
-	"tailscale.com/util/cibuild"
 )
 
 // Time-based tests are fundamentally flaky.
@@ -47,11 +46,8 @@ func TestWatchContended(t *testing.T) {
 }
 
 func TestWatchMultipleValues(t *testing.T) {
-	if cibuild.On() {
-		// On the CI machine, it sometimes takes 500ms to start a new goroutine.
-		// When this happens, we don't get enough events quickly enough.
-		// Nothing's wrong, and it's not worth working around. Just skip the test.
-		t.Skip("flaky on CI")
+	if runtime.GOOS == "windows" {
+		t.Skip("TODO(#7876): test regressed on windows while CI was broken")
 	}
 	mu := new(sync.Mutex)
 	ctx, cancel := context.WithCancel(context.Background())
