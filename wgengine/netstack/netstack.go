@@ -105,10 +105,6 @@ type Impl struct {
 	// over the UDP flow.
 	GetUDPHandlerForFlow func(src, dst netip.AddrPort) (handler func(nettype.ConnPacketConn), intercept bool)
 
-	// ForwardTCPSockOpts, if non-nil, allows setting gvisor socket options on the
-	// created TCPConn before calling ForwardTCPIn.
-	ForwardTCPSockOpts func(port uint16) []tcpip.SettableSocketOption
-
 	// ProcessLocalIPs is whether netstack should handle incoming
 	// traffic directed at the Node.Addresses (local IPs).
 	// It can only be set before calling Start.
