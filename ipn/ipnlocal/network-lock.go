@@ -6,7 +6,9 @@ package ipnlocal
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -37,6 +39,11 @@ import (
 var (
 	errMissingNetmap        = errors.New("missing netmap: verify that you are logged in")
 	errNetworkLockNotActive = errors.New("network-lock is not active")
+
+	tkaCompactionDefaults = tka.CompactionOptions{
+		MinChain: 24,                  // Keep at minimum 24 AUMs since head.
+		MinAge:   14 * 24 * time.Hour, // Keep 2 weeks of AUMs.
+	}
 )
 
 type tkaState struct {
@@ -99,6 +106,7 @@ func (b *LocalBackend) tkaFilterNetmapLocked(nm *netmap.NetworkMap) {
 					ID:           p.ID,
 					StableID:     p.StableID,
 					TailscaleIPs: make([]netip.Addr, len(p.Addresses)),
+					NodeKey:      p.Key,
 				}
 				for i, addr := range p.Addresses {
 					if addr.IsSingleIP() && tsaddr.IsTailscaleIP(addr.Addr()) {
@@ -784,6 +792,98 @@ func (b *LocalBackend) NetworkLockLog(maxEntries int) ([]ipnstate.NetworkLockUpd
 	return out, nil
 }
 
+// NetworkLockAffectedSigs returns the signatures which would be invalidated
+// by removing trust in the specified KeyID.
+func (b *LocalBackend) NetworkLockAffectedSigs(keyID tkatype.KeyID) ([]tkatype.MarshaledSignature, error) {
+	var (
+		ourNodeKey key.NodePublic
+		err        error
+	)
+	b.mu.Lock()
+	if p := b.pm.CurrentPrefs(); p.Valid() && p.Persist().Valid() && !p.Persist().PrivateNodeKey().IsZero() {
+		ourNodeKey = p.Persist().PublicNodeKey()
+	}
+	if b.tka == nil {
+		err = errNetworkLockNotActive
+	}
+	b.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := b.tkaReadAffectedSigs(ourNodeKey, keyID)
+	if err != nil {
+		return nil, err
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.tka == nil {
+		return nil, errNetworkLockNotActive
+	}
+
+	// Confirm for ourselves tha the signatures would actually be invalidated
+	// by removal of trusted in the specified key.
+	for i, sigBytes := range resp.Signatures {
+		var sig tka.NodeKeySignature
+		if err := sig.Unserialize(sigBytes); err != nil {
+			return nil, fmt.Errorf("failed decoding signature %d: %w", i, err)
+		}
+
+		sigKeyID, err := sig.UnverifiedAuthorizingKeyID()
+		if err != nil {
+			return nil, fmt.Errorf("extracting SigID from signature %d: %w", i, err)
+		}
+		if !bytes.Equal(keyID, sigKeyID) {
+			return nil, fmt.Errorf("got signature with keyID %X from request for %X", sigKeyID, keyID)
+		}
+
+		var nodeKey key.NodePublic
+		if err := nodeKey.UnmarshalBinary(sig.Pubkey); err != nil {
+			return nil, fmt.Errorf("failed decoding pubkey for signature %d: %w", i, err)
+		}
+		if err := b.tka.authority.NodeKeyAuthorized(nodeKey, sigBytes); err != nil {
+			return nil, fmt.Errorf("signature %d is not valid: %w", i, err)
+		}
+	}
+
+	return resp.Signatures, nil
+}
+
+var tkaSuffixEncoder = base64.RawStdEncoding
+
+// NetworkLockWrapPreauthKey wraps a pre-auth key with information to
+// enable unattended bringup in the locked tailnet.
+//
+// The provided trusted tailnet-lock key is used to sign
+// a SigCredential structure, which is encoded along with the
+// private key and appended to the pre-auth key.
+func (b *LocalBackend) NetworkLockWrapPreauthKey(preauthKey string, tkaKey key.NLPrivate) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.tka == nil {
+		return "", errNetworkLockNotActive
+	}
+
+	pub, priv, err := ed25519.GenerateKey(nil) // nil == crypto/rand
+	if err != nil {
+		return "", err
+	}
+
+	sig := tka.NodeKeySignature{
+		SigKind:        tka.SigCredential,
+		KeyID:          tkaKey.KeyID(),
+		WrappingPubkey: pub,
+	}
+	sig.Signature, err = tkaKey.SignNKS(sig.SigHash())
+	if err != nil {
+		return "", fmt.Errorf("signing failed: %w", err)
+	}
+
+	b.logf("Generated network-lock credential signature using %s", tkaKey.Public().CLIString())
+	return fmt.Sprintf("%s--TL%s-%s", preauthKey, tkaSuffixEncoder.EncodeToString(sig.Serialize()), tkaSuffixEncoder.EncodeToString(priv)), nil
+}
+
 func signNodeKey(nodeInfo tailcfg.TKASignInfo, signer key.NLPrivate) (*tka.NodeKeySignature, error) {
 	p, err := nodeInfo.NodePublic.MarshalBinary()
 	if err != nil {
@@ -1104,6 +1204,42 @@ func (b *LocalBackend) tkaSubmitSignature(ourNodeKey key.NodePublic, sig tkatype
 	a := new(tailcfg.TKASubmitSignatureResponse)
 	err = json.NewDecoder(&io.LimitedReader{R: res.Body, N: 1024 * 1024}).Decode(a)
 	res.Body.Close()
+	if err != nil {
+		return nil, fmt.Errorf("decoding JSON: %w", err)
+	}
+
+	return a, nil
+}
+
+func (b *LocalBackend) tkaReadAffectedSigs(ourNodeKey key.NodePublic, key tkatype.KeyID) (*tailcfg.TKASignaturesUsingKeyResponse, error) {
+	var encodedReq bytes.Buffer
+	if err := json.NewEncoder(&encodedReq).Encode(tailcfg.TKASignaturesUsingKeyRequest{
+		Version: tailcfg.CurrentCapabilityVersion,
+		NodeKey: ourNodeKey,
+		KeyID:   key,
+	}); err != nil {
+		return nil, fmt.Errorf("encoding request: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://unused/machine/tka/affected-sigs", &encodedReq)
+	if err != nil {
+		return nil, fmt.Errorf("req: %w", err)
+	}
+	resp, err := b.DoNoiseRequest(req)
+	if err != nil {
+		return nil, fmt.Errorf("resp: %w", err)
+	}
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("request returned (%d): %s", resp.StatusCode, string(body))
+	}
+	a := new(tailcfg.TKASignaturesUsingKeyResponse)
+	err = json.NewDecoder(&io.LimitedReader{R: resp.Body, N: 1024 * 1024}).Decode(a)
+	resp.Body.Close()
 	if err != nil {
 		return nil, fmt.Errorf("decoding JSON: %w", err)
 	}

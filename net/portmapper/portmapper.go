@@ -22,21 +22,24 @@ import (
 	"tailscale.com/net/netaddr"
 	"tailscale.com/net/neterror"
 	"tailscale.com/net/netns"
+	"tailscale.com/net/sockstats"
 	"tailscale.com/types/logger"
 	"tailscale.com/types/nettype"
 	"tailscale.com/util/clientmetric"
 )
 
-// Debug knobs for "tailscaled debug --portmap".
-var (
+// DebugKnobs contains debug configuration that can be provided when creating a
+// Client. The zero value is valid for use.
+type DebugKnobs struct {
+	// VerboseLogs tells the Client to print additional debug information
+	// to its logger.
 	VerboseLogs bool
 
 	// Disable* disables a specific service from mapping.
-
 	DisableUPnP bool
 	DisablePMP  bool
 	DisablePCP  bool
-)
+}
 
 // References:
 //
@@ -58,6 +61,7 @@ type Client struct {
 	logf         logger.Logf
 	ipAndGateway func() (gw, ip netip.Addr, ok bool)
 	onChange     func() // or nil
+	debug        DebugKnobs
 	testPxPPort  uint16 // if non-zero, pxpPort to use for tests
 	testUPnPPort uint16 // if non-zero, uPnPPort to use for tests
 
@@ -149,15 +153,22 @@ func (m *pmpMapping) Release(ctx context.Context) {
 
 // NewClient returns a new portmapping client.
 //
+// The debug argument allows configuring the behaviour of the portmapper for
+// debugging; if nil, a sensible set of defaults will be used.
+//
 // The optional onChange argument specifies a func to run in a new
 // goroutine whenever the port mapping status has changed. If nil,
 // it doesn't make a callback.
-func NewClient(logf logger.Logf, onChange func()) *Client {
-	return &Client{
+func NewClient(logf logger.Logf, debug *DebugKnobs, onChange func()) *Client {
+	ret := &Client{
 		logf:         logf,
 		ipAndGateway: interfaces.LikelyHomeRouterIP,
 		onChange:     onChange,
 	}
+	if debug != nil {
+		ret.debug = *debug
+	}
+	return ret
 }
 
 // SetGatewayLookupFunc set the func that returns the machine's default gateway IP, and
@@ -238,6 +249,8 @@ func (c *Client) upnpPort() uint16 {
 }
 
 func (c *Client) listenPacket(ctx context.Context, network, addr string) (nettype.PacketConn, error) {
+	ctx = sockstats.WithSockStats(ctx, sockstats.LabelPortmapperClient, c.logf)
+
 	// When running under testing conditions, we bind the IGD server
 	// to localhost, and may be running in an environment where our
 	// netns code would decide that binding the portmapper client
@@ -404,7 +417,7 @@ var wildcardIP = netip.MustParseAddr("0.0.0.0")
 // If no mapping is available, the error will be of type
 // NoMappingError; see IsNoMappingError.
 func (c *Client) createOrGetMapping(ctx context.Context) (external netip.AddrPort, err error) {
-	if DisableUPnP && DisablePCP && DisablePMP {
+	if c.debug.DisableUPnP && c.debug.DisablePCP && c.debug.DisablePMP {
 		return netip.AddrPort{}, NoMappingError{ErrNoPortMappingServices}
 	}
 	gw, myIP, ok := c.gatewayAndSelfIP()
@@ -434,7 +447,7 @@ func (c *Client) createOrGetMapping(ctx context.Context) (external netip.AddrPor
 		prevPort = m.External().Port()
 	}
 
-	if DisablePCP && DisablePMP {
+	if c.debug.DisablePCP && c.debug.DisablePMP {
 		c.mu.Unlock()
 		if external, ok := c.getUPnPPortMapping(ctx, gw, internalAddr, prevPort); ok {
 			return external, nil
@@ -483,7 +496,7 @@ func (c *Client) createOrGetMapping(ctx context.Context) (external netip.AddrPor
 
 	pxpAddr := netip.AddrPortFrom(gw, c.pxpPort())
 
-	preferPCP := !DisablePCP && (DisablePMP || (!haveRecentPMP && haveRecentPCP))
+	preferPCP := !c.debug.DisablePCP && (c.debug.DisablePMP || (!haveRecentPMP && haveRecentPCP))
 
 	// Create a mapping, defaulting to PMP unless only PCP was seen recently.
 	if preferPCP {
@@ -518,7 +531,7 @@ func (c *Client) createOrGetMapping(ctx context.Context) (external netip.AddrPor
 
 	res := make([]byte, 1500)
 	for {
-		n, srci, err := uc.ReadFrom(res)
+		n, src, err := uc.ReadFromUDPAddrPort(res)
 		if err != nil {
 			if ctx.Err() == context.Canceled {
 				return netip.AddrPort{}, err
@@ -529,8 +542,7 @@ func (c *Client) createOrGetMapping(ctx context.Context) (external netip.AddrPor
 			}
 			return netip.AddrPort{}, NoMappingError{ErrNoPortMappingServices}
 		}
-		srcu := srci.(*net.UDPAddr)
-		src := netaddr.Unmap(srcu.AddrPort())
+		src = netaddr.Unmap(src)
 		if !src.IsValid() {
 			continue
 		}
@@ -711,19 +723,19 @@ func (c *Client) Probe(ctx context.Context) (res ProbeResult, err error) {
 	// https://github.com/tailscale/tailscale/issues/1001
 	if c.sawPMPRecently() {
 		res.PMP = true
-	} else if !DisablePMP {
+	} else if !c.debug.DisablePMP {
 		metricPMPSent.Add(1)
 		uc.WriteToUDPAddrPort(pmpReqExternalAddrPacket, pxpAddr)
 	}
 	if c.sawPCPRecently() {
 		res.PCP = true
-	} else if !DisablePCP {
+	} else if !c.debug.DisablePCP {
 		metricPCPSent.Add(1)
 		uc.WriteToUDPAddrPort(pcpAnnounceRequest(myIP), pxpAddr)
 	}
 	if c.sawUPnPRecently() {
 		res.UPnP = true
-	} else if !DisableUPnP {
+	} else if !c.debug.DisableUPnP {
 		// Strictly speaking, you discover UPnP services by sending an
 		// SSDP query (which uPnPPacket is) to udp/1900 on the SSDP
 		// multicast address, and then get a flood of responses back
@@ -782,45 +794,56 @@ func (c *Client) Probe(ctx context.Context) (res ProbeResult, err error) {
 			// Nothing more to discover.
 			return res, nil
 		}
-		n, addr, err := uc.ReadFrom(buf)
+		n, src, err := uc.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			if ctx.Err() == context.DeadlineExceeded {
 				err = nil
 			}
 			return res, err
 		}
-		ip, ok := netip.AddrFromSlice(addr.(*net.UDPAddr).IP)
-		if !ok {
-			continue
+		ip := src.Addr().Unmap()
+
+		handleUPnPResponse := func() {
+			metricUPnPResponse.Add(1)
+
+			if ip != gw {
+				// https://github.com/tailscale/tailscale/issues/5502
+				c.logf("UPnP discovery response from %v, but gateway IP is %v", ip, gw)
+			}
+			meta, err := parseUPnPDiscoResponse(buf[:n])
+			if err != nil {
+				metricUPnPParseErr.Add(1)
+				c.logf("unrecognized UPnP discovery response; ignoring: %v", err)
+				return
+			}
+			metricUPnPOK.Add(1)
+			c.logf("[v1] UPnP reply %+v, %q", meta, buf[:n])
+			res.UPnP = true
+			c.mu.Lock()
+			c.uPnPSawTime = time.Now()
+			if c.uPnPMeta != meta {
+				c.logf("UPnP meta changed: %+v", meta)
+				c.uPnPMeta = meta
+				metricUPnPUpdatedMeta.Add(1)
+			}
+			c.mu.Unlock()
 		}
-		ip = ip.Unmap()
-		port := uint16(addr.(*net.UDPAddr).Port)
+
+		port := src.Port()
 		switch port {
 		case c.upnpPort():
-			metricUPnPResponse.Add(1)
 			if mem.Contains(mem.B(buf[:n]), mem.S(":InternetGatewayDevice:")) {
-				if ip != gw {
-					// https://github.com/tailscale/tailscale/issues/5502
-					c.logf("UPnP discovery response from %v, but gateway IP is %v", ip, gw)
-				}
-				meta, err := parseUPnPDiscoResponse(buf[:n])
-				if err != nil {
-					metricUPnPParseErr.Add(1)
-					c.logf("unrecognized UPnP discovery response; ignoring: %v", err)
-					continue
-				}
-				metricUPnPOK.Add(1)
-				c.logf("[v1] UPnP reply %+v, %q", meta, buf[:n])
-				res.UPnP = true
-				c.mu.Lock()
-				c.uPnPSawTime = time.Now()
-				if c.uPnPMeta != meta {
-					c.logf("UPnP meta changed: %+v", meta)
-					c.uPnPMeta = meta
-					metricUPnPUpdatedMeta.Add(1)
-				}
-				c.mu.Unlock()
+				handleUPnPResponse()
 			}
+
+		default:
+			// https://github.com/tailscale/tailscale/issues/7377
+			if mem.Contains(mem.B(buf[:n]), mem.S(":InternetGatewayDevice:")) {
+				c.logf("UPnP discovery response from non-UPnP port %d", port)
+				metricUPnPResponseAlternatePort.Add(1)
+				handleUPnPResponse()
+			}
+
 		case c.pxpPort(): // same value for PMP and PCP
 			metricPXPResponse.Add(1)
 			if pres, ok := parsePCPResponse(buf[:n]); ok {
@@ -940,7 +963,7 @@ var (
 	metricPMPSent = clientmetric.NewCounter("portmap_pmp_sent")
 
 	// metricPMPOK counts the number of times
-	// we received a succesful PMP response.
+	// we received a successful PMP response.
 	metricPMPOK = clientmetric.NewCounter("portmap_pmp_ok")
 
 	// metricPMPUnhandledOpcode counts the number of times
@@ -971,6 +994,10 @@ var (
 
 	// metricUPnPResponse counts the number of times we received a UPnP response.
 	metricUPnPResponse = clientmetric.NewCounter("portmap_upnp_response")
+
+	// metricUPnPResponseAlternatePort counts the number of times we
+	// received a UPnP response from a port other than the UPnP port.
+	metricUPnPResponseAlternatePort = clientmetric.NewCounter("portmap_upnp_response_alternate_port")
 
 	// metricUPnPParseErr counts the number of times we failed to parse a UPnP response.
 	metricUPnPParseErr = clientmetric.NewCounter("portmap_upnp_parse_err")

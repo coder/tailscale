@@ -7,6 +7,8 @@ package kubestore
 
 import (
 	"context"
+	"net"
+	"strings"
 	"time"
 
 	"tailscale.com/ipn"
@@ -32,6 +34,10 @@ func New(_ logger.Logf, secretName string) (*Store, error) {
 	}, nil
 }
 
+func (s *Store) SetDialer(d func(ctx context.Context, network, address string) (net.Conn, error)) {
+	s.client.SetDialer(d)
+}
+
 func (s *Store) String() string { return "kube.Store" }
 
 // ReadState implements the StateStore interface.
@@ -46,11 +52,22 @@ func (s *Store) ReadState(id ipn.StateKey) ([]byte, error) {
 		}
 		return nil, err
 	}
-	b, ok := secret.Data[string(id)]
+	b, ok := secret.Data[sanitizeKey(id)]
 	if !ok {
 		return nil, ipn.ErrStateNotExist
 	}
 	return b, nil
+}
+
+func sanitizeKey(k ipn.StateKey) string {
+	// The only valid characters in a Kubernetes secret key are alphanumeric, -,
+	// _, and .
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' {
+			return r
+		}
+		return '_'
+	}, string(k))
 }
 
 // WriteState implements the StateStore interface.
@@ -70,13 +87,13 @@ func (s *Store) WriteState(id ipn.StateKey, bs []byte) error {
 					Name: s.secretName,
 				},
 				Data: map[string][]byte{
-					string(id): bs,
+					sanitizeKey(id): bs,
 				},
 			})
 		}
 		return err
 	}
-	secret.Data[string(id)] = bs
+	secret.Data[sanitizeKey(id)] = bs
 	if err := s.client.UpdateSecret(ctx, secret); err != nil {
 		return err
 	}

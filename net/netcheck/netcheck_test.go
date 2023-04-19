@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"reflect"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"tailscale.com/net/stun"
 	"tailscale.com/net/stun/stuntest"
 	"tailscale.com/tailcfg"
+	"tailscale.com/tstest"
 )
 
 func TestHairpinSTUN(t *testing.T) {
@@ -46,7 +48,117 @@ func TestHairpinSTUN(t *testing.T) {
 	}
 }
 
+func TestHairpinWait(t *testing.T) {
+	makeClient := func(t *testing.T) (*Client, *reportState) {
+		tx := stun.NewTxID()
+		c := &Client{}
+		req := stun.Request(tx)
+		if !stun.Is(req) {
+			t.Fatal("expected STUN message")
+		}
+
+		var err error
+		rs := &reportState{
+			c:           c,
+			hairTX:      tx,
+			gotHairSTUN: make(chan netip.AddrPort, 1),
+			hairTimeout: make(chan struct{}),
+			report:      newReport(),
+		}
+		rs.pc4Hair, err = net.ListenUDP("udp4", &net.UDPAddr{
+			IP:   net.ParseIP("127.0.0.1"),
+			Port: 0,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		c.curState = rs
+		return c, rs
+	}
+
+	ll, err := net.ListenPacket("udp", "localhost:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ll.Close()
+	dstAddr := netip.MustParseAddrPort(ll.LocalAddr().String())
+
+	t.Run("Success", func(t *testing.T) {
+		c, rs := makeClient(t)
+		req := stun.Request(rs.hairTX)
+
+		// Start a hairpin check to ourselves.
+		rs.startHairCheckLocked(dstAddr)
+
+		// Fake receiving the stun check from ourselves after some period of time.
+		src := netip.MustParseAddrPort(rs.pc4Hair.LocalAddr().String())
+		c.handleHairSTUNLocked(req, src)
+
+		rs.waitHairCheck(context.Background())
+
+		// Verify that we set HairPinning
+		if got := rs.report.HairPinning; !got.EqualBool(true) {
+			t.Errorf("wanted HairPinning=true, got %v", got)
+		}
+	})
+
+	t.Run("LateReply", func(t *testing.T) {
+		c, rs := makeClient(t)
+		req := stun.Request(rs.hairTX)
+
+		// Start a hairpin check to ourselves.
+		rs.startHairCheckLocked(dstAddr)
+
+		// Wait until we've timed out, to mimic the race in #1795.
+		<-rs.hairTimeout
+
+		// Fake receiving the stun check from ourselves after some period of time.
+		src := netip.MustParseAddrPort(rs.pc4Hair.LocalAddr().String())
+		c.handleHairSTUNLocked(req, src)
+
+		// Wait for a hairpin response
+		rs.waitHairCheck(context.Background())
+
+		// Verify that we set HairPinning
+		if got := rs.report.HairPinning; !got.EqualBool(true) {
+			t.Errorf("wanted HairPinning=true, got %v", got)
+		}
+	})
+
+	t.Run("Timeout", func(t *testing.T) {
+		_, rs := makeClient(t)
+
+		// Start a hairpin check to ourselves.
+		rs.startHairCheckLocked(dstAddr)
+
+		ctx, cancel := context.WithTimeout(context.Background(), hairpinCheckTimeout*50)
+		defer cancel()
+
+		// Wait in the background
+		waitDone := make(chan struct{})
+		go func() {
+			rs.waitHairCheck(ctx)
+			close(waitDone)
+		}()
+
+		// If we do nothing, then we time out; confirm that we set
+		// HairPinning to false in this case.
+		select {
+		case <-waitDone:
+			if got := rs.report.HairPinning; !got.EqualBool(false) {
+				t.Errorf("wanted HairPinning=false, got %v", got)
+			}
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for hairpin channel")
+		}
+	})
+}
+
 func TestBasic(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("TODO(#7876): test regressed on windows while CI was broken")
+	}
 	stunAddr, cleanup := stuntest.Serve(t)
 	defer cleanup()
 
@@ -679,9 +791,7 @@ func TestNoCaptivePortalWhenUDP(t *testing.T) {
 		}
 	})
 
-	oldTransport := noRedirectClient.Transport
-	t.Cleanup(func() { noRedirectClient.Transport = oldTransport })
-	noRedirectClient.Transport = tr
+	tstest.Replace(t, &noRedirectClient.Transport, http.RoundTripper(tr))
 
 	stunAddr, cleanup := stuntest.Serve(t)
 	defer cleanup()
@@ -717,4 +827,89 @@ type RoundTripFunc func(req *http.Request) *http.Response
 
 func (f RoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req), nil
+}
+
+func TestNodeAddrResolve(t *testing.T) {
+	c := &Client{
+		Logf:        t.Logf,
+		UDPBindAddr: "127.0.0.1:0",
+		UseDNSCache: true,
+	}
+
+	dn := &tailcfg.DERPNode{
+		Name:     "derptest1a",
+		RegionID: 901,
+		HostName: "tailscale.com",
+		// No IPv4 or IPv6 addrs
+	}
+	dnV4Only := &tailcfg.DERPNode{
+		Name:     "derptest1b",
+		RegionID: 901,
+		HostName: "ipv4.google.com",
+		// No IPv4 or IPv6 addrs
+	}
+
+	// Checks whether IPv6 and IPv6 DNS resolution works on this platform.
+	ipv6Works := func(t *testing.T) bool {
+		// Verify that we can create an IPv6 socket.
+		ln, err := net.ListenPacket("udp6", "[::1]:0")
+		if err != nil {
+			t.Logf("IPv6 may not work on this machine: %v", err)
+			return false
+		}
+		ln.Close()
+
+		// Resolve a hostname that we know has an IPv6 address.
+		addrs, err := net.DefaultResolver.LookupNetIP(context.Background(), "ip6", "google.com")
+		if err != nil {
+			t.Logf("IPv6 DNS resolution error: %v", err)
+			return false
+		}
+		if len(addrs) == 0 {
+			t.Logf("IPv6 DNS resolution returned no addresses")
+			return false
+		}
+		return true
+	}
+
+	ctx := context.Background()
+	for _, tt := range []bool{true, false} {
+		t.Run(fmt.Sprintf("UseDNSCache=%v", tt), func(t *testing.T) {
+			c.resolver = nil
+			c.UseDNSCache = tt
+
+			t.Run("IPv4", func(t *testing.T) {
+				ap := c.nodeAddr(ctx, dn, probeIPv4)
+				if !ap.IsValid() {
+					t.Fatal("expected valid AddrPort")
+				}
+				if !ap.Addr().Is4() {
+					t.Fatalf("expected IPv4 addr, got: %v", ap.Addr())
+				}
+				t.Logf("got IPv4 addr: %v", ap)
+			})
+			t.Run("IPv6", func(t *testing.T) {
+				// Skip if IPv6 doesn't work on this machine.
+				if !ipv6Works(t) {
+					t.Skipf("IPv6 may not work on this machine")
+				}
+
+				ap := c.nodeAddr(ctx, dn, probeIPv6)
+				if !ap.IsValid() {
+					t.Fatal("expected valid AddrPort")
+				}
+				if !ap.Addr().Is6() {
+					t.Fatalf("expected IPv6 addr, got: %v", ap.Addr())
+				}
+				t.Logf("got IPv6 addr: %v", ap)
+			})
+			t.Run("IPv6 Failure", func(t *testing.T) {
+				ap := c.nodeAddr(ctx, dnV4Only, probeIPv6)
+				if ap.IsValid() {
+					t.Fatalf("expected no addr but got: %v", ap)
+				}
+				t.Logf("correctly got invalid addr")
+			})
+		})
+	}
 }

@@ -47,7 +47,8 @@ var netcheckArgs struct {
 func runNetcheck(ctx context.Context, args []string) error {
 	c := &netcheck.Client{
 		UDPBindAddr: envknob.String("TS_DEBUG_NETCHECK_UDP_BIND"),
-		PortMapper:  portmapper.NewClient(logger.WithPrefix(log.Printf, "portmap: "), nil),
+		PortMapper:  portmapper.NewClient(logger.WithPrefix(log.Printf, "portmap: "), nil, nil),
+		UseDNSCache: false, // always resolve, don't cache
 	}
 	if netcheckArgs.verbose {
 		c.Logf = logger.WithPrefix(log.Printf, "netcheck: ")

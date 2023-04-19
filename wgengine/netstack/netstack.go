@@ -47,6 +47,7 @@ import (
 	"tailscale.com/types/ipproto"
 	"tailscale.com/types/logger"
 	"tailscale.com/types/netmap"
+	"tailscale.com/types/nettype"
 	"tailscale.com/version/distro"
 	"tailscale.com/wgengine"
 	"tailscale.com/wgengine/filter"
@@ -78,11 +79,32 @@ func init() {
 // and implements wgengine.FakeImpl to act as a userspace network
 // stack when Tailscale is running in fake mode.
 type Impl struct {
-	// ForwardTCPIn, if non-nil, handles forwarding an inbound TCP
-	// connection.
-	// TODO(bradfitz): provide mechanism for tsnet to reject a
-	// port other than accepting it and closing it.
-	ForwardTCPIn func(c net.Conn, port uint16)
+	// GetTCPHandlerForFlow conditionally handles an incoming TCP flow for the
+	// provided (src/port, dst/port) 4-tuple.
+	//
+	// A nil value is equivalent to a func returning (nil, false).
+	//
+	// If func returns intercept=false, the default forwarding behavior (if
+	// ProcessLocalIPs and/or ProcesssSubnetIPs) takes place.
+	//
+	// When intercept=true, the behavior depends on whether the returned handler
+	// is non-nil: if nil, the connection is rejected. If non-nil, handler takes
+	// over the TCP conn.
+	GetTCPHandlerForFlow func(src, dst netip.AddrPort) (handler func(net.Conn), opts []tcpip.SettableSocketOption, intercept bool)
+
+	// GetUDPHandlerForFlow conditionally handles an incoming UDP flow for the
+	// provided (src/port, dst/port) 4-tuple.
+	//
+	// A nil value is equivalent to a func returning (nil, false).
+	//
+	// If func returns intercept=false, the default forwarding behavior (if
+	// ProcessLocalIPs and/or ProcesssSubnetIPs) takes place.
+	//
+	// When intercept=true, the behavior depends on whether the returned handler
+	// is non-nil: if nil, the connection is rejected. If non-nil, handler takes
+	// over the UDP flow.
+	GetUDPHandlerForFlow func(src, dst netip.AddrPort) (handler func(nettype.ConnPacketConn), intercept bool)
+
 	// ForwardTCPSockOpts, if non-nil, allows setting gvisor socket options on the
 	// created TCPConn before calling ForwardTCPIn.
 	ForwardTCPSockOpts func(port uint16) []tcpip.SettableSocketOption
@@ -129,7 +151,6 @@ type Impl struct {
 }
 
 const nicID = 1
-const mtu = tstun.DefaultMTU
 
 // maxUDPPacketSize is the maximum size of a UDP packet we copy in startPacketCopy
 // when relaying UDP packets. We don't use the 'mtu' const in anticipation of
@@ -162,7 +183,7 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 	if tcpipErr != nil {
 		return nil, fmt.Errorf("could not enable TCP SACK: %v", tcpipErr)
 	}
-	linkEP := &protectedLinkEndpoint{Endpoint: channel.New(512, mtu, "")}
+	linkEP := &protectedLinkEndpoint{Endpoint: channel.New(512, tstun.DefaultMTU(), "")}
 	if tcpipProblem := ipstack.CreateNIC(nicID, linkEP); tcpipProblem != nil {
 		return nil, fmt.Errorf("could not create netstack NIC: %v", tcpipProblem)
 	}
@@ -199,6 +220,8 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 	}
 	ns.ctx, ns.ctxCancel = context.WithCancel(context.Background())
 	ns.atomicIsLocalIPFunc.Store(tsaddr.NewContainsIPFunc(nil))
+	ns.tundev.PostFilterPacketInboundFromWireGaurd = ns.injectInbound
+	ns.tundev.PreFilterPacketOutboundToWireGuardNetstackIntercept = ns.handleLocalPackets
 	return ns, nil
 }
 
@@ -243,8 +266,6 @@ func (ns *Impl) Start(lb *ipnlocal.LocalBackend) error {
 	ns.ipstack.SetTransportProtocolHandler(tcp.ProtocolNumber, ns.wrapProtoHandler(tcpFwd.HandlePacket))
 	ns.ipstack.SetTransportProtocolHandler(udp.ProtocolNumber, ns.wrapProtoHandler(udpFwd.HandlePacket))
 	go ns.inject()
-	ns.tundev.PostFilterIn = ns.injectInbound
-	ns.tundev.PreFilterFromTunToNetstack = ns.handleLocalPackets
 	return nil
 }
 
@@ -376,6 +397,10 @@ func (ns *Impl) updateIPs(nm *netmap.NetworkMap) {
 // the host and arriving at tailscaled. This method returns filter.DropSilently
 // to intercept a packet for handling, for instance traffic to quad-100.
 func (ns *Impl) handleLocalPackets(p *packet.Parsed, t *tstun.Wrapper) filter.Response {
+	if ns.ctx.Err() != nil {
+		return filter.DropSilently
+	}
+
 	// If it's not traffic to the service IP (i.e. magicDNS) we don't
 	// care; resume processing.
 	if dst := p.Dst.Addr(); dst != magicDNSIP && dst != magicDNSIPv6 {
@@ -652,6 +677,10 @@ func (ns *Impl) userPing(dstIP netip.Addr, pingResPkt []byte) {
 // whereas returning filter.DropSilently is done when netstack intercepts the
 // packet and no further processing towards to host should be done.
 func (ns *Impl) injectInbound(p *packet.Parsed, t *tstun.Wrapper) filter.Response {
+	if ns.ctx.Err() != nil {
+		return filter.DropSilently
+	}
+
 	if !ns.shouldProcessInbound(p, t) {
 		// Let the host network stack (if any) deal with it.
 		return filter.Accept
@@ -784,6 +813,8 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 	dialIP := netaddrIPFromNetstackIP(reqDetails.LocalAddress)
 	isTailscaleIP := tsaddr.IsTailscaleIP(dialIP)
 
+	dstAddrPort := netip.AddrPortFrom(dialIP, reqDetails.LocalPort)
+
 	if viaRange.Contains(dialIP) {
 		isTailscaleIP = false
 		dialIP = tsaddr.UnmapVia(dialIP)
@@ -902,18 +933,20 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 		}
 	}
 
-	if ns.ForwardTCPIn != nil {
-		opts := []tcpip.SettableSocketOption{}
-		if ns.ForwardTCPSockOpts != nil {
-			opts = ns.ForwardTCPSockOpts(reqDetails.LocalPort)
-		}
-
-		c := createConn(opts...)
-		if c == nil {
+	if ns.GetTCPHandlerForFlow != nil {
+		handler, opts, ok := ns.GetTCPHandlerForFlow(clientRemoteAddrPort, dstAddrPort)
+		if ok {
+			if handler == nil {
+				r.Complete(true)
+				return
+			}
+			c := createConn(opts...) // will send a RST if it fails
+			if c == nil {
+				return
+			}
+			handler(c)
 			return
 		}
-		ns.ForwardTCPIn(c, reqDetails.LocalPort)
-		return
 	}
 	if isTailscaleIP {
 		dialIP = netaddr.IPv4(127, 0, 0, 1)
@@ -1029,14 +1062,26 @@ func (ns *Impl) acceptUDP(r *udp.ForwarderRequest) {
 		return
 	}
 
+	if get := ns.GetUDPHandlerForFlow; get != nil {
+		h, intercept := get(srcAddr, dstAddr)
+		if intercept {
+			if h == nil {
+				ep.Close()
+				return
+			}
+			go h(gonet.NewUDPConn(ns.ipstack, &wq, ep))
+			return
+		}
+	}
+
 	c := gonet.NewUDPConn(ns.ipstack, &wq, ep)
-	go ns.forwardUDP(c, &wq, srcAddr, dstAddr)
+	go ns.forwardUDP(c, srcAddr, dstAddr)
 }
 
 func (ns *Impl) handleMagicDNSUDP(srcAddr netip.AddrPort, c *gonet.UDPConn) {
 	// In practice, implementations are advised not to exceed 512 bytes
 	// due to fragmenting. Just to be sure, we bump all the way to the MTU.
-	const maxUDPReqSize = mtu
+	var maxUDPReqSize = tstun.DefaultMTU()
 	// Packets are being generated by the local host, so there should be
 	// very, very little latency. 150ms was chosen as something of an upper
 	// bound on resource usage, while hopefully still being long enough for
@@ -1074,7 +1119,7 @@ func (ns *Impl) handleMagicDNSUDP(srcAddr netip.AddrPort, c *gonet.UDPConn) {
 // dstAddr may be either a local Tailscale IP, in which we case we proxy to
 // 127.0.0.1, or any other IP (from an advertised subnet), in which case we
 // proxy to it directly.
-func (ns *Impl) forwardUDP(client *gonet.UDPConn, wq *waiter.Queue, clientAddr, dstAddr netip.AddrPort) {
+func (ns *Impl) forwardUDP(client *gonet.UDPConn, clientAddr, dstAddr netip.AddrPort) {
 	port, srcPort := dstAddr.Port(), clientAddr.Port()
 	if debugNetstack() {
 		ns.logf("[v2] netstack: forwarding incoming UDP connection on port %v", port)

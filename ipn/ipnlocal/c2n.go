@@ -83,6 +83,18 @@ func (b *LocalBackend) handleC2N(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(res)
+	case "/sockstats":
+		if r.Method != "POST" {
+			http.Error(w, "bad method", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		if b.sockstatLogger == nil {
+			http.Error(w, "no sockstatLogger", http.StatusInternalServerError)
+			return
+		}
+		b.sockstatLogger.Flush()
+		fmt.Fprintln(w, b.sockstatLogger.LogID())
 	default:
 		http.Error(w, "unknown c2n path", http.StatusBadRequest)
 	}
@@ -145,7 +157,7 @@ func (b *LocalBackend) handleC2NUpdate(w http.ResponseWriter, r *http.Request) {
 		res.Err = "invalid JSON from cmd/tailscale version --json"
 		return
 	}
-	if ver.Long != version.Long {
+	if ver.Long != version.Long() {
 		res.Err = "cmd/tailscale version mismatch"
 		return
 	}

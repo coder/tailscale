@@ -7,9 +7,9 @@ package wgcfg
 import (
 	"net/netip"
 
-	"tailscale.com/logtail"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
+	"tailscale.com/types/logid"
 )
 
 //go:generate go run tailscale.com/cmd/cloner -type=Config,Peer
@@ -28,8 +28,8 @@ type Config struct {
 	// NetworkLogging enables network logging.
 	// It is disabled if either ID is the zero value.
 	NetworkLogging struct {
-		NodeID   logtail.PrivateID
-		DomainID logtail.PrivateID
+		NodeID   logid.PrivateID
+		DomainID logid.PrivateID
 	}
 }
 
@@ -37,6 +37,7 @@ type Peer struct {
 	PublicKey           key.NodePublic
 	DiscoKey            key.DiscoPublic // present only so we can handle restarts within wgengine, not passed to WireGuard
 	AllowedIPs          []netip.Prefix
+	V4MasqAddr          *netip.Addr // if non-nil, masquerade IPv4 traffic to this peer using this address
 	PersistentKeepalive uint16
 	// wireguard-go's endpoint for this peer. It should always equal Peer.PublicKey.
 	// We represent it explicitly so that we can detect if they diverge and recover.

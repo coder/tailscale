@@ -359,7 +359,7 @@ func computeActiveAncestor(storage Chonk, chains []chain) (AUMHash, error) {
 
 	if len(ancestors) == 1 {
 		// There's only one. DOPE.
-		for k, _ := range ancestors {
+		for k := range ancestors {
 			return k, nil
 		}
 	}
@@ -390,7 +390,7 @@ func computeActiveAncestor(storage Chonk, chains []chain) (AUMHash, error) {
 //     formerly (in a previous run) part of the chain.
 //  3. Compute the state of the state machine at this ancestor. This is
 //     needed for fast-forward, as each update operates on the state of
-//     the update preceeding it.
+//     the update preceding it.
 //  4. Iteratively apply updates till we reach head ('fast forward').
 func computeActiveChain(storage Chonk, lastKnownOldest *AUMHash, maxIter int) (chain, error) {
 	chains, err := computeChainCandidates(storage, lastKnownOldest, maxIter)
@@ -719,4 +719,18 @@ func (a *Authority) Keys() []Key {
 // comments on the relevant fields in state.go.
 func (a *Authority) StateIDs() (uint64, uint64) {
 	return a.state.StateID1, a.state.StateID2
+}
+
+// Compact deletes historical AUMs based on the given compaction options.
+func (a *Authority) Compact(storage CompactableChonk, o CompactionOptions) error {
+	newAncestor, err := Compact(storage, a.head.Hash(), o)
+	if err != nil {
+		return err
+	}
+	ancestor, err := storage.AUM(newAncestor)
+	if err != nil {
+		return err
+	}
+	a.oldestAncestor = ancestor
+	return nil
 }

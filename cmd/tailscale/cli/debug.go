@@ -201,6 +201,23 @@ var debugCmd = &ffcli.Command{
 				return fs
 			})(),
 		},
+		{
+			Name:      "portmap",
+			Exec:      debugPortmap,
+			ShortHelp: "run portmap debugging debugging",
+			FlagSet: (func() *flag.FlagSet {
+				fs := newFlagSet("portmap")
+				fs.DurationVar(&debugPortmapArgs.duration, "duration", 5*time.Second, "timeout for port mapping")
+				fs.StringVar(&debugPortmapArgs.ty, "type", "", `portmap debug type (one of "", "pmp", "pcp", or "upnp")`)
+				fs.StringVar(&debugPortmapArgs.gwSelf, "gw-self", "", `override gateway and self IP (format: "gatewayIP/selfIP")`)
+				return fs
+			})(),
+		},
+		{
+			Name:      "peer-endpoint-changes",
+			Exec:      runPeerEndpointChanges,
+			ShortHelp: "prints debug information about a peer's endpoint changes",
+		},
 	},
 }
 
@@ -788,4 +805,83 @@ func runCapture(ctx context.Context, args []string) error {
 	fmt.Fprintln(os.Stderr, "Press Ctrl-C to stop the capture.")
 	_, err = io.Copy(f, stream)
 	return err
+}
+
+var debugPortmapArgs struct {
+	duration time.Duration
+	gwSelf   string
+	ty       string
+}
+
+func debugPortmap(ctx context.Context, args []string) error {
+	rc, err := localClient.DebugPortmap(ctx,
+		debugPortmapArgs.duration,
+		debugPortmapArgs.ty,
+		debugPortmapArgs.gwSelf,
+	)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+
+	_, err = io.Copy(os.Stdout, rc)
+	return err
+}
+
+func runPeerEndpointChanges(ctx context.Context, args []string) error {
+	st, err := localClient.Status(ctx)
+	if err != nil {
+		return fixTailscaledConnectError(err)
+	}
+	description, ok := isRunningOrStarting(st)
+	if !ok {
+		printf("%s\n", description)
+		os.Exit(1)
+	}
+
+	if len(args) != 1 || args[0] == "" {
+		return errors.New("usage: peer-status <hostname-or-IP>")
+	}
+	var ip string
+
+	hostOrIP := args[0]
+	ip, self, err := tailscaleIPFromArg(ctx, hostOrIP)
+	if err != nil {
+		return err
+	}
+	if self {
+		printf("%v is local Tailscale IP\n", ip)
+		return nil
+	}
+
+	if ip != hostOrIP {
+		log.Printf("lookup %q => %q", hostOrIP, ip)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://local-tailscaled.sock/localapi/v0/debug-peer-endpoint-changes?ip="+ip, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := localClient.DoLocalRequest(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	var dst bytes.Buffer
+	if err := json.Indent(&dst, body, "", "  "); err != nil {
+		return fmt.Errorf("indenting returned JSON: %w", err)
+	}
+
+	if ss := dst.String(); !strings.HasSuffix(ss, "\n") {
+		dst.WriteByte('\n')
+	}
+	fmt.Printf("%s", dst.String())
+	return nil
 }

@@ -295,28 +295,6 @@ func TestParseAndRemoveLogLevel(t *testing.T) {
 	}
 }
 
-func TestPublicIDUnmarshalText(t *testing.T) {
-	const hexStr = "6c60a9e0e7af57170bb1347b2d477e4cbc27d4571a4923b21651456f931e3d55"
-	x := []byte(hexStr)
-
-	var id PublicID
-	if err := id.UnmarshalText(x); err != nil {
-		t.Fatal(err)
-	}
-	if id.String() != hexStr {
-		t.Errorf("String = %q; want %q", id.String(), hexStr)
-	}
-	err := tstest.MinAllocsPerRun(t, 0, func() {
-		var id PublicID
-		if err := id.UnmarshalText(x); err != nil {
-			t.Fatal(err)
-		}
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
 func unmarshalOne(t *testing.T, body []byte) map[string]any {
 	t.Helper()
 	var entries []map[string]any

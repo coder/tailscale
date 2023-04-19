@@ -24,7 +24,9 @@ import (
 	"tailscale.com/envknob"
 	"tailscale.com/logtail/backoff"
 	"tailscale.com/net/interfaces"
+	"tailscale.com/net/sockstats"
 	tslogger "tailscale.com/types/logger"
+	"tailscale.com/types/logid"
 	"tailscale.com/util/set"
 	"tailscale.com/wgengine/monitor"
 )
@@ -48,8 +50,8 @@ type Encoder interface {
 
 type Config struct {
 	Collection     string           // collection name, a domain name
-	PrivateID      PrivateID        // private ID for the primary log stream
-	CopyPrivateID  PrivateID        // private ID for a log stream that is a superset of this log stream
+	PrivateID      logid.PrivateID  // private ID for the primary log stream
+	CopyPrivateID  logid.PrivateID  // private ID for a log stream that is a superset of this log stream
 	BaseURL        string           // if empty defaults to "https://log.tailscale.io"
 	HTTPC          *http.Client     // if empty defaults to http.DefaultClient
 	SkipClientTime bool             // if true, client_time is not written to logs
@@ -148,6 +150,7 @@ func NewLogger(cfg Config, logf tslogger.Logf) *Logger {
 		timeNow:        cfg.TimeNow,
 		bo:             backoff.NewBackoff("logtail", stdLogf, 30*time.Second),
 		metricsDelta:   cfg.MetricsDelta,
+		sockstatsLabel: sockstats.LabelLogtailLogger,
 
 		procID:              procID,
 		includeProcSequence: cfg.IncludeProcSequence,
@@ -188,8 +191,9 @@ type Logger struct {
 	uploadCancel   func()
 	explainedRaw   bool
 	metricsDelta   func() string // or nil
-	privateID      PrivateID
+	privateID      logid.PrivateID
 	httpDoCalls    atomic.Int32
+	sockstatsLabel sockstats.Label
 
 	procID              uint32
 	includeProcSequence bool
@@ -198,8 +202,9 @@ type Logger struct {
 	procSequence uint64
 	flushTimer   *time.Timer // used when flushDelay is >0
 
-	shutdownStart chan struct{} // closed when shutdown begins
-	shutdownDone  chan struct{} // closed when shutdown complete
+	shutdownStartMu sync.Mutex    // guards the closing of shutdownStart
+	shutdownStart   chan struct{} // closed when shutdown begins
+	shutdownDone    chan struct{} // closed when shutdown complete
 }
 
 // SetVerbosityLevel controls the verbosity level that should be
@@ -217,10 +222,15 @@ func (l *Logger) SetLinkMonitor(lm *monitor.Mon) {
 	l.linkMonitor = lm
 }
 
+// SetSockstatsLabel sets the label used in sockstat logs to identify network traffic from this logger.
+func (l *Logger) SetSockstatsLabel(label sockstats.Label) {
+	l.sockstatsLabel = label
+}
+
 // PrivateID returns the logger's private log ID.
 //
 // It exists for internal use only.
-func (l *Logger) PrivateID() PrivateID { return l.privateID }
+func (l *Logger) PrivateID() logid.PrivateID { return l.privateID }
 
 // Shutdown gracefully shuts down the logger while completing any
 // remaining uploads.
@@ -240,7 +250,16 @@ func (l *Logger) Shutdown(ctx context.Context) error {
 		close(done)
 	}()
 
+	l.shutdownStartMu.Lock()
+	select {
+	case <-l.shutdownStart:
+		l.shutdownStartMu.Unlock()
+		return nil
+	default:
+	}
 	close(l.shutdownStart)
+	l.shutdownStartMu.Unlock()
+
 	io.WriteString(l, "logger closing down\n")
 	<-done
 
@@ -416,6 +435,7 @@ func (l *Logger) awaitInternetUp(ctx context.Context) {
 // origlen of -1 indicates that the body is not compressed.
 func (l *Logger) upload(ctx context.Context, body []byte, origlen int) (uploaded bool, err error) {
 	const maxUploadTime = 45 * time.Second
+	ctx = sockstats.WithSockStats(ctx, l.sockstatsLabel, l.Logf)
 	ctx, cancel := context.WithTimeout(ctx, maxUploadTime)
 	defer cancel()
 
@@ -450,14 +470,6 @@ func (l *Logger) upload(ctx context.Context, body []byte, origlen int) (uploaded
 		return uploaded, fmt.Errorf("log upload of %d bytes %s failed %d: %q", len(body), compressedNote, resp.StatusCode, b)
 	}
 
-	// Try to read to EOF, in case server's response is
-	// chunked. We want to reuse the TCP connection if it's
-	// HTTP/1. On success, we expect 0 bytes.
-	// TODO(bradfitz): can remove a few days after 2020-04-04 once
-	// server is fixed.
-	if resp.ContentLength == -1 {
-		resp.Body.Read(make([]byte, 1))
-	}
 	return true, nil
 }
 

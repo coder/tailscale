@@ -41,6 +41,7 @@ import (
 	"tailscale.com/net/dnscache"
 	"tailscale.com/net/dnsfallback"
 	"tailscale.com/net/netutil"
+	"tailscale.com/net/sockstats"
 	"tailscale.com/net/tlsdial"
 	"tailscale.com/net/tshttpproxy"
 	"tailscale.com/tailcfg"
@@ -272,6 +273,8 @@ func (a *Dialer) dialHost(ctx context.Context, addr netip.Addr) (*ClientConn, er
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	ctx = sockstats.WithSockStats(ctx, sockstats.LabelControlClientDialer, a.logf)
+
 	// u80 and u443 are the URLs we'll try to hit over HTTP or HTTPS,
 	// respectively, in order to do the HTTP upgrade to a net.Conn over which
 	// we'll speak Noise.
@@ -385,12 +388,14 @@ func (a *Dialer) tryURLUpgrade(ctx context.Context, u *url.URL, addr netip.Addr,
 		dns = &dnscache.Resolver{
 			SingleHostStaticResult: []netip.Addr{addr},
 			SingleHost:             u.Hostname(),
+			Logf:                   a.Logf, // not a.logf method; we want to propagate nil-ness
 		}
 	} else {
 		dns = &dnscache.Resolver{
 			Forward:          dnscache.Get().Forward,
-			LookupIPFallback: dnsfallback.Lookup,
+			LookupIPFallback: dnsfallback.Lookup(a.logf),
 			UseLastGood:      true,
+			Logf:             a.Logf, // not a.logf method; we want to propagate nil-ness
 		}
 	}
 

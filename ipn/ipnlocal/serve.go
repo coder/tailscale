@@ -218,6 +218,11 @@ func (b *LocalBackend) SetServeConfig(config *ipn.ServeConfig) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	prefs := b.pm.CurrentPrefs()
+	if config.IsFunnelOn() && prefs.ShieldsUp() {
+		return errors.New("Unable to turn on Funnel while shields-up is enabled")
+	}
+
 	nm := b.netMap
 	if nm == nil {
 		return errors.New("netMap is nil")
@@ -281,9 +286,22 @@ func (b *LocalBackend) HandleIngressTCPConn(ingressPeer *tailcfg.Node, target ip
 		sendRST()
 		return
 	}
+	dport := uint16(port16)
+	if b.getTCPHandlerForFunnelFlow != nil {
+		handler := b.getTCPHandlerForFunnelFlow(srcAddr, dport)
+		if handler != nil {
+			c, ok := getConn()
+			if !ok {
+				b.logf("localbackend: getConn didn't complete from %v to port %v", srcAddr, dport)
+				return
+			}
+			handler(c)
+			return
+		}
+	}
 	// TODO(bradfitz): pass ingressPeer etc in context to HandleInterceptedTCPConn,
 	// extend serveHTTPContext or similar.
-	b.HandleInterceptedTCPConn(uint16(port16), srcAddr, getConn, sendRST)
+	b.HandleInterceptedTCPConn(dport, srcAddr, getConn, sendRST)
 }
 
 func (b *LocalBackend) HandleInterceptedTCPConn(dport uint16, srcAddr netip.AddrPort, getConn func() (net.Conn, bool), sendRST func()) {
@@ -426,18 +444,26 @@ func (b *LocalBackend) proxyHandlerForBackend(backend string) (*httputil.Reverse
 	if err != nil {
 		return nil, fmt.Errorf("invalid url %s: %w", targetURL, err)
 	}
-	rp := httputil.NewSingleHostReverseProxy(u)
-	rp.Transport = &http.Transport{
-		DialContext: b.dialer.SystemDial,
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: insecure,
+	rp := &httputil.ReverseProxy{
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.SetURL(u)
+			r.Out.Host = r.In.Host
+			if c, ok := r.Out.Context().Value(serveHTTPContextKey{}).(*serveHTTPContext); ok {
+				r.Out.Header.Set("X-Forwarded-For", c.SrcAddr.Addr().String())
+			}
 		},
-		// Values for the following parameters have been copied from http.DefaultTransport.
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+		Transport: &http.Transport{
+			DialContext: b.dialer.SystemDial,
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: insecure,
+			},
+			// Values for the following parameters have been copied from http.DefaultTransport.
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
 	}
 	return rp, nil
 }
@@ -463,7 +489,12 @@ func (b *LocalBackend) serveWebHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unknown proxy destination", http.StatusInternalServerError)
 			return
 		}
-		p.(http.Handler).ServeHTTP(w, r)
+		h := p.(http.Handler)
+		// Trim the mount point from the URL path before proxying. (#6571)
+		if r.URL.Path != "/" {
+			h = http.StripPrefix(strings.TrimSuffix(mountPoint, "/"), h)
+		}
+		h.ServeHTTP(w, r)
 		return
 	}
 

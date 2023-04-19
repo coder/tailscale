@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -34,6 +35,7 @@ import (
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/control/controlclient"
 	"tailscale.com/doctor"
+	"tailscale.com/doctor/permissions"
 	"tailscale.com/doctor/routetable"
 	"tailscale.com/envknob"
 	"tailscale.com/health"
@@ -43,6 +45,8 @@ import (
 	"tailscale.com/ipn/ipnauth"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/ipn/policy"
+	"tailscale.com/log/sockstatlog"
+	"tailscale.com/logpolicy"
 	"tailscale.com/net/dns"
 	"tailscale.com/net/dnscache"
 	"tailscale.com/net/dnsfallback"
@@ -60,6 +64,7 @@ import (
 	"tailscale.com/types/empty"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
+	"tailscale.com/types/logid"
 	"tailscale.com/types/netmap"
 	"tailscale.com/types/persist"
 	"tailscale.com/types/preftype"
@@ -136,7 +141,7 @@ type LocalBackend struct {
 	pm                    *profileManager
 	store                 ipn.StateStore
 	dialer                *tsdial.Dialer // non-nil
-	backendLogID          string
+	backendLogID          logid.PublicID
 	unregisterLinkMon     func()
 	unregisterHealthWatch func()
 	portpoll              *portlist.Poller // may be nil
@@ -149,6 +154,23 @@ type LocalBackend struct {
 	sshAtomicBool         atomic.Bool
 	shutdownCalled        bool // if Shutdown has been called
 	debugSink             *capture.Sink
+	sockstatLogger        *sockstatlog.Logger
+
+	// getTCPHandlerForFunnelFlow returns a handler for an incoming TCP flow for
+	// the provided srcAddr and dstPort if one exists.
+	//
+	// srcAddr is the source address of the flow, not the address of the Funnel
+	// node relaying the flow.
+	// dstPort is the destination port of the flow.
+	//
+	// It returns nil if there is no known handler for this flow.
+	//
+	// This is specifically used to handle TCP flows for Funnel connections to tsnet
+	// servers.
+	//
+	// It is set once during initialization, and can be nil if SetTCPHandlerForFunnelFlow
+	// is never called.
+	getTCPHandlerForFunnelFlow func(srcAddr netip.AddrPort, dstPort uint16) (handler func(net.Conn))
 
 	// lastProfileID tracks the last profile we've seen from the ProfileManager.
 	// It's used to detect when the user has changed their profile.
@@ -245,7 +267,7 @@ type clientGen func(controlclient.Options) (controlclient.Client, error)
 // but is not actually running.
 //
 // If dialer is nil, a new one is made.
-func NewLocalBackend(logf logger.Logf, logid string, store ipn.StateStore, dialer *tsdial.Dialer, e wgengine.Engine, loginFlags controlclient.LoginFlags) (*LocalBackend, error) {
+func NewLocalBackend(logf logger.Logf, logID logid.PublicID, store ipn.StateStore, dialer *tsdial.Dialer, e wgengine.Engine, loginFlags controlclient.LoginFlags) (*LocalBackend, error) {
 	if e == nil {
 		panic("ipn.NewLocalBackend: engine must not be nil")
 	}
@@ -253,6 +275,9 @@ func NewLocalBackend(logf logger.Logf, logid string, store ipn.StateStore, diale
 	pm, err := newProfileManager(store, logf)
 	if err != nil {
 		return nil, err
+	}
+	if sds, ok := store.(ipn.StateStoreDialerSetter); ok {
+		sds.SetDialer(dialer.SystemDial)
 	}
 
 	hi := hostinfo.New()
@@ -278,14 +303,23 @@ func NewLocalBackend(logf logger.Logf, logid string, store ipn.StateStore, diale
 		statsLogf:      logger.LogOnChange(logf, 5*time.Minute, time.Now),
 		e:              e,
 		pm:             pm,
-		store:          pm.Store(),
+		store:          store,
 		dialer:         dialer,
-		backendLogID:   logid,
+		backendLogID:   logID,
 		state:          ipn.NoState,
 		portpoll:       portpoll,
 		em:             newExpiryManager(logf),
 		gotPortPollRes: make(chan struct{}),
 		loginFlags:     loginFlags,
+	}
+
+	b.sockstatLogger, err = sockstatlog.NewLogger(logpolicy.LogsDir(logf), logf, logID)
+	if err != nil {
+		log.Printf("error setting up sockstat logger: %v", err)
+	}
+	// Enable sockstats logs only on unstable builds
+	if version.IsUnstableBuild() && b.sockstatLogger != nil {
+		b.sockstatLogger.SetLoggingEnabled(true)
 	}
 
 	// Default filter blocks everything and logs nothing, until Start() is called.
@@ -336,6 +370,7 @@ type componentLogState struct {
 
 var debuggableComponents = []string{
 	"magicsock",
+	"sockstats",
 }
 
 func componentStateKey(component string) ipn.StateKey {
@@ -348,6 +383,7 @@ func componentStateKey(component string) ipn.StateKey {
 // The following components are recognized:
 //
 //   - magicsock
+//   - sockstats
 func (b *LocalBackend) SetComponentDebugLogging(component string, until time.Time) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -360,6 +396,17 @@ func (b *LocalBackend) SetComponentDebugLogging(component string, until time.Tim
 			return err
 		}
 		setEnabled = mc.SetDebugLoggingEnabled
+	case "sockstats":
+		if b.sockstatLogger != nil {
+			setEnabled = func(v bool) {
+				b.sockstatLogger.SetLoggingEnabled(v)
+				// Flush (and thus upload) logs when the enabled period ends,
+				// so that the logs are available for debugging.
+				if !v {
+					b.sockstatLogger.Flush()
+				}
+			}
+		}
 	}
 	if setEnabled == nil || !slices.Contains(debuggableComponents, component) {
 		return fmt.Errorf("unknown component %q", component)
@@ -525,6 +572,10 @@ func (b *LocalBackend) Shutdown() {
 	}
 	b.mu.Unlock()
 
+	if b.sockstatLogger != nil {
+		b.sockstatLogger.Shutdown()
+	}
+
 	b.unregisterLinkMon()
 	b.unregisterHealthWatch()
 	if cc != nil {
@@ -592,7 +643,7 @@ func (b *LocalBackend) updateStatus(sb *ipnstate.StatusBuilder, extraLocked func
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	sb.MutateStatus(func(s *ipnstate.Status) {
-		s.Version = version.Long
+		s.Version = version.Long()
 		s.TUN = !wgengine.IsNetstack(b.e)
 		s.BackendState = b.state.String()
 		s.AuthURL = b.authURLSticky
@@ -1026,7 +1077,7 @@ func (b *LocalBackend) setClientStatus(st controlclient.Status) {
 		b.e.SetDERPMap(st.NetMap.DERPMap)
 
 		// Update our cached DERP map
-		dnsfallback.UpdateCache(st.NetMap.DERPMap)
+		dnsfallback.UpdateCache(st.NetMap.DERPMap, b.logf)
 
 		b.send(ipn.Notify{NetMap: st.NetMap})
 	}
@@ -1262,7 +1313,7 @@ func (b *LocalBackend) Start(opts ipn.Options) error {
 	}
 
 	hostinfo := hostinfo.New()
-	hostinfo.BackendLogID = b.backendLogID
+	hostinfo.BackendLogID = b.backendLogID.String()
 	hostinfo.FrontendLogID = opts.FrontendLogID
 	hostinfo.Userspace.Set(wgengine.IsNetstack(b.e))
 	hostinfo.UserspaceRouter.Set(wgengine.IsNetstackRouter(b.e))
@@ -1416,7 +1467,7 @@ func (b *LocalBackend) Start(opts ipn.Options) error {
 
 	b.e.SetNetInfoCallback(b.setNetInfo)
 
-	blid := b.backendLogID
+	blid := b.backendLogID.String()
 	b.logf("Backend: logs: be:%v fe:%v", blid, opts.FrontendLogID)
 	b.send(ipn.Notify{BackendLogID: &blid})
 	b.send(ipn.Notify{Prefs: &prefs})
@@ -1853,7 +1904,7 @@ func (b *LocalBackend) WatchNotifications(ctx context.Context, mask ipn.NotifyWa
 	b.mu.Lock()
 	const initialBits = ipn.NotifyInitialState | ipn.NotifyInitialPrefs | ipn.NotifyInitialNetMap
 	if mask&initialBits != 0 {
-		ini = &ipn.Notify{Version: version.Long}
+		ini = &ipn.Notify{Version: version.Long()}
 		if mask&ipn.NotifyInitialState != 0 {
 			ini.State = ptr.To(b.state)
 			if b.state == ipn.NeedsLogin {
@@ -1952,7 +2003,7 @@ func (b *LocalBackend) send(n ipn.Notify) {
 		n.Prefs = ptr.To(stripKeysFromPrefs(*n.Prefs))
 	}
 	if n.Version == "" {
-		n.Version = version.Long
+		n.Version = version.Long()
 	}
 
 	b.mu.Lock()
@@ -2498,6 +2549,9 @@ func (b *LocalBackend) checkPrefsLocked(p *ipn.Prefs) error {
 	if err := b.checkExitNodePrefsLocked(p); err != nil {
 		errs = append(errs, err)
 	}
+	if err := b.checkFunnelEnabledLocked(p); err != nil {
+		errs = append(errs, err)
+	}
 	return multierr.New(errs...)
 }
 
@@ -2519,9 +2573,6 @@ func (b *LocalBackend) checkSSHPrefsLocked(p *ipn.Prefs) error {
 		// okay only in tailscaled mode for now.
 		if version.IsSandboxedMacOS() {
 			return errors.New("The Tailscale SSH server does not run in sandboxed Tailscale GUI builds.")
-		}
-		if !envknob.UseWIPCode() {
-			return errors.New("The Tailscale SSH server is disabled on macOS tailscaled by default. To try, set env TAILSCALE_USE_WIP_CODE=1")
 		}
 	case "freebsd", "openbsd":
 	default:
@@ -2581,6 +2632,13 @@ func (b *LocalBackend) isDefaultServerLocked() bool {
 func (b *LocalBackend) checkExitNodePrefsLocked(p *ipn.Prefs) error {
 	if (p.ExitNodeIP.IsValid() || p.ExitNodeID != "") && p.AdvertisesExitNode() {
 		return errors.New("Cannot advertise an exit node and use an exit node at the same time.")
+	}
+	return nil
+}
+
+func (b *LocalBackend) checkFunnelEnabledLocked(p *ipn.Prefs) error {
+	if p.ShieldsUp && b.serveConfig.IsFunnelOn() {
+		return errors.New("Cannot enable shields-up when Funnel is enabled.")
 	}
 	return nil
 }
@@ -3117,6 +3175,12 @@ func dnsConfigForNetmap(nm *netmap.NetworkMap, prefs ipn.PrefsView, logf logger.
 	return dcfg
 }
 
+// SetTCPHandlerForFunnelFlow sets the TCP handler for Funnel flows.
+// It should only be called before the LocalBackend is used.
+func (b *LocalBackend) SetTCPHandlerForFunnelFlow(h func(src netip.AddrPort, dstPort uint16) (handler func(net.Conn))) {
+	b.getTCPHandlerForFunnelFlow = h
+}
+
 // SetVarRoot sets the root directory of Tailscale's writable
 // storage area . (e.g. "/var/lib/tailscale")
 //
@@ -3156,6 +3220,10 @@ func (b *LocalBackend) TailscaleVarRoot() string {
 	switch runtime.GOOS {
 	case "ios", "android", "darwin":
 		return paths.AppSharedDir.Load()
+	case "linux":
+		if distro.Get() == distro.Gokrazy {
+			return "/perm/tailscaled"
+		}
 	}
 	return ""
 }
@@ -3326,7 +3394,7 @@ var (
 // peerRoutes returns the routerConfig.Routes to access peers.
 // If there are over cgnatThreshold CGNAT routes, one big CGNAT route
 // is used instead.
-func peerRoutes(peers []wgcfg.Peer, cgnatThreshold int) (routes []netip.Prefix) {
+func peerRoutes(logf logger.Logf, peers []wgcfg.Peer, cgnatThreshold int) (routes []netip.Prefix) {
 	tsULA := tsaddr.TailscaleULARange()
 	cgNAT := tsaddr.CGNATRange()
 	var didULA bool
@@ -3334,6 +3402,18 @@ func peerRoutes(peers []wgcfg.Peer, cgnatThreshold int) (routes []netip.Prefix) 
 	for _, peer := range peers {
 		for _, aip := range peer.AllowedIPs {
 			aip = unmapIPPrefix(aip)
+
+			// Ensure that we're only accepting properly-masked
+			// prefixes; the control server should be masking
+			// these, so if we get them, skip.
+			if mm := aip.Masked(); aip != mm {
+				// To avoid a DoS where a peer could cause all
+				// reconfigs to fail by sending a bad prefix, we just
+				// skip, but don't error, on an unmasked route.
+				logf("advertised route %s from %s has non-address bits set; expected %s", aip, peer.PublicKey.ShortString(), mm)
+				continue
+			}
+
 			// Only add the Tailscale IPv6 ULA once, if we see anybody using part of it.
 			if aip.Addr().Is6() && aip.IsSingleIP() && tsULA.Contains(aip.Addr()) {
 				if !didULA {
@@ -3366,12 +3446,13 @@ func (b *LocalBackend) routerConfig(cfg *wgcfg.Config, prefs ipn.PrefsView, oneC
 	if oneCGNATRoute {
 		singleRouteThreshold = 1
 	}
+
 	rs := &router.Config{
 		LocalAddrs:       unmapIPPrefixes(cfg.Addresses),
 		SubnetRoutes:     unmapIPPrefixes(prefs.AdvertiseRoutes().AsSlice()),
 		SNATSubnetRoutes: !prefs.NoSNAT(),
 		NetfilterMode:    prefs.NetfilterMode(),
-		Routes:           peerRoutes(cfg.Peers, singleRouteThreshold),
+		Routes:           peerRoutes(b.logf, cfg.Peers, singleRouteThreshold),
 	}
 
 	if distro.Get() == distro.Synology {
@@ -3669,6 +3750,21 @@ func (b *LocalBackend) resetControlClientLockedAsync() {
 	if b.cc == nil {
 		return
 	}
+
+	// When we clear the control client, stop any outstanding netmap expiry
+	// timer; synthesizing a new netmap while we don't have a control
+	// client will break things.
+	//
+	// See https://github.com/tailscale/tailscale/issues/7392
+	if b.nmExpiryTimer != nil {
+		b.nmExpiryTimer.Stop()
+		b.nmExpiryTimer = nil
+
+		// Also bump the epoch to ensure that if the timer started, it
+		// will abort.
+		b.numClientStatusCalls.Add(1)
+	}
+
 	go b.cc.Shutdown()
 	b.cc = nil
 	b.ccAuto = nil
@@ -3840,7 +3936,6 @@ func (b *LocalBackend) setNetMapLocked(nm *netmap.NetworkMap) {
 
 	// See the netns package for documentation on what this capability does.
 	netns.SetBindToInterfaceByRoute(hasCapability(nm, tailcfg.CapabilityBindToInterfaceByRoute))
-	interfaces.SetDisableAlternateDefaultRouteInterface(hasCapability(nm, tailcfg.CapabilityDebugDisableAlternateDefaultRouteInterface))
 	netns.SetDisableBindConnToInterface(hasCapability(nm, tailcfg.CapabilityDebugDisableBindConnToInterface))
 
 	b.setTCPPortsInterceptedFromNetmapAndPrefsLocked(b.pm.CurrentPrefs())
@@ -4627,7 +4722,10 @@ func (b *LocalBackend) Doctor(ctx context.Context, logf logger.Logf) {
 	logf = logger.SlowLoggerWithClock(ctx, logf, 20*time.Millisecond, 60, time.Now)
 
 	var checks []doctor.Check
-	checks = append(checks, routetable.Check{})
+	checks = append(checks,
+		permissions.Check{},
+		routetable.Check{},
+	)
 
 	// Print a log message if any of the global DNS resolvers are Tailscale
 	// IPs; this can interfere with our ability to connect to the Tailscale
@@ -4740,6 +4838,9 @@ func (b *LocalBackend) initTKALocked() error {
 		authority, err := tka.Open(storage)
 		if err != nil {
 			return fmt.Errorf("initializing tka: %v", err)
+		}
+		if err := authority.Compact(storage, tkaCompactionDefaults); err != nil {
+			b.logf("tka compaction failed: %v", err)
 		}
 
 		b.tka = &tkaState{
@@ -4866,4 +4967,26 @@ func (b *LocalBackend) StreamDebugCapture(ctx context.Context, w io.Writer) erro
 		return s.Close()
 	}
 	return nil
+}
+
+func (b *LocalBackend) GetPeerEndpointChanges(ctx context.Context, ip netip.Addr) ([]magicsock.EndpointChange, error) {
+	pip, ok := b.e.PeerForIP(ip)
+	if !ok {
+		return nil, fmt.Errorf("no matching peer")
+	}
+	if pip.IsSelf {
+		return nil, fmt.Errorf("%v is local Tailscale IP", ip)
+	}
+	peer := pip.Node
+
+	mc, err := b.magicConn()
+	if err != nil {
+		return nil, fmt.Errorf("getting magicsock conn: %w", err)
+	}
+
+	chs, err := mc.GetEndpointChanges(peer)
+	if err != nil {
+		return nil, fmt.Errorf("getting endpoint changes: %w", err)
+	}
+	return chs, nil
 }

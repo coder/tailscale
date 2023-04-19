@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  tailscale:
+  update-licenses:
     runs-on: ubuntu-latest
 
     steps:
@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Set up Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v4
         with:
           go-version-file: go.mod
 
@@ -42,7 +42,7 @@ jobs:
           go-licenses report tailscale.com/cmd/tailscale tailscale.com/cmd/tailscaled > licenses/tailscale.md --template .github/licenses.tmpl
 
       - name: Get access token
-        uses: tibdex/github-app-token@f717b5ecd4534d3c4df4ce9b5c1c2214f0f7cd06 # v1.6.0
+        uses: tibdex/github-app-token@b62528385c34dbc9f38e5f4225ac829252d1ea92 # v1.8.0
         id: generate-token
         with:
           app_id: ${{ secrets.LICENSING_APP_ID }}
@@ -50,7 +50,7 @@ jobs:
           private_key: ${{ secrets.LICENSING_APP_PRIVATE_KEY }}
 
       - name: Send pull request
-        uses: peter-evans/create-pull-request@ad43dccb4d726ca8514126628bec209b8354b6dd #v4.1.4
+        uses: peter-evans/create-pull-request@38e0b6e68b4c852a5500a94740f0e535e0d7ba54 #v4.2.4
         with:
           token: ${{ steps.generate-token.outputs.token }}
           author: License Updater <noreply@tailscale.com>

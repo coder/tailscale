@@ -34,6 +34,7 @@ import (
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/logger"
 	"tailscale.com/types/preftype"
+	"tailscale.com/util/dnsname"
 	"tailscale.com/version"
 	"tailscale.com/version/distro"
 )
@@ -320,8 +321,8 @@ func prefsFromUpArgs(upArgs upArgsT, warnf logger.Logf, st *ipnstate.Status, goo
 		}
 	}
 
-	if len(upArgs.hostname) > 256 {
-		return nil, fmt.Errorf("hostname too long: %d bytes (max 256)", len(upArgs.hostname))
+	if err := dnsname.ValidHostname(upArgs.hostname); upArgs.hostname != "" && err != nil {
+		return nil, err
 	}
 
 	prefs := ipn.NewPrefs()
@@ -407,6 +408,12 @@ func updatePrefs(prefs, curPrefs *ipn.Prefs, env upCheckEnv) (simpleUp bool, jus
 	wantSSH, haveSSH := env.upArgs.runSSH, curPrefs.RunSSH
 	if err := presentSSHToggleRisk(wantSSH, haveSSH, env.upArgs.acceptedRisks); err != nil {
 		return false, nil, err
+	}
+
+	if env.upArgs.forceReauth && isSSHOverTailscale() {
+		if err := presentRiskToUser(riskLoseSSH, `You are connected over Tailscale; this action will result in your SSH session disconnecting.`, env.upArgs.acceptedRisks); err != nil {
+			return false, nil, err
+		}
 	}
 
 	tagsChanged := !reflect.DeepEqual(curPrefs.AdvertiseTags, prefs.AdvertiseTags)
@@ -584,7 +591,7 @@ func runUp(ctx context.Context, cmd string, args []string, upArgs upArgsT) (retE
 					if env.upArgs.json {
 						printUpDoneJSON(ipn.NeedsMachineAuth, "")
 					} else {
-						fmt.Fprintf(Stderr, "\nTo authorize your machine, visit (as admin):\n\n\t%s\n\n", prefs.AdminPageURL())
+						fmt.Fprintf(Stderr, "\nTo approve your machine, visit (as admin):\n\n\t%s\n\n", prefs.AdminPageURL())
 					}
 				case ipn.Running:
 					// Done full authentication process

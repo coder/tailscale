@@ -20,7 +20,7 @@ import (
 	"tailscale.com/types/views"
 )
 
-//go:generate go run tailscale.com/cmd/cloner  -clonefunc=true -type=User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPRegion,DERPMap,DERPNode,SSHRule,SSHPrincipal,ControlDialPlan
+//go:generate go run tailscale.com/cmd/cloner  -clonefunc=true -type=User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPRegion,DERPMap,DERPNode,SSHRule,SSHAction,SSHPrincipal,ControlDialPlan
 
 // View returns a readonly view of User.
 func (p *User) View() UserView {
@@ -176,40 +176,51 @@ func (v NodeView) ComputedName() string              { return v.ж.ComputedName 
 func (v NodeView) ComputedNameWithHost() string      { return v.ж.ComputedNameWithHost }
 func (v NodeView) DataPlaneAuditLogID() string       { return v.ж.DataPlaneAuditLogID }
 func (v NodeView) Expired() bool                     { return v.ж.Expired }
-func (v NodeView) Equal(v2 NodeView) bool            { return v.ж.Equal(v2.ж) }
+func (v NodeView) SelfNodeV4MasqAddrForThisPeer() *netip.Addr {
+	if v.ж.SelfNodeV4MasqAddrForThisPeer == nil {
+		return nil
+	}
+	x := *v.ж.SelfNodeV4MasqAddrForThisPeer
+	return &x
+}
+
+func (v NodeView) IsWireGuardOnly() bool  { return v.ж.IsWireGuardOnly }
+func (v NodeView) Equal(v2 NodeView) bool { return v.ж.Equal(v2.ж) }
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _NodeViewNeedsRegeneration = Node(struct {
-	ID                      NodeID
-	StableID                StableNodeID
-	Name                    string
-	User                    UserID
-	Sharer                  UserID
-	Key                     key.NodePublic
-	KeyExpiry               time.Time
-	KeySignature            tkatype.MarshaledSignature
-	Machine                 key.MachinePublic
-	DiscoKey                key.DiscoPublic
-	Addresses               []netip.Prefix
-	AllowedIPs              []netip.Prefix
-	Endpoints               []string
-	DERP                    string
-	Hostinfo                HostinfoView
-	Created                 time.Time
-	Cap                     CapabilityVersion
-	Tags                    []string
-	PrimaryRoutes           []netip.Prefix
-	LastSeen                *time.Time
-	Online                  *bool
-	KeepAlive               bool
-	MachineAuthorized       bool
-	Capabilities            []string
-	UnsignedPeerAPIOnly     bool
-	ComputedName            string
-	computedHostIfDifferent string
-	ComputedNameWithHost    string
-	DataPlaneAuditLogID     string
-	Expired                 bool
+	ID                            NodeID
+	StableID                      StableNodeID
+	Name                          string
+	User                          UserID
+	Sharer                        UserID
+	Key                           key.NodePublic
+	KeyExpiry                     time.Time
+	KeySignature                  tkatype.MarshaledSignature
+	Machine                       key.MachinePublic
+	DiscoKey                      key.DiscoPublic
+	Addresses                     []netip.Prefix
+	AllowedIPs                    []netip.Prefix
+	Endpoints                     []string
+	DERP                          string
+	Hostinfo                      HostinfoView
+	Created                       time.Time
+	Cap                           CapabilityVersion
+	Tags                          []string
+	PrimaryRoutes                 []netip.Prefix
+	LastSeen                      *time.Time
+	Online                        *bool
+	KeepAlive                     bool
+	MachineAuthorized             bool
+	Capabilities                  []string
+	UnsignedPeerAPIOnly           bool
+	ComputedName                  string
+	computedHostIfDifferent       string
+	ComputedNameWithHost          string
+	DataPlaneAuditLogID           string
+	Expired                       bool
+	SelfNodeV4MasqAddrForThisPeer *netip.Addr
+	IsWireGuardOnly               bool
 }{})
 
 // View returns a readonly view of Hostinfo.
@@ -267,6 +278,7 @@ func (v HostinfoView) Env() string             { return v.ж.Env }
 func (v HostinfoView) Distro() string          { return v.ж.Distro }
 func (v HostinfoView) DistroVersion() string   { return v.ж.DistroVersion }
 func (v HostinfoView) DistroCodeName() string  { return v.ж.DistroCodeName }
+func (v HostinfoView) App() string             { return v.ж.App }
 func (v HostinfoView) Desktop() opt.Bool       { return v.ж.Desktop }
 func (v HostinfoView) Package() string         { return v.ж.Package }
 func (v HostinfoView) DeviceModel() string     { return v.ж.DeviceModel }
@@ -305,6 +317,7 @@ var _HostinfoViewNeedsRegeneration = Hostinfo(struct {
 	Distro          string
 	DistroVersion   string
 	DistroCodeName  string
+	App             string
 	Desktop         opt.Bool
 	Package         string
 	DeviceModel     string
@@ -867,13 +880,7 @@ func (v SSHRuleView) Principals() views.SliceView[*SSHPrincipal, SSHPrincipalVie
 }
 
 func (v SSHRuleView) SSHUsers() views.Map[string, string] { return views.MapOf(v.ж.SSHUsers) }
-func (v SSHRuleView) Action() *SSHAction {
-	if v.ж.Action == nil {
-		return nil
-	}
-	x := *v.ж.Action
-	return &x
-}
+func (v SSHRuleView) Action() SSHActionView               { return v.ж.Action.View() }
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _SSHRuleViewNeedsRegeneration = SSHRule(struct {
@@ -881,6 +888,72 @@ var _SSHRuleViewNeedsRegeneration = SSHRule(struct {
 	Principals  []*SSHPrincipal
 	SSHUsers    map[string]string
 	Action      *SSHAction
+}{})
+
+// View returns a readonly view of SSHAction.
+func (p *SSHAction) View() SSHActionView {
+	return SSHActionView{ж: p}
+}
+
+// SSHActionView provides a read-only view over SSHAction.
+//
+// Its methods should only be called if `Valid()` returns true.
+type SSHActionView struct {
+	// ж is the underlying mutable value, named with a hard-to-type
+	// character that looks pointy like a pointer.
+	// It is named distinctively to make you think of how dangerous it is to escape
+	// to callers. You must not let callers be able to mutate it.
+	ж *SSHAction
+}
+
+// Valid reports whether underlying value is non-nil.
+func (v SSHActionView) Valid() bool { return v.ж != nil }
+
+// AsStruct returns a clone of the underlying value which aliases no memory with
+// the original.
+func (v SSHActionView) AsStruct() *SSHAction {
+	if v.ж == nil {
+		return nil
+	}
+	return v.ж.Clone()
+}
+
+func (v SSHActionView) MarshalJSON() ([]byte, error) { return json.Marshal(v.ж) }
+
+func (v *SSHActionView) UnmarshalJSON(b []byte) error {
+	if v.ж != nil {
+		return errors.New("already initialized")
+	}
+	if len(b) == 0 {
+		return nil
+	}
+	var x SSHAction
+	if err := json.Unmarshal(b, &x); err != nil {
+		return err
+	}
+	v.ж = &x
+	return nil
+}
+
+func (v SSHActionView) Message() string                        { return v.ж.Message }
+func (v SSHActionView) Reject() bool                           { return v.ж.Reject }
+func (v SSHActionView) Accept() bool                           { return v.ж.Accept }
+func (v SSHActionView) SessionDuration() time.Duration         { return v.ж.SessionDuration }
+func (v SSHActionView) AllowAgentForwarding() bool             { return v.ж.AllowAgentForwarding }
+func (v SSHActionView) HoldAndDelegate() string                { return v.ж.HoldAndDelegate }
+func (v SSHActionView) AllowLocalPortForwarding() bool         { return v.ж.AllowLocalPortForwarding }
+func (v SSHActionView) Recorders() views.Slice[netip.AddrPort] { return views.SliceOf(v.ж.Recorders) }
+
+// A compilation failure here means this code must be regenerated, with the command at the top of this file.
+var _SSHActionViewNeedsRegeneration = SSHAction(struct {
+	Message                  string
+	Reject                   bool
+	Accept                   bool
+	SessionDuration          time.Duration
+	AllowAgentForwarding     bool
+	HoldAndDelegate          string
+	AllowLocalPortForwarding bool
+	Recorders                []netip.AddrPort
 }{})
 
 // View returns a readonly view of SSHPrincipal.
