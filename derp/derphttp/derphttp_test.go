@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -212,7 +211,7 @@ func TestPing(t *testing.T) {
 	}
 }
 
-func TestHTTP2WebSocketFallback(t *testing.T) {
+func TestHTTP2OnlyServer(t *testing.T) {
 	serverPrivateKey := key.NewNode()
 	s := derp.NewServer(serverPrivateKey, t.Logf)
 	defer s.Close()
@@ -257,23 +256,9 @@ func TestHTTP2WebSocketFallback(t *testing.T) {
 		RootCAs:    httpsrv.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs,
 	}
 	defer c.Close()
-	reasonCh := make(chan string, 1)
-	c.SetForcedWebsocketCallback(func(region int, reason string) {
-		select {
-		case reasonCh <- reason:
-		default:
-		}
-	})
+
 	err = c.Connect(context.Background())
-	if err == nil {
-		// Expect an error!
-		t.Fatal("client didn't error on initial connect")
-	}
-	reason := <-reasonCh
-	if !strings.Contains(reason, "DERP requires Upgrade which needs") {
-		t.Fatalf("reason doesn't contain message: %s", reason)
-	}
-	if err := c.Connect(context.Background()); err != nil {
-		t.Fatalf("client Connect: %v", err)
+	if err != nil {
+		t.Fatalf("client errored initial connect: %v", err)
 	}
 }
