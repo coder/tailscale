@@ -233,6 +233,7 @@ func TestHTTP2OnlyServer(t *testing.T) {
 		brw := bufio.NewReadWriter(bufio.NewReader(wc), bufio.NewWriter(wc))
 		s.Accept(context.Background(), wc, brw, r.RemoteAddr)
 	}))
+	defer httpsrv.Close()
 	httpsrv.TLS = &tls.Config{
 		NextProtos: []string{"h2"},
 		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -261,4 +262,6 @@ func TestHTTP2OnlyServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client errored initial connect: %v", err)
 	}
+
+	c.Close()
 }
