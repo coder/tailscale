@@ -97,7 +97,8 @@ type CapabilityVersion int
 //   - 58: 2023-03-10: Client retries lite map updates before restarting map poll.
 //   - 59: 2023-03-16: Client understands Peers[].SelfNodeV4MasqAddrForThisPeer
 //   - 60: 2023-04-06: Client understands IsWireGuardOnly
-const CurrentCapabilityVersion CapabilityVersion = 60
+//   - 61: 2023-04-18: Client understand SSHAction.SSHRecorderFailureAction
+const CurrentCapabilityVersion CapabilityVersion = 61
 
 type StableID string
 
@@ -2048,7 +2049,61 @@ type SSHAction struct {
 
 	// Recorders defines the destinations of the SSH session recorders.
 	// The recording will be uploaded to http://addr:port/record.
-	Recorders []netip.AddrPort `json:"recorders"`
+	Recorders []netip.AddrPort `json:"recorders,omitempty"`
+
+	// OnRecorderFailure is the action to take if recording fails.
+	// If nil, the default action is to fail open.
+	OnRecordingFailure *SSHRecorderFailureAction `json:"onRecordingFailure,omitempty"`
+}
+
+// SSHRecorderFailureAction is the action to take if recording fails.
+type SSHRecorderFailureAction struct {
+	// RejectSessionWithMessage, if not empty, specifies that the session should
+	// be rejected if the recording fails to start.
+	// The message will be shown to the user before the session is rejected.
+	RejectSessionWithMessage string `json:",omitempty"`
+
+	// TerminateSessionWithMessage, if not empty, specifies that the session
+	// should be terminated if the recording fails after it has started. The
+	// message will be shown to the user before the session is terminated.
+	TerminateSessionWithMessage string `json:",omitempty"`
+
+	// NotifyURL, if non-empty, specifies a HTTP POST URL to notify when the
+	// recording fails. The payload is the JSON encoded
+	// SSHRecordingFailureNotifyRequest struct. The host field in the URL is
+	// ignored, and it will be sent to control over the Noise transport.
+	NotifyURL string `json:",omitempty"`
+}
+
+// SSHRecordingFailureNotifyRequest is the JSON payload sent to the NotifyURL
+// when a recording fails.
+type SSHRecordingFailureNotifyRequest struct {
+	// CapVersion is the client's current CapabilityVersion.
+	CapVersion CapabilityVersion
+
+	// NodeKey is the client's current node key.
+	NodeKey key.NodePublic
+
+	// SrcNode is the ID of the node that initiated the SSH session.
+	SrcNode NodeID
+
+	// SSHUser is the user that was presented to the SSH server.
+	SSHUser string
+
+	// LocalUser is the user that was resolved from the SSHUser for the local machine.
+	LocalUser string
+
+	// Attempts is the list of recorders that were attempted, in order.
+	Attempts []SSHRecordingAttempt
+}
+
+// SSHRecordingAttempt is a single attempt to start a recording.
+type SSHRecordingAttempt struct {
+	// Recorder is the address of the recorder that was attempted.
+	Recorder netip.AddrPort
+
+	// FailureMessage is the error message of the failed attempt.
+	FailureMessage string
 }
 
 // OverTLSPublicKeyResponse is the JSON response to /key?v=<n>

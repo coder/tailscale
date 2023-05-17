@@ -11,7 +11,7 @@ package sockstats
 import (
 	"context"
 
-	"tailscale.com/net/interfaces"
+	"tailscale.com/net/netmon"
 	"tailscale.com/types/logger"
 )
 
@@ -107,15 +107,14 @@ func GetValidation() *ValidationSockStats {
 	return getValidation()
 }
 
-// LinkMonitor is the interface for the parts of wgengine/mointor's Mon that we
-// need, to avoid the dependency.
-type LinkMonitor interface {
-	InterfaceState() *interfaces.State
-	RegisterChangeCallback(interfaces.ChangeFunc) (unregister func())
+// SetNetMon configures the sockstats package to monitor the active
+// interface, so that per-interface stats can be collected.
+func SetNetMon(netMon *netmon.Monitor) {
+	setNetMon(netMon)
 }
 
-// SetLinkMonitor configures the sockstats package to monitor the active
-// interface, so that per-interface stats can be collected.
-func SetLinkMonitor(lm LinkMonitor) {
-	setLinkMonitor(lm)
+// DebugInfo returns a string containing debug information about the tracked
+// statistics.
+func DebugInfo() string {
+	return debugInfo()
 }

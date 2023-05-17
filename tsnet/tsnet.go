@@ -43,6 +43,7 @@ import (
 	"tailscale.com/logtail"
 	"tailscale.com/logtail/filch"
 	"tailscale.com/net/memnet"
+	"tailscale.com/net/netmon"
 	"tailscale.com/net/proxymux"
 	"tailscale.com/net/socks5"
 	"tailscale.com/net/tsdial"
@@ -52,7 +53,6 @@ import (
 	"tailscale.com/types/nettype"
 	"tailscale.com/util/mak"
 	"tailscale.com/wgengine"
-	"tailscale.com/wgengine/monitor"
 	"tailscale.com/wgengine/netstack"
 )
 
@@ -107,7 +107,7 @@ type Server struct {
 	initErr          error
 	lb               *ipnlocal.LocalBackend
 	netstack         *netstack.Impl
-	linkMon          *monitor.Mon
+	netMon           *netmon.Monitor
 	rootPath         string // the state directory
 	hostname         string
 	shutdownCtx      context.Context
@@ -204,7 +204,7 @@ func (s *Server) Loopback() (addr string, proxyCred, localAPICred string, err er
 		// out the CONNECT code from tailscaled/proxy.go that uses
 		// httputil.ReverseProxy and adding auth support.
 		go func() {
-			lah := localapi.NewHandler(s.lb, s.logf, s.logid)
+			lah := localapi.NewHandler(s.lb, s.logf, s.netMon, s.logid)
 			lah.PermitWrite = true
 			lah.PermitRead = true
 			lah.RequiredPassword = s.localAPICred
@@ -357,8 +357,8 @@ func (s *Server) Close() error {
 	if s.lb != nil {
 		s.lb.Shutdown()
 	}
-	if s.linkMon != nil {
-		s.linkMon.Close()
+	if s.netMon != nil {
+		s.netMon.Close()
 	}
 	if s.dialer != nil {
 		s.dialer.Close()
@@ -477,17 +477,17 @@ func (s *Server) start() (reterr error) {
 		return err
 	}
 
-	s.linkMon, err = monitor.New(logf)
+	s.netMon, err = netmon.New(logf)
 	if err != nil {
 		return err
 	}
-	closePool.add(s.linkMon)
+	closePool.add(s.netMon)
 
 	s.dialer = &tsdial.Dialer{Logf: logf} // mutated below (before used)
 	eng, err := wgengine.NewUserspaceEngine(logf, wgengine.Config{
-		ListenPort:  0,
-		LinkMonitor: s.linkMon,
-		Dialer:      s.dialer,
+		ListenPort: 0,
+		NetMon:     s.netMon,
+		Dialer:     s.dialer,
 	})
 	if err != nil {
 		return err
@@ -565,7 +565,7 @@ func (s *Server) start() (reterr error) {
 	go s.printAuthURLLoop()
 
 	// Run the localapi handler, to allow fetching LetsEncrypt certs.
-	lah := localapi.NewHandler(lb, logf, s.logid)
+	lah := localapi.NewHandler(lb, logf, s.netMon, s.logid)
 	lah.PermitWrite = true
 	lah.PermitRead = true
 
@@ -621,7 +621,7 @@ func (s *Server) startLogger(closePool *closeOnErrorPool) error {
 			}
 			return w
 		},
-		HTTPC: &http.Client{Transport: logpolicy.NewLogtailTransport(logtail.DefaultHost)},
+		HTTPC: &http.Client{Transport: logpolicy.NewLogtailTransport(logtail.DefaultHost, s.netMon)},
 	}
 	s.logtail = logtail.NewLogger(c, s.logf)
 	closePool.addFunc(func() { s.logtail.Shutdown(context.Background()) })

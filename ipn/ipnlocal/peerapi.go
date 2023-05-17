@@ -605,6 +605,16 @@ func (h *peerAPIHandler) logf(format string, a ...any) {
 	h.ps.b.logf("peerapi: "+format, a...)
 }
 
+// isAddressValid reports whether addr is a valid destination address for this
+// node originating from the peer.
+func (h *peerAPIHandler) isAddressValid(addr netip.Addr) bool {
+	if h.peerNode.SelfNodeV4MasqAddrForThisPeer != nil {
+		return *h.peerNode.SelfNodeV4MasqAddrForThisPeer == addr
+	}
+	pfx := netip.PrefixFrom(addr, addr.BitLen())
+	return slices.Contains(h.selfNode.Addresses, pfx)
+}
+
 func (h *peerAPIHandler) validateHost(r *http.Request) error {
 	if r.Host == "peer" {
 		return nil
@@ -613,9 +623,8 @@ func (h *peerAPIHandler) validateHost(r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	hostIPPfx := netip.PrefixFrom(ap.Addr(), ap.Addr().BitLen())
-	if !slices.Contains(h.selfNode.Addresses, hostIPPfx) {
-		return fmt.Errorf("%v not found in self addresses", hostIPPfx)
+	if !h.isAddressValid(ap.Addr()) {
+		return fmt.Errorf("%v not found in self addresses", ap.Addr())
 	}
 	return nil
 }
@@ -947,6 +956,12 @@ func (h *peerAPIHandler) handleServeSockStats(w http.ResponseWriter, r *http.Req
 	fmt.Fprintln(w, "</tfoot>")
 
 	fmt.Fprintln(w, "</table>")
+
+	fmt.Fprintln(w, "<h2>Debug Info</h2>")
+
+	fmt.Fprintln(w, "<pre>")
+	fmt.Fprintln(w, html.EscapeString(sockstats.DebugInfo()))
+	fmt.Fprintln(w, "</pre>")
 }
 
 type incomingFile struct {

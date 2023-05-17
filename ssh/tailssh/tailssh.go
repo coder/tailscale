@@ -17,11 +17,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -42,7 +42,7 @@ import (
 	"tailscale.com/types/netmap"
 	"tailscale.com/util/clientmetric"
 	"tailscale.com/util/mak"
-	"tailscale.com/version/distro"
+	"tailscale.com/util/multierr"
 )
 
 var (
@@ -65,6 +65,7 @@ type ipnLocalBackend interface {
 	WhoIs(ipp netip.AddrPort) (n *tailcfg.Node, u tailcfg.UserProfile, ok bool)
 	DoNoiseRequest(req *http.Request) (*http.Response, error)
 	Dialer() *tsdial.Dialer
+	TailscaleVarRoot() string
 }
 
 type server struct {
@@ -79,31 +80,9 @@ type server struct {
 
 	// mu protects the following
 	mu                   sync.Mutex
-	httpc                *http.Client                // for calling out to peers.
 	activeConns          map[*conn]bool              // set; value is always true
 	fetchPublicKeysCache map[string]pubKeyCacheEntry // by https URL
 	shutdownCalled       bool
-}
-
-// sessionRecordingClient returns an http.Client that uses srv.lb.Dialer() to
-// dial connections. This is used to make requests to the session recording
-// server to upload session recordings.
-func (srv *server) sessionRecordingClient() *http.Client {
-	srv.mu.Lock()
-	defer srv.mu.Unlock()
-	if srv.httpc != nil {
-		return srv.httpc
-	}
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		return srv.lb.Dialer().UserDial(ctx, network, addr)
-	}
-	srv.httpc = &http.Client{
-		Transport: tr,
-	}
-	return srv.httpc
 }
 
 func (srv *server) now() time.Time {
@@ -238,7 +217,7 @@ type conn struct {
 	finalActionErr error              // set by doPolicyAuth or resolveNextAction
 
 	info         *sshConnInfo    // set by setInfo
-	localUser    *user.User      // set by doPolicyAuth
+	localUser    *userMeta       // set by doPolicyAuth
 	userGroupIDs []string        // set by doPolicyAuth
 	pubKey       gossh.PublicKey // set by doPolicyAuth
 
@@ -389,16 +368,7 @@ func (c *conn) doPolicyAuth(ctx ssh.Context, pubKey ssh.PublicKey) error {
 		if a.Accept {
 			c.finalAction = a
 		}
-		if runtime.GOOS == "linux" && distro.Get() == distro.Gokrazy {
-			// Gokrazy is a single-user appliance with ~no userspace.
-			// There aren't users to look up (no /etc/passwd, etc)
-			// so rather than fail below, just hardcode root.
-			// TODO(bradfitz): fix os/user upstream instead?
-			c.userGroupIDs = []string{"0"}
-			c.localUser = &user.User{Uid: "0", Gid: "0", Username: "root"}
-			return nil
-		}
-		lu, err := user.Lookup(localUser)
+		lu, err := userLookup(localUser)
 		if err != nil {
 			c.logf("failed to look up %v: %v", localUser, err)
 			ctx.SendAuthBanner(fmt.Sprintf("failed to look up %v\r\n", localUser))
@@ -979,7 +949,7 @@ var errSessionDone = errors.New("session is done")
 // handleSSHAgentForwarding starts a Unix socket listener and in the background
 // forwards agent connections between the listener and the ssh.Session.
 // On success, it assigns ss.agentListener.
-func (ss *sshSession) handleSSHAgentForwarding(s ssh.Session, lu *user.User) error {
+func (ss *sshSession) handleSSHAgentForwarding(s ssh.Session, lu *userMeta) error {
 	if !ssh.AgentRequested(ss) || !ss.conn.finalAction.AllowAgentForwarding {
 		return nil
 	}
@@ -1078,7 +1048,7 @@ func (ss *sshSession) run() {
 			if err != nil {
 				var uve userVisibleError
 				if errors.As(err, &uve) {
-					fmt.Fprintf(ss, "%s\r\n", uve)
+					fmt.Fprintf(ss, "%s\r\n", uve.SSHTerminationMessage())
 				} else {
 					fmt.Fprintf(ss, "can't start new recording\r\n")
 				}
@@ -1086,7 +1056,9 @@ func (ss *sshSession) run() {
 				ss.Exit(1)
 				return
 			}
-			defer rec.Close()
+			if rec != nil {
+				defer rec.Close()
+			}
 		}
 	}
 
@@ -1165,19 +1137,25 @@ func (ss *sshSession) run() {
 	return
 }
 
+// recordSSHToLocalDisk is a deprecated dev knob to allow recording SSH sessions
+// to local storage. It is only used if there is no recording configured by the
+// coordination server. This will be removed in the future.
+var recordSSHToLocalDisk = envknob.RegisterBool("TS_DEBUG_LOG_SSH")
+
 // recorders returns the list of recorders to use for this session.
 // If the final action has a non-empty list of recorders, that list is
 // returned. Otherwise, the list of recorders from the initial action
 // is returned.
-func (ss *sshSession) recorders() []netip.AddrPort {
+func (ss *sshSession) recorders() ([]netip.AddrPort, *tailcfg.SSHRecorderFailureAction) {
 	if len(ss.conn.finalAction.Recorders) > 0 {
-		return ss.conn.finalAction.Recorders
+		return ss.conn.finalAction.Recorders, ss.conn.finalAction.OnRecordingFailure
 	}
-	return ss.conn.action0.Recorders
+	return ss.conn.action0.Recorders, ss.conn.action0.OnRecordingFailure
 }
 
 func (ss *sshSession) shouldRecord() bool {
-	return len(ss.recorders()) > 0
+	recs, _ := ss.recorders()
+	return len(recs) > 0 || recordSSHToLocalDisk()
 }
 
 type sshConnInfo struct {
@@ -1409,15 +1387,140 @@ type CastHeader struct {
 	LocalUser string `json:"localUser"`
 }
 
-// startNewRecording starts a new SSH session recording.
-func (ss *sshSession) startNewRecording() (_ *recording, err error) {
-	recorders := ss.recorders()
-	if len(recorders) == 0 {
-		return nil, errors.New("no recorders configured")
+// sessionRecordingClient returns an http.Client that uses srv.lb.Dialer() to
+// dial connections. This is used to make requests to the session recording
+// server to upload session recordings.
+// It uses the provided dialCtx to dial connections, and limits a single dial
+// to 5 seconds.
+func (ss *sshSession) sessionRecordingClient(dialCtx context.Context) (*http.Client, error) {
+	dialer := ss.conn.srv.lb.Dialer()
+	if dialer == nil {
+		return nil, errors.New("no peer API transport")
 	}
-	recorder := recorders[0]
-	if len(recorders) > 1 {
-		ss.logf("warning: multiple recorders configured, using first one: %v", recorder)
+	tr := dialer.PeerAPITransport().Clone()
+	dialContextFn := tr.DialContext
+
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		perAttemptCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		go func() {
+			select {
+			case <-perAttemptCtx.Done():
+			case <-dialCtx.Done():
+				cancel()
+			}
+		}()
+		return dialContextFn(perAttemptCtx, network, addr)
+	}
+	return &http.Client{
+		Transport: tr,
+	}, nil
+}
+
+// connectToRecorder connects to the recorder at any of the provided addresses.
+// It returns the first successful response, or a multierr if all attempts fail.
+//
+// On success, it returns a WriteCloser that can be used to upload the
+// recording, and a channel that will be sent an error (or nil) when the upload
+// fails or completes.
+func (ss *sshSession) connectToRecorder(ctx context.Context, recs []netip.AddrPort) (io.WriteCloser, <-chan error, error) {
+	if len(recs) == 0 {
+		return nil, nil, errors.New("no recorders configured")
+	}
+
+	// We use a special context for dialing the recorder, so that we can
+	// limit the time we spend dialing to 30 seconds and still have an
+	// unbounded context for the upload.
+	dialCtx, dialCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer dialCancel()
+	hc, err := ss.sessionRecordingClient(dialCtx)
+	if err != nil {
+		return nil, nil, err
+	}
+	var errs []error
+	for _, ap := range recs {
+		// We dial the recorder and wait for it to send a 100-continue
+		// response before returning from this function. This ensures that
+		// the recorder is ready to accept the recording.
+
+		// got100 is closed when we receive the 100-continue response.
+		got100 := make(chan struct{})
+		ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+			Got100Continue: func() {
+				close(got100)
+			},
+		})
+
+		pr, pw := io.Pipe()
+		req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("http://%s:%d/record", ap.Addr(), ap.Port()), pr)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("recording: error starting recording: %w", err))
+			continue
+		}
+		// We set the Expect header to 100-continue, so that the recorder
+		// will send a 100-continue response before it starts reading the
+		// request body.
+		req.Header.Set("Expect", "100-continue")
+
+		// errChan is used to indicate the result of the request.
+		errChan := make(chan error, 1)
+		go func() {
+			resp, err := hc.Do(req)
+			if err != nil {
+				errChan <- fmt.Errorf("recording: error starting recording: %w", err)
+				return
+			}
+			if resp.StatusCode != 200 {
+				errChan <- fmt.Errorf("recording: unexpected status: %v", resp.Status)
+				return
+			}
+			errChan <- nil
+		}()
+		select {
+		case <-got100:
+		case err := <-errChan:
+			// If we get an error before we get the 100-continue response,
+			// we need to try another recorder.
+			if err == nil {
+				// If the error is nil, we got a 200 response, which
+				// is unexpected as we haven't sent any data yet.
+				err = errors.New("recording: unexpected EOF")
+			}
+			errs = append(errs, err)
+			continue
+		}
+		return pw, errChan, nil
+	}
+	return nil, nil, multierr.New(errs...)
+}
+
+func (ss *sshSession) openFileForRecording(now time.Time) (_ io.WriteCloser, err error) {
+	varRoot := ss.conn.srv.lb.TailscaleVarRoot()
+	if varRoot == "" {
+		return nil, errors.New("no var root for recording storage")
+	}
+	dir := filepath.Join(varRoot, "ssh-sessions")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, err
+	}
+	f, err := os.CreateTemp(dir, fmt.Sprintf("ssh-session-%v-*.cast", now.UnixNano()))
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// startNewRecording starts a new SSH session recording.
+// It may return a nil recording if recording is not available.
+func (ss *sshSession) startNewRecording() (_ *recording, err error) {
+	recorders, onFailure := ss.recorders()
+	var localRecording bool
+	if len(recorders) == 0 {
+		if recordSSHToLocalDisk() {
+			localRecording = true
+		} else {
+			return nil, errors.New("no recorders configured")
+		}
 	}
 
 	var w ssh.Window
@@ -1432,55 +1535,53 @@ func (ss *sshSession) startNewRecording() (_ *recording, err error) {
 
 	now := time.Now()
 	rec := &recording{
-		ss:    ss,
-		start: now,
+		ss:       ss,
+		start:    now,
+		failOpen: onFailure == nil || onFailure.TerminateSessionWithMessage == "",
 	}
-
-	pr, pw := io.Pipe()
 
 	// We want to use a background context for uploading and not ss.ctx.
 	// ss.ctx is closed when the session closes, but we don't want to break the upload at that time.
 	// Instead we want to wait for the session to close the writer when it finishes.
 	ctx := context.Background()
-	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("http://%s:%d/record", recorder.Addr(), recorder.Port()), pr)
-	if err != nil {
-		pr.Close()
-		pw.Close()
-		return nil, err
-	}
-	// We want to wait for the server to respond with 100 Continue to notifiy us
-	// that it's ready to receive data. We do this to block the session from
-	// starting until the server is ready to receive data.
-	// It also allows the server to reject the request before we start sending
-	// data.
-	req.Header.Set("Expect", "100-continue")
-	go func() {
-		defer pw.Close()
-		ss.logf("starting asciinema recording to %s", recorder)
-		hc := ss.conn.srv.sessionRecordingClient()
-		resp, err := hc.Do(req)
+	if localRecording {
+		rec.out, err = ss.openFileForRecording(now)
 		if err != nil {
-			err := fmt.Errorf("recording: error sending recording: %w", err)
-			ss.logf("%v", err)
-			ss.cancelCtx(userVisibleError{
-				msg:   "recording: error sending recording",
-				error: err,
-			})
-			return
+			return nil, err
 		}
-		defer resp.Body.Close()
-		defer ss.cancelCtx(errors.New("recording: done"))
-		if resp.StatusCode != http.StatusOK {
-			err := fmt.Errorf("recording: server responded with %s", resp.Status)
-			ss.logf("%v", err)
-			ss.cancelCtx(userVisibleError{
-				msg:   "recording server responded with: " + resp.Status,
-				error: err,
-			})
+	} else {
+		var errChan <-chan error
+		rec.out, errChan, err = ss.connectToRecorder(ctx, recorders)
+		if err != nil {
+			// TODO(catzkorn): notify control here.
+			if onFailure != nil && onFailure.RejectSessionWithMessage != "" {
+				ss.logf("recording: error starting recording (rejecting session): %v", err)
+				return nil, userVisibleError{
+					error: err,
+					msg:   onFailure.RejectSessionWithMessage,
+				}
+			}
+			ss.logf("recording: error starting recording (failing open): %v", err)
+			return nil, nil
 		}
-	}()
-
-	rec.out = pw
+		go func() {
+			err := <-errChan
+			if err == nil {
+				// Success.
+				return
+			}
+			// TODO(catzkorn): notify control here.
+			if onFailure != nil && onFailure.TerminateSessionWithMessage != "" {
+				ss.logf("recording: error uploading recording (closing session): %v", err)
+				ss.cancelCtx(userVisibleError{
+					error: err,
+					msg:   onFailure.TerminateSessionWithMessage,
+				})
+				return
+			}
+			ss.logf("recording: error uploading recording (failing open): %v", err)
+		}()
+	}
 
 	ch := CastHeader{
 		Version:   2,
@@ -1515,7 +1616,7 @@ func (ss *sshSession) startNewRecording() (_ *recording, err error) {
 		return nil, err
 	}
 	j = append(j, '\n')
-	if _, err := pw.Write(j); err != nil {
+	if _, err := rec.out.Write(j); err != nil {
 		if errors.Is(err, io.ErrClosedPipe) && ss.ctx.Err() != nil {
 			// If we got an io.ErrClosedPipe, it's likely because
 			// the recording server closed the connection on us. Return
@@ -1531,6 +1632,10 @@ func (ss *sshSession) startNewRecording() (_ *recording, err error) {
 type recording struct {
 	ss    *sshSession
 	start time.Time
+
+	// failOpen specifies whether the session should be allowed to
+	// continue if writing to the recording fails.
+	failOpen bool
 
 	mu  sync.Mutex // guards writes to, close of out
 	out io.WriteCloser
@@ -1563,7 +1668,7 @@ func (r *recording) writer(dir string, w io.Writer) io.Writer {
 		// passwords.
 		return w
 	}
-	return &loggingWriter{r, dir, w}
+	return &loggingWriter{r: r, dir: dir, w: w}
 }
 
 // loggingWriter is an io.Writer wrapper that writes first an
@@ -1572,20 +1677,30 @@ type loggingWriter struct {
 	r   *recording
 	dir string    // "i" or "o" (input or output)
 	w   io.Writer // underlying Writer, after writing to r.out
+
+	// recordingFailedOpen specifies whether we've failed to write to
+	// r.out and should stop trying. It is set to true if we fail to write
+	// to r.out and r.failOpen is set.
+	recordingFailedOpen bool
 }
 
-func (w loggingWriter) Write(p []byte) (n int, err error) {
-	j, err := json.Marshal([]any{
-		time.Since(w.r.start).Seconds(),
-		w.dir,
-		string(p),
-	})
-	if err != nil {
-		return 0, err
-	}
-	j = append(j, '\n')
-	if err := w.writeCastLine(j); err != nil {
-		return 0, err
+func (w *loggingWriter) Write(p []byte) (n int, err error) {
+	if !w.recordingFailedOpen {
+		j, err := json.Marshal([]any{
+			time.Since(w.r.start).Seconds(),
+			w.dir,
+			string(p),
+		})
+		if err != nil {
+			return 0, err
+		}
+		j = append(j, '\n')
+		if err := w.writeCastLine(j); err != nil {
+			if !w.r.failOpen {
+				return 0, err
+			}
+			w.recordingFailedOpen = true
+		}
 	}
 	return w.w.Write(p)
 }

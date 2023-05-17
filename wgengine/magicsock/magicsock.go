@@ -48,6 +48,7 @@ import (
 	"tailscale.com/net/netaddr"
 	"tailscale.com/net/netcheck"
 	"tailscale.com/net/neterror"
+	"tailscale.com/net/netmon"
 	"tailscale.com/net/netns"
 	"tailscale.com/net/packet"
 	"tailscale.com/net/portmapper"
@@ -70,7 +71,6 @@ import (
 	"tailscale.com/util/uniq"
 	"tailscale.com/version"
 	"tailscale.com/wgengine/capture"
-	"tailscale.com/wgengine/monitor"
 )
 
 const (
@@ -280,7 +280,7 @@ type Conn struct {
 	idleFunc               func() time.Duration // nil means unknown
 	testOnlyPacketListener nettype.PacketListener
 	noteRecvActivity       func(key.NodePublic) // or nil, see Options.NoteRecvActivity
-	linkMon                *monitor.Mon         // or nil
+	netMon                 *netmon.Monitor      // or nil
 
 	// ================================================================
 	// No locking required to access these fields, either because
@@ -584,9 +584,9 @@ type Options struct {
 	// not hold Conn.mu while calling it.
 	NoteRecvActivity func(key.NodePublic)
 
-	// LinkMonitor is the link monitor to use.
+	// NetMon is the network monitor to use.
 	// With one, the portmapper won't be used.
-	LinkMonitor *monitor.Mon
+	NetMon *netmon.Monitor
 }
 
 func (o *Options) logf() logger.Logf {
@@ -653,11 +653,11 @@ func NewConn(opts Options) (*Conn, error) {
 	c.idleFunc = opts.IdleFunc
 	c.testOnlyPacketListener = opts.TestOnlyPacketListener
 	c.noteRecvActivity = opts.NoteRecvActivity
-	c.portMapper = portmapper.NewClient(logger.WithPrefix(c.logf, "portmapper: "), nil, c.onPortMapChanged)
-	if opts.LinkMonitor != nil {
-		c.portMapper.SetGatewayLookupFunc(opts.LinkMonitor.GatewayAndSelfIP)
+	c.portMapper = portmapper.NewClient(logger.WithPrefix(c.logf, "portmapper: "), opts.NetMon, nil, c.onPortMapChanged)
+	if opts.NetMon != nil {
+		c.portMapper.SetGatewayLookupFunc(opts.NetMon.GatewayAndSelfIP)
 	}
-	c.linkMon = opts.LinkMonitor
+	c.netMon = opts.NetMon
 
 	if err := c.rebind(keepCurrentPort); err != nil {
 		return nil, err
@@ -667,6 +667,7 @@ func NewConn(opts Options) (*Conn, error) {
 	c.donec = c.connCtx.Done()
 	c.netChecker = &netcheck.Client{
 		Logf:                logger.WithPrefix(c.logf, "netcheck: "),
+		NetMon:              c.netMon,
 		GetSTUNConn4:        func() netcheck.STUNConn { return &c.pconn4 },
 		GetSTUNConn6:        func() netcheck.STUNConn { return &c.pconn6 },
 		SkipExternalNetwork: inTest(),
@@ -1583,7 +1584,7 @@ func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) cha
 
 	// Note that derphttp.NewRegionClient does not dial the server
 	// (it doesn't block) so it is safe to do under the c.mu lock.
-	dc := derphttp.NewRegionClient(c.privateKey, c.logf, func() *tailcfg.DERPRegion {
+	dc := derphttp.NewRegionClient(c.privateKey, c.logf, c.netMon, func() *tailcfg.DERPRegion {
 		// Warning: it is not legal to acquire
 		// magicsock.Conn.mu from this callback.
 		// It's run from derphttp.Client.connect (via Send, etc)
@@ -3212,7 +3213,6 @@ func (c *Conn) goroutinesRunningLocked() bool {
 	if c.activeDerp != nil {
 		select {
 		case <-c.derpStarted:
-			break
 		default:
 			return true
 		}
@@ -3304,7 +3304,7 @@ func (c *Conn) listenPacket(network string, port uint16) (nettype.PacketConn, er
 	if c.testOnlyPacketListener != nil {
 		return nettype.MakePacketListenerWithNetIP(c.testOnlyPacketListener).ListenPacket(ctx, network, addr)
 	}
-	return nettype.MakePacketListenerWithNetIP(netns.Listener(c.logf)).ListenPacket(ctx, network, addr)
+	return nettype.MakePacketListenerWithNetIP(netns.Listener(c.logf, c.netMon)).ListenPacket(ctx, network, addr)
 }
 
 var debugBindSocket = envknob.RegisterBool("TS_DEBUG_MAGICSOCK_BIND_SOCKET")
@@ -3422,8 +3422,8 @@ func (c *Conn) Rebind() {
 	}
 
 	var ifIPs []netip.Prefix
-	if c.linkMon != nil {
-		st := c.linkMon.InterfaceState()
+	if c.netMon != nil {
+		st := c.netMon.InterfaceState()
 		defIf := st.DefaultRouteInterface
 		ifIPs = st.InterfaceIPs[defIf]
 		c.logf("Rebind; defIf=%q, ips=%v", defIf, ifIPs)

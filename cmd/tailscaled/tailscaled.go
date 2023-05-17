@@ -39,6 +39,7 @@ import (
 	"tailscale.com/logtail"
 	"tailscale.com/net/dns"
 	"tailscale.com/net/dnsfallback"
+	"tailscale.com/net/netmon"
 	"tailscale.com/net/netns"
 	"tailscale.com/net/proxymux"
 	"tailscale.com/net/socks5"
@@ -59,7 +60,6 @@ import (
 	"tailscale.com/version"
 	"tailscale.com/version/distro"
 	"tailscale.com/wgengine"
-	"tailscale.com/wgengine/monitor"
 	"tailscale.com/wgengine/netstack"
 	"tailscale.com/wgengine/router"
 )
@@ -329,7 +329,15 @@ var logPol *logpolicy.Policy
 var debugMux *http.ServeMux
 
 func run() error {
-	pol := logpolicy.New(logtail.CollectionNode)
+	var logf logger.Logf = log.Printf
+	netMon, err := netmon.New(func(format string, args ...any) {
+		logf(format, args...)
+	})
+	if err != nil {
+		return fmt.Errorf("netmon.New: %w", err)
+	}
+
+	pol := logpolicy.New(logtail.CollectionNode, netMon)
 	pol.SetVerbosityLevel(args.verbose)
 	logPol = pol
 	defer func() {
@@ -353,7 +361,6 @@ func run() error {
 		return nil
 	}
 
-	var logf logger.Logf = log.Printf
 	if envknob.Bool("TS_DEBUG_MEMORY") {
 		logf = logger.RusagePrefixLog(logf)
 	}
@@ -379,10 +386,10 @@ func run() error {
 		debugMux = newDebugMux()
 	}
 
-	return startIPNServer(context.Background(), logf, pol.PublicID)
+	return startIPNServer(context.Background(), logf, pol.PublicID, netMon)
 }
 
-func startIPNServer(ctx context.Context, logf logger.Logf, logID logid.PublicID) error {
+func startIPNServer(ctx context.Context, logf logger.Logf, logID logid.PublicID, netMon *netmon.Monitor) error {
 	ln, err := safesocket.Listen(args.socketpath)
 	if err != nil {
 		return fmt.Errorf("safesocket.Listen: %v", err)
@@ -408,7 +415,7 @@ func startIPNServer(ctx context.Context, logf logger.Logf, logID logid.PublicID)
 		}
 	}()
 
-	srv := ipnserver.New(logf, logID)
+	srv := ipnserver.New(logf, logID, netMon)
 	if debugMux != nil {
 		debugMux.HandleFunc("/debug/ipn", srv.ServeHTMLStatus)
 	}
@@ -426,7 +433,7 @@ func startIPNServer(ctx context.Context, logf logger.Logf, logID logid.PublicID)
 				return
 			}
 		}
-		lb, err := getLocalBackend(ctx, logf, logID)
+		lb, err := getLocalBackend(ctx, logf, logID, netMon)
 		if err == nil {
 			logf("got LocalBackend in %v", time.Since(t0).Round(time.Millisecond))
 			srv.SetLocalBackend(lb)
@@ -450,19 +457,15 @@ func startIPNServer(ctx context.Context, logf logger.Logf, logID logid.PublicID)
 	return nil
 }
 
-func getLocalBackend(ctx context.Context, logf logger.Logf, logID logid.PublicID) (_ *ipnlocal.LocalBackend, retErr error) {
-	linkMon, err := monitor.New(logf)
-	if err != nil {
-		return nil, fmt.Errorf("monitor.New: %w", err)
-	}
+func getLocalBackend(ctx context.Context, logf logger.Logf, logID logid.PublicID, netMon *netmon.Monitor) (_ *ipnlocal.LocalBackend, retErr error) {
 	if logPol != nil {
-		logPol.Logtail.SetLinkMonitor(linkMon)
+		logPol.Logtail.SetNetMon(netMon)
 	}
 
 	socksListener, httpProxyListener := mustStartProxyListeners(args.socksAddr, args.httpProxyAddr)
 
 	dialer := &tsdial.Dialer{Logf: logf} // mutated below (before used)
-	e, onlyNetstack, err := createEngine(logf, linkMon, dialer)
+	e, onlyNetstack, err := createEngine(logf, netMon, dialer)
 	if err != nil {
 		return nil, fmt.Errorf("createEngine: %w", err)
 	}
@@ -551,14 +554,14 @@ func getLocalBackend(ctx context.Context, logf logger.Logf, logID logid.PublicID
 //
 // onlyNetstack is true if the user has explicitly requested that we use netstack
 // for all networking.
-func createEngine(logf logger.Logf, linkMon *monitor.Mon, dialer *tsdial.Dialer) (e wgengine.Engine, onlyNetstack bool, err error) {
+func createEngine(logf logger.Logf, netMon *netmon.Monitor, dialer *tsdial.Dialer) (e wgengine.Engine, onlyNetstack bool, err error) {
 	if args.tunname == "" {
 		return nil, false, errors.New("no --tun value specified")
 	}
 	var errs []error
 	for _, name := range strings.Split(args.tunname, ",") {
 		logf("wgengine.NewUserspaceEngine(tun %q) ...", name)
-		e, onlyNetstack, err = tryEngine(logf, linkMon, dialer, name)
+		e, onlyNetstack, err = tryEngine(logf, netMon, dialer, name)
 		if err == nil {
 			return e, onlyNetstack, nil
 		}
@@ -590,11 +593,11 @@ func handleSubnetsInNetstack() bool {
 
 var tstunNew = tstun.New
 
-func tryEngine(logf logger.Logf, linkMon *monitor.Mon, dialer *tsdial.Dialer, name string) (e wgengine.Engine, onlyNetstack bool, err error) {
+func tryEngine(logf logger.Logf, netMon *netmon.Monitor, dialer *tsdial.Dialer, name string) (e wgengine.Engine, onlyNetstack bool, err error) {
 	conf := wgengine.Config{
-		ListenPort:  args.port,
-		LinkMonitor: linkMon,
-		Dialer:      dialer,
+		ListenPort: args.port,
+		NetMon:     netMon,
+		Dialer:     dialer,
 	}
 
 	onlyNetstack = name == "userspace-networking"
@@ -633,7 +636,7 @@ func tryEngine(logf logger.Logf, linkMon *monitor.Mon, dialer *tsdial.Dialer, na
 			return e, false, err
 		}
 
-		r, err := router.New(logf, dev, linkMon)
+		r, err := router.New(logf, dev, netMon)
 		if err != nil {
 			dev.Close()
 			return nil, false, fmt.Errorf("creating router: %w", err)

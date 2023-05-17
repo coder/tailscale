@@ -17,7 +17,6 @@ import (
 	"net/url"
 	"os"
 	"path"
-	pathpkg "path"
 	"strconv"
 	"strings"
 	"sync"
@@ -144,7 +143,7 @@ func (s *serveListener) Run() {
 }
 
 func (s *serveListener) shouldWarnAboutListenError(err error) bool {
-	if !s.b.e.GetLinkMonitor().InterfaceState().HasIP(s.ap.Addr()) {
+	if !s.b.e.GetNetMon().InterfaceState().HasIP(s.ap.Addr()) {
 		// Machine likely doesn't have IPv6 enabled (or the IP is still being
 		// assigned). No need to warn. Notably, WSL2 (Issue 6303).
 		return false
@@ -420,19 +419,19 @@ func (b *LocalBackend) getServeHandler(r *http.Request) (_ ipn.HTTPHandlerView, 
 	if h, ok := wsc.Handlers().GetOk(r.URL.Path); ok {
 		return h, r.URL.Path, true
 	}
-	path := path.Clean(r.URL.Path)
+	pth := path.Clean(r.URL.Path)
 	for {
-		withSlash := path + "/"
+		withSlash := pth + "/"
 		if h, ok := wsc.Handlers().GetOk(withSlash); ok {
 			return h, withSlash, true
 		}
-		if h, ok := wsc.Handlers().GetOk(path); ok {
-			return h, path, true
+		if h, ok := wsc.Handlers().GetOk(pth); ok {
+			return h, pth, true
 		}
-		if path == "/" {
+		if pth == "/" {
 			return z, "", false
 		}
-		path = pathpkg.Dir(path)
+		pth = path.Dir(pth)
 	}
 }
 

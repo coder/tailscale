@@ -805,6 +805,7 @@ func (v DERPNodeView) DERPPort() int          { return v.ж.DERPPort }
 func (v DERPNodeView) InsecureForTests() bool { return v.ж.InsecureForTests }
 func (v DERPNodeView) ForceHTTP() bool        { return v.ж.ForceHTTP }
 func (v DERPNodeView) STUNTestIP() string     { return v.ж.STUNTestIP }
+func (v DERPNodeView) CanPort80() bool        { return v.ж.CanPort80 }
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _DERPNodeViewNeedsRegeneration = DERPNode(struct {
@@ -820,6 +821,7 @@ var _DERPNodeViewNeedsRegeneration = DERPNode(struct {
 	InsecureForTests bool
 	ForceHTTP        bool
 	STUNTestIP       string
+	CanPort80        bool
 }{})
 
 // View returns a readonly view of SSHRule.
@@ -943,6 +945,13 @@ func (v SSHActionView) AllowAgentForwarding() bool             { return v.ж.All
 func (v SSHActionView) HoldAndDelegate() string                { return v.ж.HoldAndDelegate }
 func (v SSHActionView) AllowLocalPortForwarding() bool         { return v.ж.AllowLocalPortForwarding }
 func (v SSHActionView) Recorders() views.Slice[netip.AddrPort] { return views.SliceOf(v.ж.Recorders) }
+func (v SSHActionView) OnRecordingFailure() *SSHRecorderFailureAction {
+	if v.ж.OnRecordingFailure == nil {
+		return nil
+	}
+	x := *v.ж.OnRecordingFailure
+	return &x
+}
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _SSHActionViewNeedsRegeneration = SSHAction(struct {
@@ -954,6 +963,7 @@ var _SSHActionViewNeedsRegeneration = SSHAction(struct {
 	HoldAndDelegate          string
 	AllowLocalPortForwarding bool
 	Recorders                []netip.AddrPort
+	OnRecordingFailure       *SSHRecorderFailureAction
 }{})
 
 // View returns a readonly view of SSHPrincipal.
