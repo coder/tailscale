@@ -248,8 +248,8 @@ github.com/cncf/udpa/go v0.0.0-20200629203442-efcf912fb354/go.mod h1:WmhPx2Nbnht
 github.com/cncf/udpa/go v0.0.0-20201120205902-5459f2c99403/go.mod h1:WmhPx2Nbnhtbo57+VJT5O0JRkEi1Wbu0z5j0R8u5Hbk=
 github.com/cncf/xds/go v0.0.0-20210312221358-fbca930ec8ed/go.mod h1:eXthEFrGJvWHgFFCl3hGmgk+/aYT6PnTQLykKQRLhEs=
 github.com/cockroachdb/datadriven v0.0.0-20190809214429-80d97fb3cbaa/go.mod h1:zn76sxSg3SzpJ0PPJaLDCu+Bu0Lg3sKTORVIj19EIF8=
-github.com/coder/wireguard-go v0.0.0-20230517160014-e0577cbc6899 h1:gz30B+sUTiaFnnzsYDVJ8LVsJHE+X8ZuHlgn5AkDedg=
-github.com/coder/wireguard-go v0.0.0-20230517160014-e0577cbc6899/go.mod h1:gIg+ysrc2TlcI/9SWCmIgCZEZPkvb0ygwgMIQKpRhjg=
+github.com/coder/wireguard-go v0.0.0-20230517160836-2642384b706e h1:dpiDwSKRgwUDtZr21Qy2OaIqk4UC8wZEX4B9WkIWQvM=
+github.com/coder/wireguard-go v0.0.0-20230517160836-2642384b706e/go.mod h1:s5SuK2G84KWXtZuSAW5TMQRA0Oa1ke/orgyNi0TeP/E=
 github.com/containerd/stargz-snapshotter/estargz v0.11.4 h1:LjrYUZpyOhiSaU7hHrdR82/RBoxfGWSaC0VeSSMXqnk=
 github.com/containerd/stargz-snapshotter/estargz v0.11.4/go.mod h1:7vRJIcImfY8bpifnMjt+HTJoQxASq7T28MYbP15/Nf0=
 github.com/coreos/bbolt v1.3.2/go.mod h1:iRUV2dpdMOn7Bo10OQBFzIJO9kkE559Wcmn+qkEiiKk=
