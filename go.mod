@@ -2,6 +2,8 @@ module tailscale.com
 
 go 1.20
 
+replace github.com/tailscale/wireguard-go => github.com/coder/wireguard-go v0.0.0-20230517160014-e0577cbc6899
+
 require (
 	filippo.io/mkcert v1.4.3
 	github.com/Microsoft/go-winio v0.6.0
@@ -330,6 +332,7 @@ require (
 	golang.org/x/exp/typeparams v0.0.0-20230224173230-c95f2b4c22f2 // indirect
 	golang.org/x/image v0.5.0 // indirect
 	golang.org/x/text v0.8.0 // indirect
+	golang.zx2c4.com/wireguard v0.0.0-20230325221338-052af4a8072b // indirect
 	gomodules.xyz/jsonpatch/v2 v2.2.0 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
 	google.golang.org/protobuf v1.30.0 // indirect
