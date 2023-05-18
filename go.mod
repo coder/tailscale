@@ -2,8 +2,6 @@ module tailscale.com
 
 go 1.20
 
-replace github.com/tailscale/wireguard-go => github.com/coder/wireguard-go v0.0.0-20230517165438-54c7abe92067
-
 require (
 	filippo.io/mkcert v1.4.3
 	github.com/Microsoft/go-winio v0.6.0
