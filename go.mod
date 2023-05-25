@@ -28,7 +28,7 @@ require (
 	github.com/go-ole/go-ole v1.2.6
 	github.com/godbus/dbus/v5 v5.0.6
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da
-	github.com/google/go-cmp v0.5.8
+	github.com/google/go-cmp v0.5.9
 	github.com/google/go-containerregistry v0.9.0
 	github.com/google/uuid v1.3.0
 	github.com/goreleaser/nfpm v1.10.3
@@ -72,16 +72,16 @@ require (
 	golang.org/x/crypto v0.3.0
 	golang.org/x/exp v0.0.0-20221205204356-47842c84f3db
 	golang.org/x/net v0.5.0
-	golang.org/x/oauth2 v0.0.0-20220411215720-9780585627b5
+	golang.org/x/oauth2 v0.4.0
 	golang.org/x/sync v0.1.0
 	golang.org/x/sys v0.4.1-0.20230131160137-e7d7f63158de
 	golang.org/x/term v0.4.0
 	golang.org/x/time v0.0.0-20220609170525-579cf78fd858
-	golang.org/x/tools v0.4.1-0.20221208213631-3f74d914ae6d
+	golang.org/x/tools v0.5.0
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2
 	golang.zx2c4.com/wireguard/windows v0.5.3
-	gvisor.dev/gvisor v0.0.0-20221203005347-703fd9b7fbc0
-	honnef.co/go/tools v0.4.0-0.dev.0.20230130122044-c30b15588105
+	gvisor.dev/gvisor v0.0.0-20230504175454-7b0a1988a28f
+	honnef.co/go/tools v0.4.2
 	inet.af/peercred v0.0.0-20210906144145-0893ea02156a
 	inet.af/wf v0.0.0-20220728202103-50d96caab2f6
 	k8s.io/api v0.25.0
@@ -307,7 +307,7 @@ require (
 	golang.org/x/text v0.6.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.2.0 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
-	google.golang.org/protobuf v1.28.0 // indirect
+	google.golang.org/protobuf v1.28.2-0.20230118093459-a9481185b34d // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/ini.v1 v1.66.2 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
