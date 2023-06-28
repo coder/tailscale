@@ -20,6 +20,7 @@ import (
 	"github.com/tailscale/wireguard-go/device"
 	"github.com/tailscale/wireguard-go/tun"
 	"go4.org/mem"
+	"golang.org/x/exp/slices"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"tailscale.com/disco"
 	"tailscale.com/net/connstats"
@@ -92,6 +93,9 @@ type Wrapper struct {
 	destIPActivity syncs.AtomicValue[map[netip.Addr]func()]
 	destMACAtomic  syncs.AtomicValue[[6]byte]
 	discoKey       syncs.AtomicValue[key.DiscoPublic]
+
+	// timeNow, if non-nil, will be used to obtain the current time.
+	timeNow func() time.Time
 
 	// natV4Config stores the current NAT configuration.
 	natV4Config atomic.Pointer[natV4Config]
@@ -256,6 +260,15 @@ func wrap(logf logger.Logf, tdev tun.Device, isTAP bool) *Wrapper {
 	}
 
 	return w
+}
+
+// now returns the current time, either by calling t.timeNow if set or time.Now
+// if not.
+func (t *Wrapper) now() time.Time {
+	if t.timeNow != nil {
+		return t.timeNow()
+	}
+	return time.Now()
 }
 
 // SetDestIPActivityFuncs sets a map of funcs to run per packet
@@ -578,16 +591,33 @@ func natConfigFromWGConfig(wcfg *wgcfg.Config) *natV4Config {
 		dstMasqAddrs map[key.NodePublic]netip.Addr
 		listenAddrs  map[netip.Addr]struct{}
 	)
+
+	// When using an exit node that requires masquerading, we need to
+	// fill out the routing table with all peers not just the ones that
+	// require masquerading.
+	exitNodeRequiresMasq := false // true if using an exit node and it requires masquerading
+	for _, p := range wcfg.Peers {
+		isExitNode := slices.Contains(p.AllowedIPs, tsaddr.AllIPv4()) || slices.Contains(p.AllowedIPs, tsaddr.AllIPv6())
+		if isExitNode && p.V4MasqAddr != nil && p.V4MasqAddr.IsValid() {
+			exitNodeRequiresMasq = true
+			break
+		}
+	}
 	for i := range wcfg.Peers {
 		p := &wcfg.Peers[i]
-		if p.V4MasqAddr == nil || !p.V4MasqAddr.IsValid() {
+		var addrToUse netip.Addr
+		if p.V4MasqAddr != nil && p.V4MasqAddr.IsValid() {
+			addrToUse = *p.V4MasqAddr
+			mak.Set(&listenAddrs, addrToUse, struct{}{})
+		} else if exitNodeRequiresMasq {
+			addrToUse = nativeAddr
+		} else {
 			continue
 		}
 		rt.InsertOrReplace(p.PublicKey, p.AllowedIPs...)
-		mak.Set(&dstMasqAddrs, p.PublicKey, *p.V4MasqAddr)
-		mak.Set(&listenAddrs, *p.V4MasqAddr, struct{}{})
+		mak.Set(&dstMasqAddrs, p.PublicKey, addrToUse)
 	}
-	if len(listenAddrs) == 0 || len(dstMasqAddrs) == 0 {
+	if len(listenAddrs) == 0 && len(dstMasqAddrs) == 0 {
 		return nil
 	}
 	return &natV4Config{
@@ -724,7 +754,7 @@ func (t *Wrapper) Read(buffs [][]byte, sizes []int, offset int) (int, error) {
 			}
 		}
 		if captHook != nil {
-			captHook(capture.FromLocal, time.Now(), p.Buffer(), p.CaptureMeta)
+			captHook(capture.FromLocal, t.now(), p.Buffer(), p.CaptureMeta)
 		}
 		if !t.disableFilter {
 			response := t.filterPacketOutboundToWireGuard(p)
@@ -791,7 +821,7 @@ func (t *Wrapper) injectedRead(res tunInjectedRead, buf []byte, offset int) (int
 
 func (t *Wrapper) filterPacketInboundFromWireGuard(p *packet.Parsed, captHook capture.Callback) filter.Response {
 	if captHook != nil {
-		captHook(capture.FromPeer, time.Now(), p.Buffer(), p.CaptureMeta)
+		captHook(capture.FromPeer, t.now(), p.Buffer(), p.CaptureMeta)
 	}
 
 	if p.IPProto == ipproto.TSMP {
@@ -964,7 +994,7 @@ func (t *Wrapper) InjectInboundPacketBuffer(pkt stack.PacketBufferPtr) error {
 	p.Decode(buf[PacketStartOffset:])
 	captHook := t.captureHook.Load()
 	if captHook != nil {
-		captHook(capture.SynthesizedToLocal, time.Now(), p.Buffer(), p.CaptureMeta)
+		captHook(capture.SynthesizedToLocal, t.now(), p.Buffer(), p.CaptureMeta)
 	}
 	t.dnatV4(p)
 
@@ -1042,14 +1072,14 @@ func (t *Wrapper) injectOutboundPong(pp *packet.Parsed, req packet.TSMPPingReque
 // It does not block, but takes ownership of the packet.
 // The injected packet will not pass through outbound filters.
 // Injecting an empty packet is a no-op.
-func (t *Wrapper) InjectOutbound(packet []byte) error {
-	if len(packet) > MaxPacketSize {
+func (t *Wrapper) InjectOutbound(pkt []byte) error {
+	if len(pkt) > MaxPacketSize {
 		return errPacketTooBig
 	}
-	if len(packet) == 0 {
+	if len(pkt) == 0 {
 		return nil
 	}
-	t.injectOutbound(tunInjectedRead{data: packet})
+	t.injectOutbound(tunInjectedRead{data: pkt})
 	return nil
 }
 
@@ -1068,7 +1098,7 @@ func (t *Wrapper) InjectOutboundPacketBuffer(pkt stack.PacketBufferPtr) error {
 	}
 	if capt := t.captureHook.Load(); capt != nil {
 		b := pkt.ToBuffer()
-		capt(capture.SynthesizedToPeer, time.Now(), b.Flatten(), packet.CaptureMeta{})
+		capt(capture.SynthesizedToPeer, t.now(), b.Flatten(), packet.CaptureMeta{})
 	}
 
 	t.injectOutbound(tunInjectedRead{packet: pkt})

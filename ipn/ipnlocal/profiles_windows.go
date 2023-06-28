@@ -6,6 +6,7 @@ package ipnlocal
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -20,8 +21,6 @@ const (
 	legacyPrefsMigrationSentinelFile = "_migrated-to-profiles"
 	legacyPrefsExt                   = ".conf"
 )
-
-var errAlreadyMigrated = errors.New("profile migration already completed")
 
 func legacyPrefsDir(uid ipn.WindowsUserID) (string, error) {
 	// TODO(aaron): Ideally we'd have the impersonation token for the pipe's
@@ -41,6 +40,7 @@ func legacyPrefsDir(uid ipn.WindowsUserID) (string, error) {
 func (pm *profileManager) loadLegacyPrefs() (string, ipn.PrefsView, error) {
 	userLegacyPrefsDir, err := legacyPrefsDir(pm.currentUserID)
 	if err != nil {
+		pm.dlogf("no legacy preferences directory for %q: %v", pm.currentUserID, err)
 		return "", ipn.PrefsView{}, err
 	}
 
@@ -48,14 +48,20 @@ func (pm *profileManager) loadLegacyPrefs() (string, ipn.PrefsView, error) {
 	// verify that migration sentinel is not present
 	_, err = os.Stat(migrationSentinel)
 	if err == nil {
+		pm.dlogf("migration sentinel %q already exists", migrationSentinel)
 		return "", ipn.PrefsView{}, errAlreadyMigrated
 	}
 	if !os.IsNotExist(err) {
+		pm.dlogf("os.Stat(%q) = %v", migrationSentinel, err)
 		return "", ipn.PrefsView{}, err
 	}
 
 	prefsPath := filepath.Join(userLegacyPrefsDir, legacyPrefsFile+legacyPrefsExt)
 	prefs, err := ipn.LoadPrefs(prefsPath)
+	pm.dlogf("ipn.LoadPrefs(%q) = %v, %v", prefsPath, prefs, err)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", ipn.PrefsView{}, errAlreadyMigrated
+	}
 	if err != nil {
 		return "", ipn.PrefsView{}, err
 	}

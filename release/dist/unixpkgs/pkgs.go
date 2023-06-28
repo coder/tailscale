@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/goreleaser/nfpm"
 	"tailscale.com/release/dist"
@@ -71,7 +70,6 @@ func (t *tgzTarget) Build(b *dist.Build) ([]string, error) {
 	tw := tar.NewWriter(gw)
 	defer tw.Close()
 
-	buildTime := time.Now()
 	addFile := func(src, dst string, mode int64) error {
 		f, err := os.Open(src)
 		if err != nil {
@@ -86,7 +84,7 @@ func (t *tgzTarget) Build(b *dist.Build) ([]string, error) {
 			Name:    dst,
 			Size:    fi.Size(),
 			Mode:    mode,
-			ModTime: buildTime,
+			ModTime: b.Time,
 			Uid:     0,
 			Gid:     0,
 			Uname:   "root",
@@ -104,7 +102,7 @@ func (t *tgzTarget) Build(b *dist.Build) ([]string, error) {
 		hdr := &tar.Header{
 			Name:    name + "/",
 			Mode:    0755,
-			ModTime: buildTime,
+			ModTime: b.Time,
 			Uid:     0,
 			Gid:     0,
 			Uname:   "root",
@@ -354,6 +352,10 @@ func debArch(arch string) string {
 		// can ship more than 1 ARM deb, so for now match redo's behavior of
 		// shipping armv5 binaries in an armv7 trenchcoat.
 		return "armhf"
+	case "mipsle":
+		return "mipsel"
+	case "mips64le":
+		return "mips64el"
 	default:
 		return arch
 	}
@@ -372,6 +374,10 @@ func rpmArch(arch string) string {
 		return "armv7hl"
 	case "arm64":
 		return "aarch64"
+	case "mipsle":
+		return "mipsel"
+	case "mips64le":
+		return "mips64el"
 	default:
 		return arch
 	}

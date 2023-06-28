@@ -49,7 +49,7 @@ import (
 	"tailscale.com/tailcfg"
 	"tailscale.com/util/clientmetric"
 	"tailscale.com/util/multierr"
-	"tailscale.com/wgengine"
+	"tailscale.com/version/distro"
 	"tailscale.com/wgengine/filter"
 )
 
@@ -468,7 +468,7 @@ func (s *peerAPIServer) listen(ip netip.Addr, ifState *interfaces.State) (ln net
 		}
 	}
 
-	if wgengine.IsNetstack(s.b.e) {
+	if s.b.sys.IsNetstack() {
 		ipStr = ""
 	}
 
@@ -605,6 +605,16 @@ func (h *peerAPIHandler) logf(format string, a ...any) {
 	h.ps.b.logf("peerapi: "+format, a...)
 }
 
+// isAddressValid reports whether addr is a valid destination address for this
+// node originating from the peer.
+func (h *peerAPIHandler) isAddressValid(addr netip.Addr) bool {
+	if h.peerNode.SelfNodeV4MasqAddrForThisPeer != nil {
+		return *h.peerNode.SelfNodeV4MasqAddrForThisPeer == addr
+	}
+	pfx := netip.PrefixFrom(addr, addr.BitLen())
+	return slices.Contains(h.selfNode.Addresses, pfx)
+}
+
 func (h *peerAPIHandler) validateHost(r *http.Request) error {
 	if r.Host == "peer" {
 		return nil
@@ -613,9 +623,8 @@ func (h *peerAPIHandler) validateHost(r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	hostIPPfx := netip.PrefixFrom(ap.Addr(), ap.Addr().BitLen())
-	if !slices.Contains(h.selfNode.Addresses, hostIPPfx) {
-		return fmt.Errorf("%v not found in self addresses", hostIPPfx)
+	if !h.isAddressValid(ap.Addr()) {
+		return fmt.Errorf("%v not found in self addresses", ap.Addr())
 	}
 	return nil
 }
@@ -771,7 +780,7 @@ func (h *peerAPIHandler) handleServeIngress(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	getConn := func() (net.Conn, bool) {
+	getConnOrReset := func() (net.Conn, bool) {
 		conn, _, err := w.(http.Hijacker).Hijack()
 		if err != nil {
 			h.logf("ingress: failed hijacking conn")
@@ -789,7 +798,7 @@ func (h *peerAPIHandler) handleServeIngress(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "denied", http.StatusForbidden)
 	}
 
-	h.ps.b.HandleIngressTCPConn(h.peerNode, target, srcAddr, getConn, sendRST)
+	h.ps.b.HandleIngressTCPConn(h.peerNode, target, srcAddr, getConnOrReset, sendRST)
 }
 
 func (h *peerAPIHandler) handleServeInterfaces(w http.ResponseWriter, r *http.Request) {
@@ -947,6 +956,12 @@ func (h *peerAPIHandler) handleServeSockStats(w http.ResponseWriter, r *http.Req
 	fmt.Fprintln(w, "</tfoot>")
 
 	fmt.Fprintln(w, "</table>")
+
+	fmt.Fprintln(w, "<h2>Debug Info</h2>")
+
+	fmt.Fprintln(w, "<pre>")
+	fmt.Fprintln(w, html.EscapeString(sockstats.DebugInfo()))
+	fmt.Fprintln(w, "</pre>")
 }
 
 type incomingFile struct {
@@ -1073,6 +1088,10 @@ func (h *peerAPIHandler) handlePeerPut(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.ps.rootDir == "" {
 		http.Error(w, errNoTaildrop.Error(), http.StatusInternalServerError)
+		return
+	}
+	if distro.Get() == distro.Unraid && !h.ps.directFileMode {
+		http.Error(w, "Taildrop folder not configured or accessible", http.StatusInternalServerError)
 		return
 	}
 	rawPath := r.URL.EscapedPath()
@@ -1219,12 +1238,9 @@ func (h *peerAPIHandler) handleServeMagicsock(w http.ResponseWriter, r *http.Req
 		http.Error(w, "denied; no debug access", http.StatusForbidden)
 		return
 	}
-	eng := h.ps.b.e
-	if ig, ok := eng.(wgengine.InternalsGetter); ok {
-		if _, mc, _, ok := ig.GetInternals(); ok {
-			mc.ServeHTTPDebug(w, r)
-			return
-		}
+	if mc, ok := h.ps.b.sys.MagicSock.GetOK(); ok {
+		mc.ServeHTTPDebug(w, r)
+		return
 	}
 	http.Error(w, "miswired", 500)
 }

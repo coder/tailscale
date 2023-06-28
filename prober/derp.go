@@ -188,6 +188,9 @@ func (d *derpProber) updateMap(ctx context.Context) error {
 			if existing, ok := d.nodes[n.HostName]; ok {
 				return fmt.Errorf("derpmap has duplicate nodes: %+v and %+v", existing, n)
 			}
+			// Allow the prober to monitor nodes marked as
+			// STUN only in the default map
+			n.STUNOnly = false
 			d.nodes[n.HostName] = n
 		}
 	}
@@ -346,7 +349,7 @@ func newConn(ctx context.Context, dm *tailcfg.DERPMap, n *tailcfg.DERPNode) (*de
 		return !strings.Contains(s, "derphttp.Client.Connect: connecting to")
 	})
 	priv := key.NewNode()
-	dc := derphttp.NewRegionClient(priv, l, func() *tailcfg.DERPRegion {
+	dc := derphttp.NewRegionClient(priv, l, nil /* no netMon */, func() *tailcfg.DERPRegion {
 		rid := n.RegionID
 		return &tailcfg.DERPRegion{
 			RegionID:   rid,

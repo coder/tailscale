@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"tailscale.com/envknob"
+	"tailscale.com/net/netmon"
 	"tailscale.com/types/logger"
 	"tailscale.com/util/cloudenv"
 	"tailscale.com/util/singleflight"
@@ -91,6 +92,11 @@ type Resolver struct {
 	// be added to all log messages printed with this logger.
 	Logf logger.Logf
 
+	// NetMon optionally provides a netmon.Monitor to use to get the current
+	// (cached) network interface.
+	// If nil, the interface will be looked up dynamically.
+	NetMon *netmon.Monitor
+
 	sf singleflight.Group[string, ipRes]
 
 	mu      sync.Mutex
@@ -136,10 +142,6 @@ func (r *Resolver) dlogf(format string, args ...any) {
 func (r *Resolver) cloudHostResolver() (v *net.Resolver, ok bool) {
 	switch runtime.GOOS {
 	case "android", "ios", "darwin":
-		return nil, false
-	case "windows":
-		// TODO(bradfitz): remove this restriction once we're using Go 1.19
-		// which supports net.Resolver.PreferGo on Windows.
 		return nil, false
 	}
 	ip := cloudenv.Get().ResolverIP()

@@ -8,7 +8,6 @@ package sockstats
 import (
 	"context"
 	"fmt"
-	"math"
 	"net"
 	"strings"
 	"sync"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"tailscale.com/net/interfaces"
+	"tailscale.com/net/netmon"
 	"tailscale.com/types/logger"
 	"tailscale.com/util/clientmetric"
 )
@@ -85,7 +85,7 @@ func withSockStats(ctx context.Context, label Label, logf logger.Logf) context.C
 			rxBytesCellularMetric: clientmetric.NewCounter(fmt.Sprintf("sockstats_rx_bytes_cellular_%s", label)),
 		}
 
-		// We might be called before setLinkMonitor has been called (and we've
+		// We might be called before setNetMon has been called (and we've
 		// had a chance to populate knownInterfaces). In that case, we'll have
 		// to get the list of interfaces ourselves.
 		if len(sockStats.knownInterfaces) == 0 {
@@ -249,13 +249,13 @@ func getValidation() *ValidationSockStats {
 	return r
 }
 
-func setLinkMonitor(lm LinkMonitor) {
+func setNetMon(netMon *netmon.Monitor) {
 	sockStats.mu.Lock()
 	defer sockStats.mu.Unlock()
 
 	// We intentionally populate all known interfaces now, so that we can
 	// increment stats for them without holding mu.
-	state := lm.InterfaceState()
+	state := netMon.InterfaceState()
 	for ifName, iface := range state.Interface {
 		sockStats.knownInterfaces[iface.Index] = ifName
 	}
@@ -266,7 +266,7 @@ func setLinkMonitor(lm LinkMonitor) {
 		sockStats.usedInterfaces[ifIndex] = 1
 	}
 
-	lm.RegisterChangeCallback(func(changed bool, state *interfaces.State) {
+	netMon.RegisterChangeCallback(func(changed bool, state *interfaces.State) {
 		if changed {
 			if ifName := state.DefaultRouteInterface; ifName != "" {
 				ifIndex := state.Interface[ifName].Index
@@ -287,6 +287,19 @@ func setLinkMonitor(lm LinkMonitor) {
 			}
 		}
 	})
+}
+
+func debugInfo() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "radio high percent: %d\n", radio.radioHighPercent())
+	fmt.Fprintf(&b, "radio activity for the last hour (one minute per line):\n")
+	for i, a := range radio.radioActive() {
+		fmt.Fprintf(&b, "%d", a)
+		if i%60 == 59 {
+			fmt.Fprintf(&b, "\n")
+		}
+	}
+	return b.String()
 }
 
 func isLikelyCellularInterface(ifName string) bool {
@@ -312,6 +325,10 @@ type radioMonitor struct {
 // Usage is measured once per second, so this is the number of seconds of history to track.
 const radioSampleSize = 3600 // 1 hour
 
+// initStallPeriod is the minimum amount of time in seconds to collect data before reporting.
+// Otherwise, all clients will report 100% radio usage on startup.
+var initStallPeriod int64 = 120 // 2 minutes
+
 var radio = &radioMonitor{
 	now:       time.Now,
 	startTime: time.Now().Unix(),
@@ -332,42 +349,74 @@ const (
 	radioLowIdle  = 12 // seconds radio idles in low power state before transitioning to off
 )
 
+// radioActive returns a slice of 1s samples (one per second) for the past hour
+// indicating whether the radio was active (1) or idle (0).
+func (rm *radioMonitor) radioActive() (active [radioSampleSize]int64) {
+	rm.forEachSample(func(c int, isActive bool) {
+		if isActive {
+			active[c] = 1
+		}
+	})
+	return
+}
+
 // radioHighPercent returns the percentage of time (as an int from 0 to 100)
 // that the cellular radio was in high power mode during the past hour.
 // If the radio has been monitored for less than an hour,
 // the percentage is calculated based on the time monitored.
 func (rm *radioMonitor) radioHighPercent() int64 {
+	var highPowerSec int64 // total seconds radio was in high power (active or idle)
+	lastActive := -1       // counter when radio was last active
+
+	periodLength := rm.forEachSample(func(c int, isActive bool) {
+		if isActive {
+			// radio on and active
+			highPowerSec++
+			lastActive = c
+		} else if lastActive != -1 && c-lastActive < radioHighIdle {
+			// radio on but idle
+			highPowerSec++
+		}
+	})
+
+	if periodLength < initStallPeriod {
+		return 0
+	}
+
+	if highPowerSec == 0 {
+		return 0
+	}
+	return highPowerSec * 100 / periodLength
+}
+
+// forEachSample calls f for each sample in the past hour (or less if less time
+// has passed -- the evaluated period is returned, measured in seconds)
+func (rm *radioMonitor) forEachSample(f func(c int, isActive bool)) (periodLength int64) {
 	now := rm.now().Unix()
-	var periodLength int64 = radioSampleSize
+	periodLength = radioSampleSize
 	if t := now - rm.startTime; t < periodLength {
 		if t <= 0 {
 			return 0
 		}
-		periodLength = t
+		periodLength = t + 1 // we want an inclusive range (with the current second)
 	}
 	periodStart := now - periodLength // start of current reporting period
 
-	// slices of radio usage, with values in chronological order
+	// split into slices of radio usage, with values in chronological order.
+	// split at now+1 so that the current second is in the second slice.
+	split := (now + 1) % radioSampleSize
 	slices := [2][]int64{
-		rm.usage[now%radioSampleSize:],
-		rm.usage[:now%radioSampleSize],
+		rm.usage[split:],
+		rm.usage[:split],
 	}
-	var highPowerSec int64 // total seconds radio was in high power (active or idle)
-	var c int              // counter
-	var lastActive int     // counter when radio was last active
+
+	var c int // counter
 	for _, slice := range slices {
 		for _, v := range slice {
-			c++ // increment first so we don't have zero values
-			if v >= periodStart {
-				// radio on and active
-				highPowerSec++
-				lastActive = c
-			} else if lastActive > 0 && c-lastActive < radioHighIdle {
-				// radio on but idle
-				highPowerSec++
-			}
+			f(c, v >= periodStart)
+			c++
 		}
 	}
 
-	return int64(math.Round(float64(highPowerSec) / float64(periodLength) * 100))
+	return periodLength
 }

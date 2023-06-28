@@ -379,7 +379,6 @@ cusimanse
 polecat
 degu
 coatimundi
-stringray
 diplodocus
 stegosaurus
 zuul
@@ -391,7 +390,6 @@ minmi
 triceratops
 troodon
 trex
-tyrannosarus
 shetland
 pinto
 appaloosa
@@ -542,3 +540,7 @@ vimba
 wahoo
 coelacanth
 llama
+shrimp
+prawn
+lobster
+chipmunk

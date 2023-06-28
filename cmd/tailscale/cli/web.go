@@ -29,6 +29,7 @@ import (
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
+	"tailscale.com/util/cmpx"
 	"tailscale.com/util/groupmember"
 	"tailscale.com/version/distro"
 )
@@ -61,6 +62,8 @@ type tmplData struct {
 	TUNMode           bool
 	IsSynology        bool
 	DSMVersion        int // 6 or 7, if IsSynology=true
+	IsUnraid          bool
+	UnraidToken       string
 	IPNVersion        string
 }
 
@@ -153,10 +156,7 @@ func runWeb(ctx context.Context, args []string) error {
 // urlOfListenAddr parses a given listen address into a formatted URL
 func urlOfListenAddr(addr string) string {
 	host, port, _ := net.SplitHostPort(addr)
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	return fmt.Sprintf("http://%s", net.JoinHostPort(host, port))
+	return fmt.Sprintf("http://%s", net.JoinHostPort(cmpx.Or(host, "127.0.0.1"), port))
 }
 
 // authorize returns the name of the user accessing the web UI after verifying
@@ -441,6 +441,8 @@ func webHandler(w http.ResponseWriter, r *http.Request) {
 		TUNMode:      st.TUN,
 		IsSynology:   distro.Get() == distro.Synology || envknob.Bool("TS_FAKE_SYNOLOGY"),
 		DSMVersion:   distro.DSMVersion(),
+		IsUnraid:     distro.Get() == distro.Unraid,
+		UnraidToken:  os.Getenv("UNRAID_CSRF_TOKEN"),
 		IPNVersion:   versionShort,
 	}
 	exitNodeRouteV4 := netip.MustParsePrefix("0.0.0.0/0")

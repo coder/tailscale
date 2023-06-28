@@ -34,6 +34,7 @@ import (
 	"tailscale.com/ipn/ipnlocal"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/logtail"
+	"tailscale.com/net/netmon"
 	"tailscale.com/net/netutil"
 	"tailscale.com/net/portmapper"
 	"tailscale.com/tailcfg"
@@ -46,7 +47,6 @@ import (
 	"tailscale.com/util/httpm"
 	"tailscale.com/util/mak"
 	"tailscale.com/version"
-	"tailscale.com/wgengine/monitor"
 )
 
 type localAPIHandler func(*Handler, http.ResponseWriter, *http.Request)
@@ -104,6 +104,7 @@ var handler = map[string]localAPIHandler{
 	"tka/force-local-disable":     (*Handler).serveTKALocalDisable,
 	"tka/affected-sigs":           (*Handler).serveTKAAffectedSigs,
 	"tka/wrap-preauth-key":        (*Handler).serveTKAWrapPreauthKey,
+	"tka/verify-deeplink":         (*Handler).serveTKAVerifySigningDeeplink,
 	"upload-client-metrics":       (*Handler).serveUploadClientMetrics,
 	"watch-ipn-bus":               (*Handler).serveWatchIPNBus,
 	"whois":                       (*Handler).serveWhoIs,
@@ -125,8 +126,10 @@ var (
 	metrics   = map[string]*clientmetric.Metric{}
 )
 
-func NewHandler(b *ipnlocal.LocalBackend, logf logger.Logf, logID logid.PublicID) *Handler {
-	return &Handler{b: b, logf: logf, backendLogID: logID}
+// NewHandler creates a new LocalAPI HTTP handler. All parameters except netMon
+// are required (if non-nil it's used to do faster interface lookups).
+func NewHandler(b *ipnlocal.LocalBackend, logf logger.Logf, netMon *netmon.Monitor, logID logid.PublicID) *Handler {
+	return &Handler{b: b, logf: logf, netMon: netMon, backendLogID: logID}
 }
 
 type Handler struct {
@@ -150,6 +153,7 @@ type Handler struct {
 
 	b            *ipnlocal.LocalBackend
 	logf         logger.Logf
+	netMon       *netmon.Monitor // optional; nil means interfaces will be looked up on-demand
 	backendLogID logid.PublicID
 }
 
@@ -679,7 +683,7 @@ func (h *Handler) serveDebugPortmap(w http.ResponseWriter, r *http.Request) {
 	done := make(chan bool, 1)
 
 	var c *portmapper.Client
-	c = portmapper.NewClient(logger.WithPrefix(logf, "portmapper: "), debugKnobs, func() {
+	c = portmapper.NewClient(logger.WithPrefix(logf, "portmapper: "), h.netMon, debugKnobs, func() {
 		logf("portmapping changed.")
 		logf("have mapping: %v", c.HaveMapping())
 
@@ -695,7 +699,7 @@ func (h *Handler) serveDebugPortmap(w http.ResponseWriter, r *http.Request) {
 	})
 	defer c.Close()
 
-	linkMon, err := monitor.New(logger.WithPrefix(logf, "monitor: "))
+	netMon, err := netmon.New(logger.WithPrefix(logf, "monitor: "))
 	if err != nil {
 		logf("error creating monitor: %v", err)
 		return
@@ -707,14 +711,14 @@ func (h *Handler) serveDebugPortmap(w http.ResponseWriter, r *http.Request) {
 			self = netip.MustParseAddr(b)
 			return gw, self, true
 		}
-		return linkMon.GatewayAndSelfIP()
+		return netMon.GatewayAndSelfIP()
 	}
 
 	c.SetGatewayLookupFunc(gatewayAndSelfIP)
 
 	gw, selfIP, ok := gatewayAndSelfIP()
 	if !ok {
-		logf("no gateway or self IP; %v", linkMon.InterfaceState())
+		logf("no gateway or self IP; %v", netMon.InterfaceState())
 		return
 	}
 	logf("gw=%v; self=%v", gw, selfIP)
@@ -927,8 +931,8 @@ func InUseOtherUserIPNStream(w http.ResponseWriter, r *http.Request, err error) 
 }
 
 func (h *Handler) serveWatchIPNBus(w http.ResponseWriter, r *http.Request) {
-	if !h.PermitWrite {
-		http.Error(w, "denied", http.StatusForbidden)
+	if !h.PermitRead {
+		http.Error(w, "watch ipn bus access denied", http.StatusForbidden)
 		return
 	}
 	f, ok := w.(http.Flusher)
@@ -1327,7 +1331,7 @@ func (h *Handler) servePing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pingTypeStr := r.FormValue("type")
-	if ipStr == "" {
+	if pingTypeStr == "" {
 		http.Error(w, "missing 'type' parameter", 400)
 		return
 	}
@@ -1605,6 +1609,35 @@ func (h *Handler) serveTKAWrapPreauthKey(w http.ResponseWriter, r *http.Request)
 	}
 	w.WriteHeader(200)
 	w.Write([]byte(wrappedKey))
+}
+
+func (h *Handler) serveTKAVerifySigningDeeplink(w http.ResponseWriter, r *http.Request) {
+	if !h.PermitRead {
+		http.Error(w, "signing deeplink verification access denied", http.StatusForbidden)
+		return
+	}
+	if r.Method != httpm.POST {
+		http.Error(w, "use POST", http.StatusMethodNotAllowed)
+		return
+	}
+
+	type verifyRequest struct {
+		URL string
+	}
+	var req verifyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON for verifyRequest body", 400)
+		return
+	}
+
+	res := h.b.NetworkLockVerifySigningDeeplink(req.URL)
+	j, err := json.MarshalIndent(res, "", "\t")
+	if err != nil {
+		http.Error(w, "JSON encoding error", 500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(j)
 }
 
 func (h *Handler) serveTKADisable(w http.ResponseWriter, r *http.Request) {

@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/acme"
+	"golang.org/x/exp/slices"
 	"tailscale.com/atomicfile"
 	"tailscale.com/envknob"
 	"tailscale.com/hostinfo"
@@ -100,11 +101,13 @@ func (b *LocalBackend) GetCertPEM(ctx context.Context, domain string) (*TLSCertK
 	}
 
 	if pair, err := getCertPEMCached(cs, domain, now); err == nil {
-		future := now.AddDate(0, 0, 14)
-		if b.shouldStartDomainRenewal(cs, domain, future) {
+		shouldRenew, err := shouldStartDomainRenewal(domain, now, pair)
+		if err != nil {
+			logf("error checking for certificate renewal: %v", err)
+		} else if shouldRenew {
 			logf("starting async renewal")
 			// Start renewal in the background.
-			go b.getCertPEM(context.Background(), cs, logf, traceACME, domain, future)
+			go b.getCertPEM(context.Background(), cs, logf, traceACME, domain, now)
 		}
 		return pair, nil
 	}
@@ -117,18 +120,41 @@ func (b *LocalBackend) GetCertPEM(ctx context.Context, domain string) (*TLSCertK
 	return pair, nil
 }
 
-func (b *LocalBackend) shouldStartDomainRenewal(cs certStore, domain string, future time.Time) bool {
+func shouldStartDomainRenewal(domain string, now time.Time, pair *TLSCertKeyPair) (bool, error) {
 	renewMu.Lock()
 	defer renewMu.Unlock()
-	now := time.Now()
 	if last, ok := lastRenewCheck[domain]; ok && now.Sub(last) < time.Minute {
 		// We checked very recently. Don't bother reparsing &
 		// validating the x509 cert.
-		return false
+		return false, nil
 	}
 	lastRenewCheck[domain] = now
-	_, err := getCertPEMCached(cs, domain, future)
-	return errors.Is(err, errCertExpired)
+
+	block, _ := pem.Decode(pair.CertPEM)
+	if block == nil {
+		return false, fmt.Errorf("parsing certificate PEM")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return false, fmt.Errorf("parsing certificate: %w", err)
+	}
+
+	certLifetime := cert.NotAfter.Sub(cert.NotBefore)
+	if certLifetime < 0 {
+		return false, fmt.Errorf("negative certificate lifetime %v", certLifetime)
+	}
+
+	// Per https://github.com/tailscale/tailscale/issues/8204, check
+	// whether we're more than 2/3 of the way through the certificate's
+	// lifetime, which is the officially-recommended best practice by Let's
+	// Encrypt.
+	renewalDuration := certLifetime * 2 / 3
+	renewAt := cert.NotBefore.Add(renewalDuration)
+
+	if now.After(renewAt) {
+		return true, nil
+	}
+	return false, nil
 }
 
 // certStore provides a way to perist and retrieve TLS certificates.
@@ -361,17 +387,16 @@ func (b *LocalBackend) getCertPEM(ctx context.Context, cs certStore, logf logger
 				}
 				key := "_acme-challenge." + domain
 
+				// Do a best-effort lookup to see if we've already created this DNS name
+				// in a previous attempt. Don't burn too much time on it, though. Worst
+				// case we ask the server to create something that already exists.
 				var resolver net.Resolver
-				var ok bool
-				txts, _ := resolver.LookupTXT(ctx, key)
-				for _, txt := range txts {
-					if txt == rec {
-						ok = true
-						logf("TXT record already existed")
-						break
-					}
-				}
-				if !ok {
+				lookupCtx, lookupCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+				txts, _ := resolver.LookupTXT(lookupCtx, key)
+				lookupCancel()
+				if slices.Contains(txts, rec) {
+					logf("TXT record already existed")
+				} else {
 					logf("starting SetDNS call...")
 					err = b.SetDNS(ctx, key, rec)
 					if err != nil {

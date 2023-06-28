@@ -111,9 +111,15 @@ func autoflagsForTest(argv []string, env *Environment, goroot, nativeGOOS, nativ
 			// e.g. -mmacosx-version-min=11.3, -miphoneos-version-min=15.0
 			switch {
 			case env.IsSet("IPHONEOS_DEPLOYMENT_TARGET"):
-				xcodeFlags = append(xcodeFlags, "-miphoneos-version-min="+env.Get("IPHONEOS_DEPLOYMENT_TARGET", ""))
+				if env.Get("TARGET_DEVICE_PLATFORM_NAME", "") == "iphonesimulator" {
+					xcodeFlags = append(xcodeFlags, "-miphonesimulator-version-min="+env.Get("IPHONEOS_DEPLOYMENT_TARGET", ""))
+				} else {
+					xcodeFlags = append(xcodeFlags, "-miphoneos-version-min="+env.Get("IPHONEOS_DEPLOYMENT_TARGET", ""))
+				}
 			case env.IsSet("MACOSX_DEPLOYMENT_TARGET"):
 				xcodeFlags = append(xcodeFlags, "-mmacosx-version-min="+env.Get("MACOSX_DEPLOYMENT_TARGET", ""))
+			case env.IsSet("TVOS_DEPLOYMENT_TARGET"):
+				xcodeFlags = append(xcodeFlags, "-mtvos-version-min="+env.Get("TVOS_DEPLOYMENT_TARGET", ""))
 			default:
 				return nil, nil, fmt.Errorf("invoked by Xcode but couldn't figure out deployment target. Did Xcode change its envvars again?")
 			}
@@ -153,7 +159,9 @@ func autoflagsForTest(argv []string, env *Environment, goroot, nativeGOOS, nativ
 
 	env.Set("GOOS", targetOS)
 	env.Set("GOARCH", targetArch)
-	env.Set("GOARM", "5") // TODO: fix, see go/internal-bug/3092
+	if !env.IsSet("GOARM") {
+		env.Set("GOARM", "5") // TODO: fix, see go/internal-bug/3092
+	}
 	env.Set("GOMIPS", "softfloat")
 	env.Set("CGO_ENABLED", boolStr(cgo))
 	env.Set("CGO_CFLAGS", strings.Join(cgoCflags, " "))

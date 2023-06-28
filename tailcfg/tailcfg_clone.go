@@ -119,6 +119,10 @@ func (src *Hostinfo) Clone() *Hostinfo {
 	dst.Services = append(src.Services[:0:0], src.Services...)
 	dst.NetInfo = src.NetInfo.Clone()
 	dst.SSH_HostKeys = append(src.SSH_HostKeys[:0:0], src.SSH_HostKeys...)
+	if dst.Location != nil {
+		dst.Location = new(Location)
+		*dst.Location = *src.Location
+	}
 	return dst
 }
 
@@ -157,6 +161,7 @@ var _HostinfoCloneNeedsRegeneration = Hostinfo(struct {
 	Cloud           string
 	Userspace       opt.Bool
 	UserspaceRouter opt.Bool
+	Location        *Location
 }{})
 
 // Clone makes a deep copy of NetInfo.
@@ -355,6 +360,7 @@ var _DERPNodeCloneNeedsRegeneration = DERPNode(struct {
 	InsecureForTests bool
 	ForceHTTP        bool
 	STUNTestIP       string
+	CanPort80        bool
 }{})
 
 // Clone makes a deep copy of SSHRule.
@@ -400,19 +406,25 @@ func (src *SSHAction) Clone() *SSHAction {
 	dst := new(SSHAction)
 	*dst = *src
 	dst.Recorders = append(src.Recorders[:0:0], src.Recorders...)
+	if dst.OnRecordingFailure != nil {
+		dst.OnRecordingFailure = new(SSHRecorderFailureAction)
+		*dst.OnRecordingFailure = *src.OnRecordingFailure
+	}
 	return dst
 }
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _SSHActionCloneNeedsRegeneration = SSHAction(struct {
-	Message                  string
-	Reject                   bool
-	Accept                   bool
-	SessionDuration          time.Duration
-	AllowAgentForwarding     bool
-	HoldAndDelegate          string
-	AllowLocalPortForwarding bool
-	Recorders                []netip.AddrPort
+	Message                   string
+	Reject                    bool
+	Accept                    bool
+	SessionDuration           time.Duration
+	AllowAgentForwarding      bool
+	HoldAndDelegate           string
+	AllowLocalPortForwarding  bool
+	AllowRemotePortForwarding bool
+	Recorders                 []netip.AddrPort
+	OnRecordingFailure        *SSHRecorderFailureAction
 }{})
 
 // Clone makes a deep copy of SSHPrincipal.
@@ -453,9 +465,29 @@ var _ControlDialPlanCloneNeedsRegeneration = ControlDialPlan(struct {
 	Candidates []ControlIPCandidate
 }{})
 
+// Clone makes a deep copy of Location.
+// The result aliases no memory with the original.
+func (src *Location) Clone() *Location {
+	if src == nil {
+		return nil
+	}
+	dst := new(Location)
+	*dst = *src
+	return dst
+}
+
+// A compilation failure here means this code must be regenerated, with the command at the top of this file.
+var _LocationCloneNeedsRegeneration = Location(struct {
+	Country     string
+	CountryCode string
+	City        string
+	CityCode    string
+	Priority    int
+}{})
+
 // Clone duplicates src into dst and reports whether it succeeded.
 // To succeed, <src, dst> must be of types <*T, *T> or <*T, **T>,
-// where T is one of User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPRegion,DERPMap,DERPNode,SSHRule,SSHAction,SSHPrincipal,ControlDialPlan.
+// where T is one of User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPRegion,DERPMap,DERPNode,SSHRule,SSHAction,SSHPrincipal,ControlDialPlan,Location.
 func Clone(dst, src any) bool {
 	switch src := src.(type) {
 	case *User:
@@ -581,6 +613,15 @@ func Clone(dst, src any) bool {
 			*dst = *src.Clone()
 			return true
 		case **ControlDialPlan:
+			*dst = src.Clone()
+			return true
+		}
+	case *Location:
+		switch dst := dst.(type) {
+		case *Location:
+			*dst = *src.Clone()
+			return true
+		case **Location:
 			*dst = src.Clone()
 			return true
 		}

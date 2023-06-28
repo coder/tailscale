@@ -7,8 +7,10 @@ package hostinfo
 
 import (
 	"bufio"
+	"bytes"
 	"io"
 	"os"
+	"os/exec"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -281,7 +283,7 @@ func inContainer() opt.Bool {
 		return nil
 	})
 	lineread.File("/proc/mounts", func(line []byte) error {
-		if mem.Contains(mem.B(line), mem.S("fuse.lxcfs")) {
+		if mem.Contains(mem.B(line), mem.S("lxcfs /proc/cpuinfo fuse.lxcfs")) {
 			ret.Set(true)
 			return io.EOF
 		}
@@ -405,7 +407,7 @@ func DisabledEtcAptSource() bool {
 		return false
 	}
 	mod := fi.ModTime()
-	if c, ok := etcAptSrcCache.Load().(etcAptSrcResult); ok && c.mod == mod {
+	if c, ok := etcAptSrcCache.Load().(etcAptSrcResult); ok && c.mod.Equal(mod) {
 		return c.disabled
 	}
 	f, err := os.Open(path)
@@ -433,4 +435,13 @@ func etcAptSourceFileIsDisabled(r io.Reader) bool {
 		return false
 	}
 	return disabled
+}
+
+// IsSELinuxEnforcing reports whether SELinux is in "Enforcing" mode.
+func IsSELinuxEnforcing() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	out, _ := exec.Command("getenforce").Output()
+	return string(bytes.TrimSpace(out)) == "Enforcing"
 }

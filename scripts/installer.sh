@@ -154,6 +154,15 @@ main() {
 					APT_KEY_TYPE="keyring"
 				fi
 				;;
+			Deepin)  # https://github.com/tailscale/tailscale/issues/7862
+				OS="debian"
+				PACKAGETYPE="apt"
+				if [ "$VERSION_ID" -lt 20 ]; then
+					APT_KEY_TYPE="legacy"
+				else
+					APT_KEY_TYPE="keyring"
+				fi
+				;;
 			centos)
 				OS="$ID"
 				VERSION="$VERSION_ID"
@@ -183,7 +192,7 @@ main() {
 				VERSION=""
 				PACKAGETYPE="dnf"
 				;;
-			rocky|almalinux|nobara|openmandriva|sangoma)
+			rocky|almalinux|nobara|openmandriva|sangoma|risios)
 				OS="fedora"
 				VERSION=""
 				PACKAGETYPE="dnf"
@@ -208,7 +217,12 @@ main() {
 				VERSION="tumbleweed"
 				PACKAGETYPE="zypper"
 				;;
-			arch|archarm|endeavouros)
+			sle-micro-rancher)
+				OS="opensuse"
+				VERSION="leap/15.4"
+				PACKAGETYPE="zypper"
+				;;
+			arch|archarm|endeavouros|blendos)
 				OS="arch"
 				VERSION="" # rolling release
 				PACKAGETYPE="pacman"
@@ -309,6 +323,17 @@ main() {
 	if [ -z "$CURL" ]; then
 		echo "The installer needs either curl or wget to download files."
 		echo "Please install either curl or wget to proceed."
+		exit 1
+	fi
+
+	TEST_URL="https://pkgs.tailscale.com/"
+	RC=0
+	TEST_OUT=$($CURL "$TEST_URL" 2>&1) || RC=$?
+	if [ $RC != 0 ]; then
+		echo "The installer cannot reach $TEST_URL"
+		echo "Please make sure that your machine has internet access."
+		echo "Test output:"
+		echo $TEST_OUT
 		exit 1
 	fi
 
@@ -421,7 +446,9 @@ main() {
 
 
 	# Step 4: run the installation.
-	echo "Installing Tailscale for $OS $VERSION, using method $PACKAGETYPE"
+	OSVERSION="$OS"
+	[ "$VERSION" != "" ] && OSVERSION="$OSVERSION $VERSION"
+	echo "Installing Tailscale for $OSVERSION, using method $PACKAGETYPE"
 	case "$PACKAGETYPE" in
 		apt)
 			export DEBIAN_FRONTEND=noninteractive
@@ -460,6 +487,7 @@ main() {
 		;;
 		dnf)
 			set -x
+			$SUDO dnf install -y 'dnf-command(config-manager)'
 			$SUDO dnf config-manager --add-repo "https://pkgs.tailscale.com/$TRACK/$OS/$VERSION/tailscale.repo"
 			$SUDO dnf install -y tailscale
 			$SUDO systemctl enable --now tailscaled
@@ -474,14 +502,15 @@ main() {
 		;;
 		zypper)
 			set -x
-			$SUDO zypper ar -g -r "https://pkgs.tailscale.com/$TRACK/$OS/$VERSION/tailscale.repo"
-			$SUDO zypper ref
-			$SUDO zypper in tailscale
+			$SUDO zypper --non-interactive ar -g -r "https://pkgs.tailscale.com/$TRACK/$OS/$VERSION/tailscale.repo"
+			$SUDO zypper --non-interactive --gpg-auto-import-keys refresh
+			$SUDO zypper --non-interactive install tailscale
 			$SUDO systemctl enable --now tailscaled
 			set +x
 			;;
 		pacman)
 			set -x
+			$SUDO pacman -Sy
 			$SUDO pacman -S tailscale --noconfirm
 			$SUDO systemctl enable --now tailscaled
 			set +x
@@ -501,7 +530,7 @@ main() {
 			;;
 		xbps)
 			set -x
-			$SUDO xbps-install tailscale -y 
+			$SUDO xbps-install tailscale -y
 			set +x
 			;;
 		emerge)

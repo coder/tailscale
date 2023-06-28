@@ -65,8 +65,9 @@ jobs:
           ~\AppData\Local\go-build
         # The -2- here should be incremented when the scheme of data to be
         # cached changes (e.g. path above changes).
-        key: ${{ github.job }}-${{ runner.os }}-${{ matrix.goarch }}-${{ matrix.buildflags }}-go-2-${{ hashFiles('**/go.sum') }}
+        key: ${{ github.job }}-${{ runner.os }}-${{ matrix.goarch }}-${{ matrix.buildflags }}-go-2-${{ hashFiles('**/go.sum') }}-${{ github.run_id }}
         restore-keys: |
+          ${{ github.job }}-${{ runner.os }}-${{ matrix.goarch }}-${{ matrix.buildflags }}-go-2-${{ hashFiles('**/go.sum') }}
           ${{ github.job }}-${{ runner.os }}-${{ matrix.goarch }}-${{ matrix.buildflags }}-go-2-
     - name: build all
       run: ./tool/go build ${{matrix.buildflags}} ./...
@@ -89,7 +90,11 @@ jobs:
     - name: build test wrapper
       run: ./tool/go build -o /tmp/testwrapper ./cmd/testwrapper
     - name: test all
-      run: ./tool/go test ${{matrix.buildflags}} -exec=/tmp/testwrapper -bench=. -benchtime=1x ./...
+      run: PATH=$PWD/tool:$PATH /tmp/testwrapper ./... ${{matrix.buildflags}}
+      env:
+        GOARCH: ${{ matrix.goarch }}
+    - name: bench all
+      run: PATH=$PWD/tool:$PATH /tmp/testwrapper ./... ${{matrix.buildflags}} -bench=. -benchtime=1x -run=^$ 
       env:
         GOARCH: ${{ matrix.goarch }}
     - name: check that no tracked files changed
@@ -131,8 +136,9 @@ jobs:
           ~\AppData\Local\go-build
         # The -2- here should be incremented when the scheme of data to be
         # cached changes (e.g. path above changes).
-        key: ${{ github.job }}-${{ runner.os }}-go-2-${{ hashFiles('**/go.sum') }}
+        key: ${{ github.job }}-${{ runner.os }}-go-2-${{ hashFiles('**/go.sum') }}-${{ github.run_id }}
         restore-keys: |
+          ${{ github.job }}-${{ runner.os }}-go-2-${{ hashFiles('**/go.sum') }}
           ${{ github.job }}-${{ runner.os }}-go-2-
     - name: test
       # Don't use -bench=. -benchtime=1x.
@@ -206,8 +212,9 @@ jobs:
           ~\AppData\Local\go-build
         # The -2- here should be incremented when the scheme of data to be
         # cached changes (e.g. path above changes).
-        key: ${{ github.job }}-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-go-2-${{ hashFiles('**/go.sum') }}
+        key: ${{ github.job }}-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-go-2-${{ hashFiles('**/go.sum') }}-${{ github.run_id }}
         restore-keys: |
+          ${{ github.job }}-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-go-2-${{ hashFiles('**/go.sum') }}
           ${{ github.job }}-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-go-2-
     - name: build all
       run: ./tool/go build ./cmd/...
@@ -271,8 +278,9 @@ jobs:
           ~\AppData\Local\go-build
         # The -2- here should be incremented when the scheme of data to be
         # cached changes (e.g. path above changes).
-        key: ${{ github.job }}-${{ runner.os }}-go-2-${{ hashFiles('**/go.sum') }}
+        key: ${{ github.job }}-${{ runner.os }}-go-2-${{ hashFiles('**/go.sum') }}-${{ github.run_id }}
         restore-keys: |
+          ${{ github.job }}-${{ runner.os }}-go-2-${{ hashFiles('**/go.sum') }}
           ${{ github.job }}-${{ runner.os }}-go-2-
     - name: build tsconnect client
       run: ./tool/go build ./cmd/tsconnect/wasm ./cmd/tailscale/cli
@@ -450,7 +458,7 @@ jobs:
       # By having the job always run, but skipping its only step as needed, we
       # let the CI output collapse nicely in PRs.
       if: failure() && github.event_name == 'push'
-      uses: ruby/action-slack@v3.0.0
+      uses: ruby/action-slack@v3.2.1
       with:
         payload: |
           {

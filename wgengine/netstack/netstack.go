@@ -258,7 +258,7 @@ func (ns *Impl) Start(lb *ipnlocal.LocalBackend) error {
 	ns.e.AddNetworkMapCallback(ns.updateIPs)
 	// size = 0 means use default buffer size
 	const tcpReceiveBufferSize = 0
-	const maxInFlightConnectionAttempts = 16
+	const maxInFlightConnectionAttempts = 1024
 	tcpFwd := tcp.NewForwarder(ns.ipstack, tcpReceiveBufferSize, maxInFlightConnectionAttempts, ns.acceptTCP)
 	udpFwd := udp.NewForwarder(ns.ipstack, ns.acceptUDP)
 	ns.ipstack.SetTransportProtocolHandler(tcp.ProtocolNumber, ns.wrapProtoHandler(tcpFwd.HandlePacket))
@@ -539,10 +539,6 @@ func (ns *Impl) isLocalIP(ip netip.Addr) bool {
 	return ns.atomicIsLocalIPFunc.Load()(ip)
 }
 
-func (ns *Impl) processSSH() bool {
-	return ns.lb != nil && ns.lb.ShouldRunSSH()
-}
-
 func (ns *Impl) peerAPIPortAtomic(ip netip.Addr) *atomic.Uint32 {
 	if ip.Is4() {
 		return &ns.peerapiPort4Atomic
@@ -624,11 +620,21 @@ func (ns *Impl) userPing(dstIP netip.Addr, pingResPkt []byte) {
 	switch runtime.GOOS {
 	case "windows":
 		err = exec.Command("ping", "-n", "1", "-w", "3000", dstIP.String()).Run()
-	case "darwin":
+	case "darwin", "freebsd":
 		// Note: 2000 ms is actually 1 second + 2,000
 		// milliseconds extra for 3 seconds total.
 		// See https://github.com/tailscale/tailscale/pull/3753 for details.
-		err = exec.Command("ping", "-c", "1", "-W", "2000", dstIP.String()).Run()
+		ping := "ping"
+		if dstIP.Is6() {
+			ping = "ping6"
+		}
+		err = exec.Command(ping, "-c", "1", "-W", "2000", dstIP.String()).Run()
+	case "openbsd":
+		ping := "ping"
+		if dstIP.Is6() {
+			ping = "ping6"
+		}
+		err = exec.Command(ping, "-c", "1", "-w", "3", dstIP.String()).Run()
 	case "android":
 		ping := "/system/bin/ping"
 		if dstIP.Is6() {
@@ -832,7 +838,7 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 	// request until we're sure that the connection can be handled by this
 	// endpoint. This function sets up the TCP connection and should be
 	// called immediately before a connection is handled.
-	createConn := func(opts ...tcpip.SettableSocketOption) *gonet.TCPConn {
+	getConnOrReset := func(opts ...tcpip.SettableSocketOption) *gonet.TCPConn {
 		ep, err := r.CreateEndpoint(&wq)
 		if err != nil {
 			ns.logf("CreateEndpoint error for %s: %v", stringifyTEI(reqDetails), err)
@@ -871,7 +877,7 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 
 	// DNS
 	if reqDetails.LocalPort == 53 && (dialIP == magicDNSIP || dialIP == magicDNSIPv6) {
-		c := createConn()
+		c := getConnOrReset()
 		if c == nil {
 			return
 		}
@@ -880,53 +886,13 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 	}
 
 	if ns.lb != nil {
-		if reqDetails.LocalPort == 22 && ns.processSSH() && ns.isLocalIP(dialIP) {
-			// Use a higher keepalive idle time for SSH connections, as they are
-			// typically long lived and idle connections are more likely to be
-			// intentional. Ideally we would turn this off entirely, but we can't
-			// tell the difference between a long lived connection that is idle
-			// vs a connection that is dead because the peer has gone away.
-			// We pick 72h as that is typically sufficient for a long weekend.
-			idle := tcpip.KeepaliveIdleOption(72 * time.Hour)
-			c := createConn(&idle)
+		handler, opts := ns.lb.TCPHandlerForDst(clientRemoteAddrPort, dstAddrPort)
+		if handler != nil {
+			c := getConnOrReset(opts...) // will send a RST if it fails
 			if c == nil {
 				return
 			}
-			if err := ns.lb.HandleSSHConn(c); err != nil {
-				ns.logf("ssh error: %v", err)
-			}
-			return
-		}
-		if port, ok := ns.lb.GetPeerAPIPort(dialIP); ok {
-			if reqDetails.LocalPort == port && ns.isLocalIP(dialIP) {
-				c := createConn()
-				if c == nil {
-					return
-				}
-
-				src := netip.AddrPortFrom(clientRemoteIP, reqDetails.RemotePort)
-				dst := netip.AddrPortFrom(dialIP, port)
-				ns.lb.ServePeerAPIConnection(src, dst, c)
-				return
-			}
-		}
-		if reqDetails.LocalPort == 80 && (dialIP == magicDNSIP || dialIP == magicDNSIPv6) {
-			c := createConn()
-			if c == nil {
-				return
-			}
-			ns.lb.HandleQuad100Port80Conn(c)
-			return
-		}
-		if ns.lb.ShouldInterceptTCPPort(reqDetails.LocalPort) && ns.isLocalIP(dialIP) {
-			getTCPConn := func() (_ net.Conn, ok bool) {
-				c := createConn()
-				return c, c != nil
-			}
-			sendRST := func() {
-				r.Complete(true)
-			}
-			ns.lb.HandleInterceptedTCPConn(reqDetails.LocalPort, clientRemoteAddrPort, getTCPConn, sendRST)
+			handler(c)
 			return
 		}
 	}
@@ -938,7 +904,7 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 				r.Complete(true)
 				return
 			}
-			c := createConn(opts...) // will send a RST if it fails
+			c := getConnOrReset(opts...) // will send a RST if it fails
 			if c == nil {
 				return
 			}
@@ -951,7 +917,7 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 	}
 	dialAddr := netip.AddrPortFrom(dialIP, uint16(reqDetails.LocalPort))
 
-	if !ns.forwardTCP(createConn, clientRemoteIP, &wq, dialAddr) {
+	if !ns.forwardTCP(getConnOrReset, clientRemoteIP, &wq, dialAddr) {
 		r.Complete(true) // sends a RST
 	}
 }
@@ -1079,7 +1045,7 @@ func (ns *Impl) acceptUDP(r *udp.ForwarderRequest) {
 func (ns *Impl) handleMagicDNSUDP(srcAddr netip.AddrPort, c *gonet.UDPConn) {
 	// In practice, implementations are advised not to exceed 512 bytes
 	// due to fragmenting. Just to be sure, we bump all the way to the MTU.
-	var maxUDPReqSize = tstun.DefaultMTU()
+	maxUDPReqSize := tstun.DefaultMTU()
 	// Packets are being generated by the local host, so there should be
 	// very, very little latency. 150ms was chosen as something of an upper
 	// bound on resource usage, while hopefully still being long enough for
