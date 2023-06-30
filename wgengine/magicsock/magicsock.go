@@ -1663,8 +1663,6 @@ func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) cha
 // the provided DERP regionID, and that the peer advertises a DERP
 // home region ID of homeID.
 //
-// If there's any change, it logs.
-//
 // c.mu must be held.
 func (c *Conn) setPeerLastDerpLocked(peer key.NodePublic, regionID, homeID int) {
 	if peer.IsZero() {
@@ -1675,23 +1673,6 @@ func (c *Conn) setPeerLastDerpLocked(peer key.NodePublic, regionID, homeID int) 
 		return
 	}
 	c.peerLastDerp[peer] = regionID
-
-	var newDesc string
-	switch {
-	case regionID == homeID && regionID == c.myDerp:
-		newDesc = "shared home"
-	case regionID == homeID:
-		newDesc = "their home"
-	case regionID == c.myDerp:
-		newDesc = "our home"
-	case regionID != homeID:
-		newDesc = "alt"
-	}
-	if old == 0 {
-		c.logf("[v1] magicsock: derp route for %s set to derp-%d (%s)", peer.ShortString(), regionID, newDesc)
-	} else {
-		c.logf("[v1] magicsock: derp route for %s changed from derp-%d => derp-%d (%s)", peer.ShortString(), old, regionID, newDesc)
-	}
 }
 
 // derpReadResult is the type sent by runDerpClient to ReceiveIPv4
@@ -4298,6 +4279,8 @@ func (de *endpoint) deleteEndpointLocked(why string, ep netip.AddrPort) {
 	})
 	delete(de.endpointState, ep)
 	if de.bestAddr.AddrPort == ep {
+		de.c.logf("magicsock: disco: node %v %v now using DERP only (endpoint %s deleted)",
+			de.publicKey.ShortString(), de.discoShort(), ep)
 		de.debugUpdates.Add(EndpointChange{
 			When: time.Now(),
 			What: "deleteEndpointLocked-bestAddr-" + why,
@@ -4703,6 +4686,8 @@ func (de *endpoint) updateFromNode(n *tailcfg.Node, heartbeatDisabled bool) {
 				de.c.logf("magicsock: invalid endpoint: %s %s", ep, err)
 				continue
 			}
+			de.c.logf("magicsock: disco: node %v %v now using %s (WireGuard Only)",
+				de.publicKey.ShortString(), de.discoShort(), ipp)
 			de.bestAddr = addrLatency{
 				AddrPort: ipp,
 			}
@@ -5109,6 +5094,7 @@ func (de *endpoint) stopAndReset() {
 func (de *endpoint) resetLocked() {
 	de.lastSend = 0
 	de.lastFullPing = 0
+	de.c.logf("magicsock: disco: node %v %v now using DERP only (reset)", de.publicKey.ShortString(), de.discoShort())
 	de.bestAddr = addrLatency{}
 	de.bestAddrAt = 0
 	de.trustBestAddrUntil = 0
