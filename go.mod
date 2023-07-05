@@ -2,6 +2,8 @@ module tailscale.com
 
 go 1.20
 
+replace gvisor.dev/gvisor => ../gvisor
+
 require (
 	filippo.io/mkcert v1.4.4
 	github.com/Microsoft/go-winio v0.6.1
