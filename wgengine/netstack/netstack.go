@@ -153,6 +153,8 @@ const nicID = 1
 // one day making the MTU more dynamic.
 const maxUDPPacketSize = 1500
 
+var debugTCPSACKEnabled = envknob.RegisterBool("TS_DEBUG_NETSTACK_ENABLE_TCPSACK")
+
 // Create creates and populates a new Impl.
 func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magicsock.Conn, dialer *tsdial.Dialer, dns *dns.Manager) (*Impl, error) {
 	if mc == nil {
@@ -175,12 +177,11 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
 	})
 	// Issue: https://github.com/coder/coder/issues/7388
-	//
-	/*sackEnabledOpt := tcpip.TCPSACKEnabled(true) // TCP SACK is disabled by default
+	sackEnabledOpt := tcpip.TCPSACKEnabled(debugTCPSACKEnabled()) // TCP SACK is disabled by default
 	tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &sackEnabledOpt)
 	if tcpipErr != nil {
 		return nil, fmt.Errorf("could not enable TCP SACK: %v", tcpipErr)
-	}*/
+	}
 	linkEP := &protectedLinkEndpoint{Endpoint: channel.New(512, tstun.DefaultMTU(), "")}
 	if tcpipProblem := ipstack.CreateNIC(nicID, linkEP); tcpipProblem != nil {
 		return nil, fmt.Errorf("could not create netstack NIC: %v", tcpipProblem)
