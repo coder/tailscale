@@ -211,7 +211,9 @@ func (c *Client) useHTTPS(node *tailcfg.DERPNode) bool {
 // tlsServerName returns the tls.Config.ServerName value (for the TLS ClientHello).
 func (c *Client) tlsServerName(node *tailcfg.DERPNode) string {
 	if c.url != nil {
-		return c.url.Host
+		// Host contains port which breaks cert validation. Hostname() strips
+		// the port.
+		return c.url.Hostname()
 	}
 	if node == nil {
 		return ""
