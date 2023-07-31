@@ -7,7 +7,7 @@ package netcheck
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -692,7 +692,9 @@ func (rs *reportState) addNodeLatency(node *tailcfg.DERPNode, ipp netip.AddrPort
 	ret := rs.report
 
 	ret.UDP = true
-	updateLatency(ret.RegionLatency, node.RegionID, d)
+
+	// Coder: don't actually store the latency.
+	//updateLatency(ret.RegionLatency, node.RegionID, d)
 
 	// Once we've heard from enough regions (3), start a timer to
 	// give up on the other ones. The timer's duration is a
@@ -710,13 +712,13 @@ func (rs *reportState) addNodeLatency(node *tailcfg.DERPNode, ipp netip.AddrPort
 
 	switch {
 	case ipp.Addr().Is6():
-		updateLatency(ret.RegionV6Latency, node.RegionID, d)
+		//updateLatency(ret.RegionV6Latency, node.RegionID, d)
 		ret.IPv6 = true
 		ret.GlobalV6 = ipPortStr
 		// TODO: track MappingVariesByDestIP for IPv6
 		// too? Would be sad if so, but who knows.
 	case ipp.Addr().Is4():
-		updateLatency(ret.RegionV4Latency, node.RegionID, d)
+		//updateLatency(ret.RegionV4Latency, node.RegionID, d)
 		ret.IPv4 = true
 		if rs.gotEP4 == "" {
 			rs.gotEP4 = ipPortStr
@@ -1034,7 +1036,9 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap) (_ *Report,
 	// Try HTTPS and ICMP latency check if all STUN probes failed due to
 	// UDP presumably being blocked.
 	// TODO: this should be moved into the probePlan, using probeProto probeHTTPS.
-	if !rs.anyUDP() && ctx.Err() == nil {
+	// Coder: always run this because we don't store STUN latency in the report.
+	//if !rs.anyUDP() && ctx.Err() == nil {
+	if ctx.Err() == nil {
 		var wg sync.WaitGroup
 		var need []*tailcfg.DERPRegion
 		for rid, reg := range dm.Regions {
@@ -1057,13 +1061,14 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap) (_ *Report,
 			}()
 
 			wg.Add(len(need))
-			c.logf("netcheck: UDP is blocked, trying HTTPS")
+			// Coder: this is misleading because we always log it.
+			//c.logf("netcheck: UDP is blocked, trying HTTPS")
 		}
 		for _, reg := range need {
 			go func(reg *tailcfg.DERPRegion) {
 				defer wg.Done()
-				if d, ip, err := c.measureHTTPSLatency(ctx, reg); err != nil {
-					c.logf("[v1] netcheck: measuring HTTPS latency of %v (%d): %v", reg.RegionCode, reg.RegionID, err)
+				if d, ip, err := c.measureHTTPLatency(ctx, reg); err != nil {
+					c.logf("[v1] netcheck: measuring HTTP(S) latency of %v (%d): %v", reg.RegionCode, reg.RegionID, err)
 				} else {
 					rs.mu.Lock()
 					if l, ok := rs.report.RegionLatency[reg.RegionID]; !ok {
@@ -1234,7 +1239,9 @@ func (c *Client) runHTTPOnlyChecks(ctx context.Context, last *Report, rs *report
 	return nil
 }
 
-func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegion) (time.Duration, netip.Addr, error) {
+// measureHTTPLatency measures the latency to the given DERP region over HTTP
+// or HTTPS.
+func (c *Client) measureHTTPLatency(ctx context.Context, reg *tailcfg.DERPRegion) (time.Duration, netip.Addr, error) {
 	metricHTTPSend.Add(1)
 	var result httpstat.Result
 	ctx, cancel := context.WithTimeout(httpstat.WithHTTPStat(ctx, &result), overallProbeTimeout)
@@ -1245,28 +1252,60 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
 	dc := derphttp.NewNetcheckClient(c.logf)
 	defer dc.Close()
 
-	tlsConn, tcpConn, node, err := dc.DialRegionTLS(ctx, reg)
+	var hasForceHTTPNode = false
+	for _, node := range reg.Nodes {
+		if node.STUNOnly {
+			continue
+		}
+		if node.ForceHTTP {
+			hasForceHTTPNode = true
+			break
+		}
+	}
+
+	var (
+		conn   net.Conn
+		closer io.Closer
+		node   *tailcfg.DERPNode
+		err    error
+	)
+	if hasForceHTTPNode {
+		conn, node, err = dc.DialRegion(ctx, reg)
+		closer = conn
+	} else {
+		conn, closer, node, err = dc.DialRegionTLS(ctx, reg)
+	}
 	if err != nil {
 		return 0, ip, err
 	}
-	defer tcpConn.Close()
-
-	if ta, ok := tlsConn.RemoteAddr().(*net.TCPAddr); ok {
+	defer closer.Close()
+	if ta, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
 		ip, _ = netip.AddrFromSlice(ta.IP)
 		ip = ip.Unmap()
 	}
 	if ip == (netip.Addr{}) {
-		return 0, ip, fmt.Errorf("no unexpected RemoteAddr %#v", tlsConn.RemoteAddr())
+		return 0, ip, fmt.Errorf("no unexpected RemoteAddr %#v", conn.RemoteAddr())
 	}
 
-	connc := make(chan *tls.Conn, 1)
-	connc <- tlsConn
+	connc := make(chan net.Conn, 1)
+	connc <- conn
 
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return nil, errors.New("unexpected DialContext dial")
+			if !hasForceHTTPNode {
+				return nil, errors.New("unexpected DialContext dial")
+			}
+			select {
+			case nc := <-connc:
+				return nc, nil
+			default:
+				return nil, errors.New("only one conn expected")
+			}
 		},
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if hasForceHTTPNode {
+				return nil, errors.New("unexpected DialTLSContext dial")
+			}
 			select {
 			case nc := <-connc:
 				return nc, nil
@@ -1548,6 +1587,12 @@ func (rs *reportState) runProbe(ctx context.Context, dm *tailcfg.DERPMap, probe 
 		return
 	}
 
+	// Coder: The address below won't be valid if the node doesn't have a
+	// STUNPort.
+	if node.STUNPort < 1 {
+		return
+	}
+
 	addr := c.nodeAddr(ctx, node, probe.proto)
 	if !addr.IsValid() {
 		c.logf("netcheck.runProbe: named node %q has no address", probe.node)
@@ -1561,7 +1606,16 @@ func (rs *reportState) runProbe(ctx context.Context, dm *tailcfg.DERPMap, probe 
 
 	rs.mu.Lock()
 	rs.inFlight[txID] = func(ipp netip.AddrPort) {
+		// Coder: we don't want to store the latency of STUN netchecks because
+		// Coder doesn't contain a built-in STUN server and customers often use
+		// Google STUN which has extremely low latency everywhere on the planet.
+		// This means that latency checks to any regions containing the Google
+		// STUN server will always muddy that region's latency results.
+		//
+		// rs.addNodeLatency has been updated to not store latency but will
+		// still set the approapriate values in the report.
 		rs.addNodeLatency(node, ipp, time.Since(sent))
+		c.logf("netcheck.runProbe: got STUN response for %s from %s (%s) in %s", node.Name, ipp.String(), hex.EncodeToString(txID[:]), time.Since(sent).String())
 		cancelSet() // abort other nodes in this set
 	}
 	rs.mu.Unlock()
