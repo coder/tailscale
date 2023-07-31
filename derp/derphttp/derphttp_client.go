@@ -399,7 +399,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		tcpConn, err = c.dialURL(ctx)
 	default:
 		c.logf("%s: connecting to derp-%d (%v)", caller, reg.RegionID, reg.RegionCode)
-		tcpConn, node, err = c.dialRegion(ctx, reg)
+		tcpConn, node, err = c.DialRegion(ctx, reg)
 	}
 	if err != nil {
 		return nil, 0, err
@@ -612,10 +612,10 @@ func (c *Client) dialURL(ctx context.Context) (net.Conn, error) {
 	return tcpConn, nil
 }
 
-// dialRegion returns a TCP connection to the provided region, trying
+// DialRegion returns a TCP connection to the provided region, trying
 // each node in order (with dialNode) until one connects or ctx is
 // done.
-func (c *Client) dialRegion(ctx context.Context, reg *tailcfg.DERPRegion) (net.Conn, *tailcfg.DERPNode, error) {
+func (c *Client) DialRegion(ctx context.Context, reg *tailcfg.DERPRegion) (net.Conn, *tailcfg.DERPNode, error) {
 	if len(reg.Nodes) == 0 {
 		return nil, nil, fmt.Errorf("no nodes for %s", c.targetString(reg))
 	}
@@ -663,7 +663,7 @@ func (c *Client) tlsClient(nc net.Conn, node *tailcfg.DERPNode) *tls.Conn {
 // in the DERP map. TLS is initiated on the first node where a socket is
 // established.
 func (c *Client) DialRegionTLS(ctx context.Context, reg *tailcfg.DERPRegion) (tlsConn *tls.Conn, connClose io.Closer, node *tailcfg.DERPNode, err error) {
-	tcpConn, node, err := c.dialRegion(ctx, reg)
+	tcpConn, node, err := c.DialRegion(ctx, reg)
 	if err != nil {
 		return nil, nil, nil, err
 	}
