@@ -946,6 +946,57 @@ func (lc *LocalClient) NetworkLockForceLocalDisable(ctx context.Context) error {
 	return nil
 }
 
+// NetworkLockVerifySigningDeeplink verifies the network lock deeplink contained
+// in url and returns information extracted from it.
+func (lc *LocalClient) NetworkLockVerifySigningDeeplink(ctx context.Context, url string) (*tka.DeeplinkValidationResult, error) {
+	vr := struct {
+		URL string
+	}{url}
+
+	body, err := lc.send(ctx, "POST", "/localapi/v0/tka/verify-deeplink", 200, jsonBody(vr))
+	if err != nil {
+		return nil, fmt.Errorf("sending verify-deeplink: %w", err)
+	}
+
+	return decodeJSON[*tka.DeeplinkValidationResult](body)
+}
+
+// NetworkLockGenRecoveryAUM generates an AUM for recovering from a tailnet-lock key compromise.
+func (lc *LocalClient) NetworkLockGenRecoveryAUM(ctx context.Context, removeKeys []tkatype.KeyID, forkFrom tka.AUMHash) ([]byte, error) {
+	vr := struct {
+		Keys     []tkatype.KeyID
+		ForkFrom string
+	}{removeKeys, forkFrom.String()}
+
+	body, err := lc.send(ctx, "POST", "/localapi/v0/tka/generate-recovery-aum", 200, jsonBody(vr))
+	if err != nil {
+		return nil, fmt.Errorf("sending generate-recovery-aum: %w", err)
+	}
+
+	return body, nil
+}
+
+// NetworkLockCosignRecoveryAUM co-signs a recovery AUM using the node's tailnet lock key.
+func (lc *LocalClient) NetworkLockCosignRecoveryAUM(ctx context.Context, aum tka.AUM) ([]byte, error) {
+	r := bytes.NewReader(aum.Serialize())
+	body, err := lc.send(ctx, "POST", "/localapi/v0/tka/cosign-recovery-aum", 200, r)
+	if err != nil {
+		return nil, fmt.Errorf("sending cosign-recovery-aum: %w", err)
+	}
+
+	return body, nil
+}
+
+// NetworkLockSubmitRecoveryAUM submits a recovery AUM to the control plane.
+func (lc *LocalClient) NetworkLockSubmitRecoveryAUM(ctx context.Context, aum tka.AUM) error {
+	r := bytes.NewReader(aum.Serialize())
+	_, err := lc.send(ctx, "POST", "/localapi/v0/tka/submit-recovery-aum", 200, r)
+	if err != nil {
+		return fmt.Errorf("sending cosign-recovery-aum: %w", err)
+	}
+	return nil
+}
+
 // SetServeConfig sets or replaces the serving settings.
 // If config is nil, settings are cleared and serving is disabled.
 func (lc *LocalClient) SetServeConfig(ctx context.Context, config *ipn.ServeConfig) error {
@@ -1071,6 +1122,27 @@ func (lc *LocalClient) SwitchProfile(ctx context.Context, profile ipn.ProfileID)
 func (lc *LocalClient) DeleteProfile(ctx context.Context, profile ipn.ProfileID) error {
 	_, err := lc.send(ctx, "DELETE", "/localapi/v0/profiles"+url.PathEscape(string(profile)), http.StatusNoContent, nil)
 	return err
+}
+
+// QueryFeature makes a request for instructions on how to enable a
+// feature, such as Funnel, for the node's tailnet.
+//
+// This request itself does not directly enable the feature on behalf
+// of the node, but rather returns information that can be presented
+// to the acting user about where/how to enable the feature.
+//
+// If relevant, this includes a control URL the user can visit to
+// explicitly consent to using the feature. LocalClient.WatchIPNBus
+// can be used to block on the feature being enabled.
+//
+// 2023-08-02: Valid feature values are "serve" and "funnel".
+func (lc *LocalClient) QueryFeature(ctx context.Context, feature string) (*tailcfg.QueryFeatureResponse, error) {
+	v := url.Values{"feature": {feature}}
+	body, err := lc.send(ctx, "POST", "/localapi/v0/query-feature?"+v.Encode(), 200, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error %w: %s", err, body)
+	}
+	return decodeJSON[*tailcfg.QueryFeatureResponse](body)
 }
 
 func (lc *LocalClient) DebugDERPRegion(ctx context.Context, regionIDOrCode string) (*ipnstate.DebugDERPRegionReport, error) {

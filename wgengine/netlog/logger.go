@@ -19,6 +19,7 @@ import (
 	"tailscale.com/logpolicy"
 	"tailscale.com/logtail"
 	"tailscale.com/net/connstats"
+	"tailscale.com/net/netmon"
 	"tailscale.com/net/sockstats"
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/smallzstd"
@@ -91,7 +92,8 @@ var testClient *http.Client
 // is a non-tailscale IP address to contact for that particular tailscale node.
 // The IP protocol and source port are always zero.
 // The sock is used to populated the PhysicalTraffic field in Message.
-func (nl *Logger) Startup(nodeID tailcfg.StableNodeID, nodeLogID, domainLogID logid.PrivateID, tun, sock Device) error {
+// The netMon parameter is optional; if non-nil it's used to do faster interface lookups.
+func (nl *Logger) Startup(nodeID tailcfg.StableNodeID, nodeLogID, domainLogID logid.PrivateID, tun, sock Device, netMon *netmon.Monitor) error {
 	nl.mu.Lock()
 	defer nl.mu.Unlock()
 	if nl.logger != nil {
@@ -99,7 +101,8 @@ func (nl *Logger) Startup(nodeID tailcfg.StableNodeID, nodeLogID, domainLogID lo
 	}
 
 	// Startup a log stream to Tailscale's logging service.
-	httpc := &http.Client{Transport: logpolicy.NewLogtailTransport(logtail.DefaultHost)}
+	logf := log.Printf
+	httpc := &http.Client{Transport: logpolicy.NewLogtailTransport(logtail.DefaultHost, netMon, logf)}
 	if testClient != nil {
 		httpc = testClient
 	}
@@ -121,7 +124,7 @@ func (nl *Logger) Startup(nodeID tailcfg.StableNodeID, nodeLogID, domainLogID lo
 		// Include process sequence numbers to identify missing samples.
 		IncludeProcID:       true,
 		IncludeProcSequence: true,
-	}, log.Printf)
+	}, logf)
 	nl.logger.SetSockstatsLabel(sockstats.LabelNetlogLogger)
 
 	// Startup a data structure to track per-connection statistics.

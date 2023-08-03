@@ -25,7 +25,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/transport"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -38,7 +37,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 	"sigs.k8s.io/yaml"
 	"tailscale.com/client/tailscale"
 	"tailscale.com/hostinfo"
@@ -48,6 +46,7 @@ import (
 	"tailscale.com/types/logger"
 	"tailscale.com/types/opt"
 	"tailscale.com/util/dnsname"
+	"tailscale.com/version"
 )
 
 func main() {
@@ -64,6 +63,7 @@ func main() {
 		clientIDPath       = defaultEnv("CLIENT_ID_FILE", "")
 		clientSecretPath   = defaultEnv("CLIENT_SECRET_FILE", "")
 		image              = defaultEnv("PROXY_IMAGE", "tailscale/tailscale:latest")
+		priorityClassName  = defaultEnv("PROXY_PRIORITY_CLASS_NAME", "")
 		tags               = defaultEnv("PROXY_TAGS", "tag:k8s")
 		shouldRunAuthProxy = defaultBool("AUTH_PROXY", false)
 	)
@@ -183,32 +183,33 @@ waitOnline:
 	// the cache that sits a few layers below the builder stuff, which will
 	// implicitly filter what parts of the world the builder code gets to see at
 	// all.
-	nsFilter := cache.ObjectSelector{
-		Field: fields.SelectorFromSet(fields.Set{"metadata.namespace": tsNamespace}),
+	nsFilter := cache.ByObject{
+		Field: client.InNamespace(tsNamespace).AsSelector(),
 	}
 	restConfig := config.GetConfigOrDie()
 	mgr, err := manager.New(restConfig, manager.Options{
-		NewCache: cache.BuilderWithOptions(cache.Options{
-			SelectorsByObject: map[client.Object]cache.ObjectSelector{
+		Cache: cache.Options{
+			ByObject: map[client.Object]cache.ByObject{
 				&corev1.Secret{}:      nsFilter,
 				&appsv1.StatefulSet{}: nsFilter,
 			},
-		}),
+		},
 	})
 	if err != nil {
 		startlog.Fatalf("could not create manager: %v", err)
 	}
 
 	sr := &ServiceReconciler{
-		Client:            mgr.GetClient(),
-		tsClient:          tsClient,
-		defaultTags:       strings.Split(tags, ","),
-		operatorNamespace: tsNamespace,
-		proxyImage:        image,
-		logger:            zlog.Named("service-reconciler"),
+		Client:                 mgr.GetClient(),
+		tsClient:               tsClient,
+		defaultTags:            strings.Split(tags, ","),
+		operatorNamespace:      tsNamespace,
+		proxyImage:             image,
+		proxyPriorityClassName: priorityClassName,
+		logger:                 zlog.Named("service-reconciler"),
 	}
 
-	reconcileFilter := handler.EnqueueRequestsFromMapFunc(func(o client.Object) []reconcile.Request {
+	reconcileFilter := handler.EnqueueRequestsFromMapFunc(func(_ context.Context, o client.Object) []reconcile.Request {
 		ls := o.GetLabels()
 		if ls[LabelManaged] != "true" {
 			return nil
@@ -228,14 +229,14 @@ waitOnline:
 	err = builder.
 		ControllerManagedBy(mgr).
 		For(&corev1.Service{}).
-		Watches(&source.Kind{Type: &appsv1.StatefulSet{}}, reconcileFilter).
-		Watches(&source.Kind{Type: &corev1.Secret{}}, reconcileFilter).
+		Watches(&appsv1.StatefulSet{}, reconcileFilter).
+		Watches(&corev1.Secret{}, reconcileFilter).
 		Complete(sr)
 	if err != nil {
 		startlog.Fatalf("could not create controller: %v", err)
 	}
 
-	startlog.Infof("Startup complete, operator running")
+	startlog.Infof("Startup complete, operator running, version: %s", version.Long())
 	if shouldRunAuthProxy {
 		cfg, err := restConfig.TransportConfig()
 		if err != nil {
@@ -278,11 +279,12 @@ const (
 // ServiceReconciler is a simple ControllerManagedBy example implementation.
 type ServiceReconciler struct {
 	client.Client
-	tsClient          tsClient
-	defaultTags       []string
-	operatorNamespace string
-	proxyImage        string
-	logger            *zap.SugaredLogger
+	tsClient               tsClient
+	defaultTags            []string
+	operatorNamespace      string
+	proxyImage             string
+	proxyPriorityClassName string
+	logger                 *zap.SugaredLogger
 }
 
 type tsClient interface {
@@ -566,6 +568,9 @@ func (a *ServiceReconciler) getDeviceInfo(ctx context.Context, svc *corev1.Servi
 	if err != nil {
 		return "", "", err
 	}
+	if sec == nil {
+		return "", "", nil
+	}
 	id = string(sec.Data["device_id"])
 	if id == "" {
 		return "", "", nil
@@ -589,6 +594,7 @@ func (a *ServiceReconciler) newAuthKey(ctx context.Context, tags []string) (stri
 			},
 		},
 	}
+
 	key, _, err := a.tsClient.CreateKey(ctx, caps)
 	if err != nil {
 		return "", err
@@ -633,6 +639,7 @@ func (a *ServiceReconciler) reconcileSTS(ctx context.Context, logger *zap.Sugare
 	ss.Spec.Template.ObjectMeta.Labels = map[string]string{
 		"app": string(parentSvc.UID),
 	}
+	ss.Spec.Template.Spec.PriorityClassName = a.proxyPriorityClassName
 	logger.Debugf("reconciling statefulset %s/%s", ss.GetNamespace(), ss.GetName())
 	return createOrUpdate(ctx, a.Client, a.operatorNamespace, &ss, func(s *appsv1.StatefulSet) { s.Spec = ss.Spec })
 }

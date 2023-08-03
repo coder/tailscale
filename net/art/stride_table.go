@@ -8,8 +8,14 @@ import (
 	"fmt"
 	"io"
 	"math/bits"
+	"net/netip"
 	"strconv"
 	"strings"
+)
+
+const (
+	debugStrideInsert = false
+	debugStrideDelete = false
 )
 
 // strideEntry is a strideTable entry.
@@ -32,6 +38,12 @@ type strideEntry[T any] struct {
 // The leaves of the binary tree are host routes (/8s). Each parent is a
 // successively larger prefix that encompasses its children (/7 through /0).
 type strideTable[T any] struct {
+	// prefix is the prefix represented by the 0/0 route of this
+	// strideTable. It is used in multi-level tables to support path
+	// compression. All strideTables must have a valid prefix
+	// (non-zero value, passes IsValid()) whose length is a multiple
+	// of 8 (e.g. /8, /16, but not /15).
+	prefix netip.Prefix
 	// entries is the nodes of the binary tree, laid out in a flattened array.
 	//
 	// The array indices are arranged by the prefixIndex function, such that the
@@ -44,10 +56,10 @@ type strideTable[T any] struct {
 	// memory trickery to store the refcount, but this is Go, where we don't
 	// store random bits in pointers lest we confuse the GC)
 	entries [lastHostIndex + 1]strideEntry[T]
-	// refs is the number of route entries and child strideTables referenced by
-	// this table. It is used in the multi-layered logic to determine when this
-	// table is empty and can be deleted.
-	refs int
+	// routeRefs is the number of route entries in this table.
+	routeRefs uint16
+	// childRefs is the number of child strideTables referenced by this table.
+	childRefs uint16
 }
 
 const (
@@ -68,23 +80,54 @@ func (t *strideTable[T]) getChild(addr uint8) (child *strideTable[T], idx int) {
 // obtained via a call to getChild.
 func (t *strideTable[T]) deleteChild(idx int) {
 	t.entries[idx].child = nil
-	t.refs--
+	t.childRefs--
+}
+
+// setChild replaces the child strideTable for addr (if any) with child.
+func (t *strideTable[T]) setChild(addr uint8, child *strideTable[T]) {
+	t.setChildByIndex(hostIndex(addr), child)
+}
+
+// setChildByIndex replaces the child strideTable at idx (if any) with
+// child. idx should be obtained via a call to getChild.
+func (t *strideTable[T]) setChildByIndex(idx int, child *strideTable[T]) {
+	if t.entries[idx].child == nil {
+		t.childRefs++
+	}
+	t.entries[idx].child = child
 }
 
 // getOrCreateChild returns the child strideTable for addr, creating it if
 // necessary.
-func (t *strideTable[T]) getOrCreateChild(addr uint8) *strideTable[T] {
+func (t *strideTable[T]) getOrCreateChild(addr uint8) (child *strideTable[T], created bool) {
 	idx := hostIndex(addr)
 	if t.entries[idx].child == nil {
-		t.entries[idx].child = new(strideTable[T])
-		t.refs++
+		t.entries[idx].child = &strideTable[T]{
+			prefix: childPrefixOf(t.prefix, addr),
+		}
+		t.childRefs++
+		return t.entries[idx].child, true
 	}
-	return t.entries[idx].child
+	return t.entries[idx].child, false
 }
 
+// getValAndChild returns both the prefix and child strideTable for
+// addr. Both returned values can be nil if no entry of that type
+// exists for addr.
 func (t *strideTable[T]) getValAndChild(addr uint8) (*T, *strideTable[T]) {
 	idx := hostIndex(addr)
 	return t.entries[idx].value, t.entries[idx].child
+}
+
+// findFirstChild returns the first child strideTable in t, or nil if
+// t has no children.
+func (t *strideTable[T]) findFirstChild() *strideTable[T] {
+	for i := firstHostIndex; i <= lastHostIndex; i++ {
+		if child := t.entries[i].child; child != nil {
+			return child
+		}
+	}
+	return nil
 }
 
 // allot updates entries whose stored prefixIndex matches oldPrefixIndex, in the
@@ -127,12 +170,14 @@ func (t *strideTable[T]) insert(addr uint8, prefixLen int, val *T) {
 	if oldIdx != idx {
 		// This route entry was freshly created (not just updated), that's a new
 		// reference.
-		t.refs++
+		t.routeRefs++
 	}
 	return
 }
 
-// delete removes the route addr/prefixLen from t.
+// delete removes the route addr/prefixLen from t. Returns the value
+// that was associated with the deleted prefix, or nil if the prefix
+// wasn't in the strideTable.
 func (t *strideTable[T]) delete(addr uint8, prefixLen int) *T {
 	idx := prefixIndex(addr, prefixLen)
 	recordedIdx := t.entries[idx].prefixIndex
@@ -144,7 +189,7 @@ func (t *strideTable[T]) delete(addr uint8, prefixLen int) *T {
 
 	parentIdx := idx >> 1
 	t.allot(idx, idx, t.entries[parentIdx].prefixIndex, t.entries[parentIdx].value)
-	t.refs--
+	t.routeRefs--
 	return val
 }
 
@@ -183,7 +228,7 @@ func (t *strideTable[T]) treeDebugString() string {
 func (t *strideTable[T]) treeDebugStringRec(w io.Writer, idx, indent int) {
 	addr, len := inversePrefixIndex(idx)
 	if t.entries[idx].prefixIndex != 0 && t.entries[idx].prefixIndex == idx {
-		fmt.Fprintf(w, "%s%d/%d (%d/%d) = %v\n", strings.Repeat(" ", indent), addr, len, addr, len, *t.entries[idx].value)
+		fmt.Fprintf(w, "%s%d/%d (%02x/%d) = %v\n", strings.Repeat(" ", indent), addr, len, addr, len, *t.entries[idx].value)
 		indent += 2
 	}
 	if idx >= firstHostIndex {
@@ -228,4 +273,30 @@ func formatPrefixTable(addr uint8, len int) string {
 		return "<nil>"
 	}
 	return fmt.Sprintf("%3d/%d", addr, len)
+}
+
+// childPrefixOf returns the child prefix of parent whose final byte
+// is stride. The parent prefix must be byte-aligned
+// (i.e. parent.Bits() must be a multiple of 8), and be no more
+// specific than /24 for IPv4 or /120 for IPv6.
+//
+// For example, childPrefixOf("192.168.0.0/16", 8) == "192.168.8.0/24".
+func childPrefixOf(parent netip.Prefix, stride uint8) netip.Prefix {
+	l := parent.Bits()
+	if l%8 != 0 {
+		panic("parent prefix is not 8-bit aligned")
+	}
+	if l >= parent.Addr().BitLen() {
+		panic("parent prefix cannot be extended further")
+	}
+	off := l / 8
+	if parent.Addr().Is4() {
+		bs := parent.Addr().As4()
+		bs[off] = stride
+		return netip.PrefixFrom(netip.AddrFrom4(bs), l+8)
+	} else {
+		bs := parent.Addr().As16()
+		bs[off] = stride
+		return netip.PrefixFrom(netip.AddrFrom16(bs), l+8)
+	}
 }

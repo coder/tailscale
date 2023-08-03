@@ -4,13 +4,8 @@
 package portlist
 
 import (
-	"context"
-	"flag"
 	"net"
-	"runtime"
-	"sync"
 	"testing"
-	"time"
 
 	"tailscale.com/tstest"
 )
@@ -19,14 +14,14 @@ func TestGetList(t *testing.T) {
 	tstest.ResourceCheck(t)
 
 	var p Poller
-	pl, err := p.getList()
+	pl, _, err := p.Poll()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i, p := range pl {
 		t.Logf("[%d] %+v", i, p)
 	}
-	t.Logf("As String: %v", pl.String())
+	t.Logf("As String: %s", List(pl))
 }
 
 func TestIgnoreLocallyBoundPorts(t *testing.T) {
@@ -40,7 +35,7 @@ func TestIgnoreLocallyBoundPorts(t *testing.T) {
 	ta := ln.Addr().(*net.TCPAddr)
 	port := ta.Port
 	var p Poller
-	pl, err := p.getList()
+	pl, _, err := p.Poll()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,27 +46,20 @@ func TestIgnoreLocallyBoundPorts(t *testing.T) {
 	}
 }
 
-var flagRunUnspecTests = flag.Bool("run-unspec-tests",
-	runtime.GOOS == "linux", // other OSes have annoying firewall GUI confirmation dialogs
-	"run tests that require listening on the the unspecified address")
-
-func TestChangesOverTime(t *testing.T) {
-	if !*flagRunUnspecTests {
-		t.Skip("skipping test without --run-unspec-tests")
-	}
-
+func TestPoller(t *testing.T) {
 	var p Poller
+	p.IncludeLocalhost = true
 	get := func(t *testing.T) []Port {
 		t.Helper()
-		s, err := p.getList()
+		s, _, err := p.Poll()
 		if err != nil {
 			t.Fatal(err)
 		}
-		return append([]Port(nil), s...)
+		return s
 	}
 
 	p1 := get(t)
-	ln, err := net.Listen("tcp", ":0")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Skipf("failed to bind: %v", err)
 	}
@@ -184,68 +172,21 @@ func TestEqualLessThan(t *testing.T) {
 	}
 }
 
-func TestPoller(t *testing.T) {
-	p, err := NewPoller()
+func TestClose(t *testing.T) {
+	var p Poller
+	err := p.Close()
 	if err != nil {
-		t.Skipf("not running test: %v", err)
-	}
-	defer p.Close()
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	gotUpdate := make(chan bool, 16)
-
-	go func() {
-		defer wg.Done()
-		for pl := range p.Updates() {
-			// Look at all the pl slice memory to maximize
-			// chance of race detector seeing violations.
-			for _, v := range pl {
-				if v == (Port{}) {
-					// Force use
-					panic("empty port")
-				}
-			}
-			select {
-			case gotUpdate <- true:
-			default:
-			}
-		}
-	}()
-
-	tick := make(chan time.Time, 16)
-	go func() {
-		defer wg.Done()
-		if err := p.runWithTickChan(context.Background(), tick); err != nil {
-			t.Error("runWithTickChan:", err)
-		}
-	}()
-	for i := 0; i < 10; i++ {
-		ln, err := net.Listen("tcp", ":0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer ln.Close()
-		tick <- time.Time{}
-
-		select {
-		case <-gotUpdate:
-		case <-time.After(5 * time.Second):
-			t.Fatal("timed out waiting for update")
-		}
-	}
-
-	// And a bunch of ticks without waiting for updates,
-	// to make race tests more likely to fail, if any present.
-	for i := 0; i < 10; i++ {
-		tick <- time.Time{}
-	}
-
-	if err := p.Close(); err != nil {
 		t.Fatal(err)
 	}
-	wg.Wait()
+	p = Poller{}
+	_, _, err = p.Poll()
+	if err != nil {
+		t.Skipf("skipping due to poll error: %v", err)
+	}
+	err = p.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func BenchmarkGetList(b *testing.B) {
@@ -259,6 +200,11 @@ func BenchmarkGetListIncremental(b *testing.B) {
 func benchmarkGetList(b *testing.B, incremental bool) {
 	b.ReportAllocs()
 	var p Poller
+	p.init()
+	if p.initErr != nil {
+		b.Skip(p.initErr)
+	}
+	b.Cleanup(func() { p.Close() })
 	for i := 0; i < b.N; i++ {
 		pl, err := p.getList()
 		if err != nil {

@@ -12,18 +12,19 @@ import (
 	"net"
 	"net/netip"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"golang.org/x/exp/slices"
 	"tailscale.com/health"
 	"tailscale.com/net/dns/resolver"
+	"tailscale.com/net/netmon"
 	"tailscale.com/net/tsdial"
 	"tailscale.com/types/dnstype"
 	"tailscale.com/types/logger"
 	"tailscale.com/util/clientmetric"
 	"tailscale.com/util/dnsname"
-	"tailscale.com/wgengine/monitor"
 )
 
 var (
@@ -64,14 +65,15 @@ type Manager struct {
 }
 
 // NewManagers created a new manager from the given config.
-func NewManager(logf logger.Logf, oscfg OSConfigurator, linkMon *monitor.Mon, dialer *tsdial.Dialer, linkSel resolver.ForwardLinkSelector) *Manager {
+// The netMon parameter is optional; if non-nil it's used to do faster interface lookups.
+func NewManager(logf logger.Logf, oscfg OSConfigurator, netMon *netmon.Monitor, dialer *tsdial.Dialer, linkSel resolver.ForwardLinkSelector) *Manager {
 	if dialer == nil {
 		panic("nil Dialer")
 	}
 	logf = logger.WithPrefix(logf, "dns: ")
 	m := &Manager{
 		logf:     logf,
-		resolver: resolver.New(logf, linkMon, linkSel, dialer),
+		resolver: resolver.New(logf, netMon, linkSel, dialer),
 		os:       oscfg,
 	}
 	m.ctx, m.ctxCancel = context.WithCancel(context.Background())
@@ -138,14 +140,15 @@ func compileHostEntries(cfg Config) (hosts []*HostEntry) {
 			}
 		}
 	}
-	slices.SortFunc(hosts, func(a, b *HostEntry) bool {
-		if len(a.Hosts) == 0 {
-			return false
+	slices.SortFunc(hosts, func(a, b *HostEntry) int {
+		if len(a.Hosts) == 0 && len(b.Hosts) == 0 {
+			return 0
+		} else if len(a.Hosts) == 0 {
+			return -1
+		} else if len(b.Hosts) == 0 {
+			return 1
 		}
-		if len(b.Hosts) == 0 {
-			return true
-		}
-		return a.Hosts[0] < b.Hosts[0]
+		return strings.Compare(a.Hosts[0], b.Hosts[0])
 	})
 	return hosts
 }

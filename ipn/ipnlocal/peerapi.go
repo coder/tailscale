@@ -49,7 +49,7 @@ import (
 	"tailscale.com/tailcfg"
 	"tailscale.com/util/clientmetric"
 	"tailscale.com/util/multierr"
-	"tailscale.com/wgengine"
+	"tailscale.com/version/distro"
 	"tailscale.com/wgengine/filter"
 )
 
@@ -304,7 +304,7 @@ func (s *peerAPIServer) DeleteFile(baseName string) error {
 	}
 	var bo *backoff.Backoff
 	logf := s.b.logf
-	t0 := time.Now()
+	t0 := s.b.clock.Now()
 	for {
 		err := os.Remove(path)
 		if err != nil && !os.IsNotExist(err) {
@@ -323,7 +323,7 @@ func (s *peerAPIServer) DeleteFile(baseName string) error {
 				if bo == nil {
 					bo = backoff.NewBackoff("delete-retry", logf, 1*time.Second)
 				}
-				if time.Since(t0) < 5*time.Second {
+				if s.b.clock.Since(t0) < 5*time.Second {
 					bo.BackOff(context.Background(), err)
 					continue
 				}
@@ -468,7 +468,7 @@ func (s *peerAPIServer) listen(ip netip.Addr, ifState *interfaces.State) (ln net
 		}
 	}
 
-	if wgengine.IsNetstack(s.b.e) {
+	if s.b.sys.IsNetstack() {
 		ipStr = ""
 	}
 
@@ -605,6 +605,16 @@ func (h *peerAPIHandler) logf(format string, a ...any) {
 	h.ps.b.logf("peerapi: "+format, a...)
 }
 
+// isAddressValid reports whether addr is a valid destination address for this
+// node originating from the peer.
+func (h *peerAPIHandler) isAddressValid(addr netip.Addr) bool {
+	if h.peerNode.SelfNodeV4MasqAddrForThisPeer != nil {
+		return *h.peerNode.SelfNodeV4MasqAddrForThisPeer == addr
+	}
+	pfx := netip.PrefixFrom(addr, addr.BitLen())
+	return slices.Contains(h.selfNode.Addresses, pfx)
+}
+
 func (h *peerAPIHandler) validateHost(r *http.Request) error {
 	if r.Host == "peer" {
 		return nil
@@ -613,9 +623,8 @@ func (h *peerAPIHandler) validateHost(r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	hostIPPfx := netip.PrefixFrom(ap.Addr(), ap.Addr().BitLen())
-	if !slices.Contains(h.selfNode.Addresses, hostIPPfx) {
-		return fmt.Errorf("%v not found in self addresses", hostIPPfx)
+	if !h.isAddressValid(ap.Addr()) {
+		return fmt.Errorf("%v not found in self addresses", ap.Addr())
 	}
 	return nil
 }
@@ -771,7 +780,7 @@ func (h *peerAPIHandler) handleServeIngress(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	getConn := func() (net.Conn, bool) {
+	getConnOrReset := func() (net.Conn, bool) {
 		conn, _, err := w.(http.Hijacker).Hijack()
 		if err != nil {
 			h.logf("ingress: failed hijacking conn")
@@ -789,7 +798,7 @@ func (h *peerAPIHandler) handleServeIngress(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "denied", http.StatusForbidden)
 	}
 
-	h.ps.b.HandleIngressTCPConn(h.peerNode, target, srcAddr, getConn, sendRST)
+	h.ps.b.HandleIngressTCPConn(h.peerNode, target, srcAddr, getConnOrReset, sendRST)
 }
 
 func (h *peerAPIHandler) handleServeInterfaces(w http.ResponseWriter, r *http.Request) {
@@ -893,8 +902,8 @@ func (h *peerAPIHandler) handleServeSockStats(w http.ResponseWriter, r *http.Req
 	for label := range stats.Stats {
 		labels = append(labels, label)
 	}
-	slices.SortFunc(labels, func(a, b sockstats.Label) bool {
-		return a.String() < b.String()
+	slices.SortFunc(labels, func(a, b sockstats.Label) int {
+		return strings.Compare(a.String(), b.String())
 	})
 
 	txTotal := uint64(0)
@@ -947,6 +956,12 @@ func (h *peerAPIHandler) handleServeSockStats(w http.ResponseWriter, r *http.Req
 	fmt.Fprintln(w, "</tfoot>")
 
 	fmt.Fprintln(w, "</table>")
+
+	fmt.Fprintln(w, "<h2>Debug Info</h2>")
+
+	fmt.Fprintln(w, "<pre>")
+	fmt.Fprintln(w, html.EscapeString(sockstats.DebugInfo()))
+	fmt.Fprintln(w, "</pre>")
 }
 
 type incomingFile struct {
@@ -985,7 +1000,7 @@ func (f *incomingFile) Write(p []byte) (n int, err error) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.copied += int64(n)
-		now := time.Now()
+		now := b.clock.Now()
 		if f.lastNotify.IsZero() || now.Sub(f.lastNotify) > time.Second {
 			f.lastNotify = now
 			needNotify = true
@@ -1013,7 +1028,7 @@ func (h *peerAPIHandler) canPutFile() bool {
 		// Unsigned peers can't send files.
 		return false
 	}
-	return h.isSelf || h.peerHasCap(tailcfg.CapabilityFileSharingSend)
+	return h.isSelf || h.peerHasCap(tailcfg.PeerCapabilityFileSharingSend)
 }
 
 // canDebug reports whether h can debug this node (goroutines, metrics,
@@ -1027,7 +1042,7 @@ func (h *peerAPIHandler) canDebug() bool {
 		// Unsigned peers can't debug.
 		return false
 	}
-	return h.isSelf || h.peerHasCap(tailcfg.CapabilityDebugPeer)
+	return h.isSelf || h.peerHasCap(tailcfg.PeerCapabilityDebugPeer)
 }
 
 // canWakeOnLAN reports whether h can send a Wake-on-LAN packet from this node.
@@ -1035,23 +1050,18 @@ func (h *peerAPIHandler) canWakeOnLAN() bool {
 	if h.peerNode.UnsignedPeerAPIOnly {
 		return false
 	}
-	return h.isSelf || h.peerHasCap(tailcfg.CapabilityWakeOnLAN)
+	return h.isSelf || h.peerHasCap(tailcfg.PeerCapabilityWakeOnLAN)
 }
 
 var allowSelfIngress = envknob.RegisterBool("TS_ALLOW_SELF_INGRESS")
 
 // canIngress reports whether h can send ingress requests to this node.
 func (h *peerAPIHandler) canIngress() bool {
-	return h.peerHasCap(tailcfg.CapabilityIngress) || (allowSelfIngress() && h.isSelf)
+	return h.peerHasCap(tailcfg.PeerCapabilityIngress) || (allowSelfIngress() && h.isSelf)
 }
 
-func (h *peerAPIHandler) peerHasCap(wantCap string) bool {
-	for _, hasCap := range h.ps.b.PeerCaps(h.remoteAddr.Addr()) {
-		if hasCap == wantCap {
-			return true
-		}
-	}
-	return false
+func (h *peerAPIHandler) peerHasCap(wantCap tailcfg.PeerCapability) bool {
+	return h.ps.b.PeerCaps(h.remoteAddr.Addr()).HasCapability(wantCap)
 }
 
 func (h *peerAPIHandler) handlePeerPut(w http.ResponseWriter, r *http.Request) {
@@ -1073,6 +1083,10 @@ func (h *peerAPIHandler) handlePeerPut(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.ps.rootDir == "" {
 		http.Error(w, errNoTaildrop.Error(), http.StatusInternalServerError)
+		return
+	}
+	if distro.Get() == distro.Unraid && !h.ps.directFileMode {
+		http.Error(w, "Taildrop folder not configured or accessible", http.StatusInternalServerError)
 		return
 	}
 	rawPath := r.URL.EscapedPath()
@@ -1099,7 +1113,7 @@ func (h *peerAPIHandler) handlePeerPut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad filename", 400)
 		return
 	}
-	t0 := time.Now()
+	t0 := h.ps.b.clock.Now()
 	// TODO(bradfitz): prevent same filename being sent by two peers at once
 	partialFile := dstFile + partialSuffix
 	f, err := os.Create(partialFile)
@@ -1119,7 +1133,7 @@ func (h *peerAPIHandler) handlePeerPut(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength != 0 {
 		inFile = &incomingFile{
 			name:    baseName,
-			started: time.Now(),
+			started: h.ps.b.clock.Now(),
 			size:    r.ContentLength,
 			w:       f,
 			ph:      h,
@@ -1157,7 +1171,7 @@ func (h *peerAPIHandler) handlePeerPut(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	d := time.Since(t0).Round(time.Second / 10)
+	d := h.ps.b.clock.Since(t0).Round(time.Second / 10)
 	h.logf("got put of %s in %v from %v/%v", approxSize(finalSize), d, h.remoteAddr.Addr(), h.peerNode.ComputedName)
 
 	// TODO: set modtime
@@ -1219,12 +1233,9 @@ func (h *peerAPIHandler) handleServeMagicsock(w http.ResponseWriter, r *http.Req
 		http.Error(w, "denied; no debug access", http.StatusForbidden)
 		return
 	}
-	eng := h.ps.b.e
-	if ig, ok := eng.(wgengine.InternalsGetter); ok {
-		if _, mc, _, ok := ig.GetInternals(); ok {
-			mc.ServeHTTPDebug(w, r)
-			return
-		}
+	if mc, ok := h.ps.b.sys.MagicSock.GetOK(); ok {
+		mc.ServeHTTPDebug(w, r)
+		return
 	}
 	http.Error(w, "miswired", 500)
 }
@@ -1271,8 +1282,8 @@ func (h *peerAPIHandler) handleWakeOnLAN(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var password []byte // TODO(bradfitz): support?
-	st, err := interfaces.GetState()
-	if err != nil {
+	st := h.ps.b.sys.NetMon.Get().InterfaceState()
+	if st == nil {
 		http.Error(w, "failed to get interfaces state", http.StatusInternalServerError)
 		return
 	}

@@ -3,11 +3,12 @@
 
 package tailcfg
 
-//go:generate go run tailscale.com/cmd/viewer --type=User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPRegion,DERPMap,DERPNode,SSHRule,SSHAction,SSHPrincipal,ControlDialPlan --clonefunc
+//go:generate go run tailscale.com/cmd/viewer --type=User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPHomeParams,DERPRegion,DERPMap,DERPNode,SSHRule,SSHAction,SSHPrincipal,ControlDialPlan,Location,UserProfile --clonefunc
 
 import (
 	"bytes"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -97,7 +98,14 @@ type CapabilityVersion int
 //   - 58: 2023-03-10: Client retries lite map updates before restarting map poll.
 //   - 59: 2023-03-16: Client understands Peers[].SelfNodeV4MasqAddrForThisPeer
 //   - 60: 2023-04-06: Client understands IsWireGuardOnly
-const CurrentCapabilityVersion CapabilityVersion = 60
+//   - 61: 2023-04-18: Client understand SSHAction.SSHRecorderFailureAction
+//   - 62: 2023-05-05: Client can notify control over noise for SSHEventNotificationRequest recording failure events
+//   - 63: 2023-06-08: Client understands SSHAction.AllowRemotePortForwarding.
+//   - 64: 2023-07-11: Client understands s/CapabilityTailnetLockAlpha/CapabilityTailnetLock
+//   - 65: 2023-07-12: Client understands DERPMap.HomeParams + incremental DERPMap updates with params
+//   - 66: 2023-07-23: UserProfile.Groups added (available via WhoIs)
+//   - 67: 2023-07-25: Client understands PeerCapMap
+const CurrentCapabilityVersion CapabilityVersion = 67
 
 type StableID string
 
@@ -170,6 +178,27 @@ type UserProfile struct {
 	// Roles exists for legacy reasons, to keep old macOS clients
 	// happy. It JSON marshals as [].
 	Roles emptyStructJSONSlice
+
+	// Groups contains group identifiers for any group that this user is
+	// a part of and that the coordination server is configured to tell
+	// your node about. (Thus, it may be empty or incomplete.)
+	// There's no semantic difference between a nil and an empty list.
+	// The list is always sorted.
+	Groups []string `json:",omitempty"`
+}
+
+func (p *UserProfile) Equal(p2 *UserProfile) bool {
+	if p == nil && p2 == nil {
+		return true
+	}
+	if p == nil || p2 == nil {
+		return false
+	}
+	return p.ID == p2.ID &&
+		p.LoginName == p2.LoginName &&
+		p.DisplayName == p2.DisplayName &&
+		p.ProfilePicURL == p2.ProfilePicURL &&
+		(len(p.Groups) == 0 && len(p2.Groups) == 0 || reflect.DeepEqual(p.Groups, p2.Groups))
 }
 
 type emptyStructJSONSlice struct{}
@@ -208,10 +237,20 @@ type Node struct {
 	Addresses    []netip.Prefix // IP addresses of this Node directly
 	AllowedIPs   []netip.Prefix // range of IP addresses to route to this node
 	Endpoints    []string       `json:",omitempty"` // IP+port (public via STUN, and local LANs)
-	DERP         string         `json:",omitempty"` // DERP-in-IP:port ("127.3.3.40:N") endpoint
-	Hostinfo     HostinfoView
-	Created      time.Time
-	Cap          CapabilityVersion `json:",omitempty"` // if non-zero, the node's capability version; old servers might not send
+
+	// DERP is this node's home DERP region ID integer, but shoved into an
+	// IP:port string for legacy reasons. The IP address is always "127.3.3.40"
+	// (a loopback address (127) followed by the digits over the letters DERP on
+	// a QWERTY keyboard (3.3.40)). The "port number" is the home DERP region ID
+	// integer.
+	//
+	// TODO(bradfitz): simplify this legacy mess; add a new HomeDERPRegionID int
+	// field behind a new capver bump.
+	DERP string `json:",omitempty"` // DERP-in-IP:port ("127.3.3.40:N") endpoint
+
+	Hostinfo HostinfoView
+	Created  time.Time
+	Cap      CapabilityVersion `json:",omitempty"` // if non-zero, the node's capability version; old servers might not send
 
 	// Tags are the list of ACL tags applied to this node.
 	// Tags take the form of `tag:<value>` where value starts
@@ -238,8 +277,6 @@ type Node struct {
 	// coordination server.  A value of nil means unknown, or the
 	// current node doesn't have permission to know.
 	Online *bool `json:",omitempty"`
-
-	KeepAlive bool `json:",omitempty"` // open and keep open a connection to this peer
 
 	MachineAuthorized bool `json:",omitempty"` // TODO(crawshaw): replace with MachineStatus
 
@@ -528,6 +565,31 @@ type Service struct {
 	// TODO(apenwarr): add "tags" here for each service?
 }
 
+// Location represents geographical location data about a
+// Tailscale host. Location is optional and only set if
+// explicitly declared by a node.
+type Location struct {
+	Country     string `json:",omitempty"` // User friendly country name, with proper capitalization ("Canada")
+	CountryCode string `json:",omitempty"` // ISO 3166-1 alpha-2 in upper case ("CA")
+	City        string `json:",omitempty"` // User friendly city name, with proper capitalization ("Squamish")
+
+	// CityCode is a short code representing the city in upper case.
+	// CityCode is used to disambiguate a city from another location
+	// with the same city name. It uniquely identifies a particular
+	// geographical location, within the tailnet.
+	// IATA, ICAO or ISO 3166-2 codes are recommended ("YSE")
+	CityCode string `json:",omitempty"`
+
+	// Priority determines the order of use of an exit node when a
+	// location based preference matches more than one exit node,
+	// the node with the highest priority wins. Nodes of equal
+	// probability may be selected arbitrarily.
+	//
+	// A value of 0 means the exit node does not have a priority
+	// preference. A negative int is not allowed.
+	Priority int `json:",omitempty"`
+}
+
 // Hostinfo contains a summary of a Tailscale host.
 //
 // Because it contains pointers (slices), this type should not be used
@@ -581,6 +643,11 @@ type Hostinfo struct {
 	Cloud           string         `json:",omitempty"`
 	Userspace       opt.Bool       `json:",omitempty"` // if the client is running in userspace (netstack) mode
 	UserspaceRouter opt.Bool       `json:",omitempty"` // if the client's subnet router is running in userspace (netstack) mode
+
+	// Location represents geographical location data about a
+	// Tailscale host. Location is optional and only set if
+	// explicitly declared by a node.
+	Location *Location `json:",omitempty"`
 
 	// NOTE: any new fields containing pointers in this type
 	//       require changes to Hostinfo.Equal.
@@ -644,11 +711,12 @@ type NetInfo struct {
 	// Empty means not checked.
 	PCP opt.Bool
 
-	// PreferredDERP is this node's preferred DERP server
-	// for incoming traffic. The node might be be temporarily
-	// connected to multiple DERP servers (to send to other nodes)
-	// but PreferredDERP is the instance number that the node
-	// subscribes to traffic at.
+	// PreferredDERP is this node's preferred (home) DERP region ID.
+	// This is where the node expects to be contacted to begin a
+	// peer-to-peer connection. The node might be be temporarily
+	// connected to multiple DERP servers (to speak to other nodes
+	// that are located elsewhere) but PreferredDERP is the region ID
+	// that the node subscribes to traffic at.
 	// Zero means disconnected or unknown.
 	PreferredDERP int
 
@@ -1116,7 +1184,70 @@ type CapGrant struct {
 	// Caps are the capabilities the source IP matched by
 	// FilterRule.SrcIPs are granted to the destination IP,
 	// matched by Dsts.
-	Caps []string `json:",omitempty"`
+	// Deprecated: use CapMap instead.
+	Caps []PeerCapability `json:",omitempty"`
+
+	// CapMap is a map of capabilities to their values.
+	// The key is the capability name, and the value is a list of
+	// values for that capability.
+	CapMap PeerCapMap `json:",omitempty"`
+}
+
+// PeerCapability is a capability granted to a node by a FilterRule.
+// It's a string, but its meaning is application-defined.
+// It must be a URL, like "https://tailscale.com/cap/file-sharing-target" or
+// "https://example.com/cap/read-access".
+type PeerCapability string
+
+const (
+	// PeerCapabilityFileSharingTarget grants the current node the ability to send
+	// files to the peer which has this capability.
+	PeerCapabilityFileSharingTarget PeerCapability = "https://tailscale.com/cap/file-sharing-target"
+	// PeerCapabilityFileSharingSend grants the ability to receive files from a
+	// node that's owned by a different user.
+	PeerCapabilityFileSharingSend PeerCapability = "https://tailscale.com/cap/file-send"
+	// PeerCapabilityDebugPeer grants the ability for a peer to read this node's
+	// goroutines, metrics, magicsock internal state, etc.
+	PeerCapabilityDebugPeer PeerCapability = "https://tailscale.com/cap/debug-peer"
+	// PeerCapabilityWakeOnLAN grants the ability to send a Wake-On-LAN packet.
+	PeerCapabilityWakeOnLAN PeerCapability = "https://tailscale.com/cap/wake-on-lan"
+	// PeerCapabilityIngress grants the ability for a peer to send ingress traffic.
+	PeerCapabilityIngress PeerCapability = "https://tailscale.com/cap/ingress"
+)
+
+// PeerCapMap is a map of capabilities to their optional values. It is valid for
+// a capability to have no values (nil slice); such capabilities can be tested
+// for by using the HasCapability method.
+//
+// The values are opaque to Tailscale, but are passed through from the ACLs to
+// the application via the WhoIs API.
+type PeerCapMap map[PeerCapability][]json.RawMessage
+
+// UnmarshalCapJSON unmarshals each JSON value in cm[cap] as T.
+// If cap does not exist in cm, it returns (nil, nil).
+// It returns an error if the values cannot be unmarshaled into the provided type.
+func UnmarshalCapJSON[T any](cm PeerCapMap, cap PeerCapability) ([]T, error) {
+	vals, ok := cm[cap]
+	if !ok {
+		return nil, nil
+	}
+	out := make([]T, 0, len(vals))
+	for _, v := range vals {
+		var t T
+		if err := json.Unmarshal(v, &t); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
+// HasCapability reports whether c has the capability cap.
+// This is used to test for the existence of a capability, especially
+// when the capability has no values.
+func (c PeerCapMap) HasCapability(cap PeerCapability) bool {
+	_, ok := c[cap]
+	return ok
 }
 
 // FilterRule represents one rule in a packet filter.
@@ -1251,7 +1382,7 @@ type DNSConfig struct {
 	// match.
 	//
 	// Matches are case insensitive.
-	ExitNodeFilteredSet []string
+	ExitNodeFilteredSet []string `json:",omitempty"`
 }
 
 // DNSRecord is an extra DNS record to add to MagicDNS.
@@ -1583,8 +1714,15 @@ type ControlIPCandidate struct {
 	Priority int `json:",omitempty"`
 }
 
-// Debug are instructions from the control server to the client
-// to adjust debug settings.
+// Debug are instructions from the control server to the client to adjust debug
+// settings.
+//
+// Deprecated: these should no longer be used. They're a weird mix of declartive
+// and imperative. The imperative ones should be c2n requests instead, and the
+// declarative ones (at least the bools) should generally be self
+// Node.Capabilities.
+//
+// TODO(bradfitz): start migrating the imperative ones to c2n requests.
 type Debug struct {
 	// LogHeapPprof controls whether the client should log
 	// its heap pprof data. Each true value sent from the server
@@ -1802,6 +1940,7 @@ const (
 	CapabilitySSHRuleIn          = "https://tailscale.com/cap/ssh-rule-in"           // some SSH rule reach this node
 	CapabilityDataPlaneAuditLogs = "https://tailscale.com/cap/data-plane-audit-logs" // feature enabled
 	CapabilityDebug              = "https://tailscale.com/cap/debug"                 // exposes debug endpoints over the PeerAPI
+	CapabilityHTTPS              = "https"                                           // https cert provisioning enabled on tailnet
 
 	// CapabilityBindToInterfaceByRoute changes how Darwin nodes create
 	// sockets (in the net/netns package). See that package for more
@@ -1819,30 +1958,8 @@ const (
 	// of connections to the default network interface on Darwin nodes.
 	CapabilityDebugDisableBindConnToInterface = "https://tailscale.com/cap/debug-disable-bind-conn-to-interface"
 
-	// CapabilityTailnetLockAlpha indicates the node is in the tailnet lock alpha,
-	// and initialization of tailnet lock may proceed.
-	//
-	// TODO(tom): Remove this for 1.35 and later.
-	CapabilityTailnetLockAlpha = "https://tailscale.com/cap/tailnet-lock-alpha"
-
-	// Inter-node capabilities as specified in the MapResponse.PacketFilter[].CapGrants.
-
-	// CapabilityFileSharingTarget grants the current node the ability to send
-	// files to the peer which has this capability.
-	CapabilityFileSharingTarget = "https://tailscale.com/cap/file-sharing-target"
-	// CapabilityFileSharingSend grants the ability to receive files from a
-	// node that's owned by a different user.
-	CapabilityFileSharingSend = "https://tailscale.com/cap/file-send"
-	// CapabilityDebugPeer grants the ability for a peer to read this node's
-	// goroutines, metrics, magicsock internal state, etc.
-	CapabilityDebugPeer = "https://tailscale.com/cap/debug-peer"
-	// CapabilityWakeOnLAN grants the ability to send a Wake-On-LAN packet.
-	CapabilityWakeOnLAN = "https://tailscale.com/cap/wake-on-lan"
-	// CapabilityIngress grants the ability for a peer to send ingress traffic.
-	CapabilityIngress = "https://tailscale.com/cap/ingress"
-	// CapabilitySSHSessionHaul grants the ability to receive SSH session logs
-	// from a peer.
-	CapabilitySSHSessionHaul = "https://tailscale.com/cap/ssh-session-haul"
+	// CapabilityTailnetLock indicates the node may initialize tailnet lock.
+	CapabilityTailnetLock = "https://tailscale.com/cap/tailnet-lock"
 
 	// Funnel warning capabilities used for reporting errors to the user.
 
@@ -2046,9 +2163,138 @@ type SSHAction struct {
 	// to use local port forwarding if requested.
 	AllowLocalPortForwarding bool `json:"allowLocalPortForwarding,omitempty"`
 
+	// AllowRemotePortForwarding, if true, allows accepted connections
+	// to use remote port forwarding if requested.
+	AllowRemotePortForwarding bool `json:"allowRemotePortForwarding,omitempty"`
+
 	// Recorders defines the destinations of the SSH session recorders.
 	// The recording will be uploaded to http://addr:port/record.
-	Recorders []netip.AddrPort `json:"recorders"`
+	Recorders []netip.AddrPort `json:"recorders,omitempty"`
+
+	// OnRecorderFailure is the action to take if recording fails.
+	// If nil, the default action is to fail open.
+	OnRecordingFailure *SSHRecorderFailureAction `json:"onRecordingFailure,omitempty"`
+}
+
+// SSHRecorderFailureAction is the action to take if recording fails.
+type SSHRecorderFailureAction struct {
+	// RejectSessionWithMessage, if not empty, specifies that the session should
+	// be rejected if the recording fails to start.
+	// The message will be shown to the user before the session is rejected.
+	RejectSessionWithMessage string `json:",omitempty"`
+
+	// TerminateSessionWithMessage, if not empty, specifies that the session
+	// should be terminated if the recording fails after it has started. The
+	// message will be shown to the user before the session is terminated.
+	TerminateSessionWithMessage string `json:",omitempty"`
+
+	// NotifyURL, if non-empty, specifies a HTTP POST URL to notify when the
+	// recording fails. The payload is the JSON encoded
+	// SSHRecordingFailureNotifyRequest struct. The host field in the URL is
+	// ignored, and it will be sent to control over the Noise transport.
+	NotifyURL string `json:",omitempty"`
+}
+
+// SSHEventNotifyRequest is the JSON payload sent to the NotifyURL
+// for an SSH event.
+type SSHEventNotifyRequest struct {
+	// EventType is the type of notify request being sent.
+	EventType SSHEventType
+
+	// ConnectionID uniquely identifies a connection made to the SSH server.
+	// It may be shared across multiple sessions over the same connection in
+	// case a single connection creates multiple sessions.
+	ConnectionID string
+
+	// CapVersion is the client's current CapabilityVersion.
+	CapVersion CapabilityVersion
+
+	// NodeKey is the client's current node key.
+	NodeKey key.NodePublic
+
+	// SrcNode is the ID of the node that initiated the SSH session.
+	SrcNode NodeID
+
+	// SSHUser is the user that was presented to the SSH server.
+	SSHUser string
+
+	// LocalUser is the user that was resolved from the SSHUser for the local machine.
+	LocalUser string
+
+	// RecordingAttempts is the list of recorders that were attempted, in order.
+	RecordingAttempts []*SSHRecordingAttempt
+}
+
+// SSHEventType defines the event type linked to a SSH action or state.
+type SSHEventType int
+
+const (
+	UnspecifiedSSHEventType SSHEventType = 0
+	// SSHSessionRecordingRejected is the event that
+	// defines when a SSH session cannot be started
+	// because no recorder is available for session
+	// recording, and the SSHRecorderFailureAction
+	// RejectSessionWithMessage is not empty.
+	SSHSessionRecordingRejected SSHEventType = 1
+	// SSHSessionRecordingTerminated is the event that
+	// defines when session recording has failed
+	// during the session and the SSHRecorderFailureAction
+	// TerminateSessionWithMessage is not empty.
+	SSHSessionRecordingTerminated SSHEventType = 2
+	// SSHSessionRecordingFailed is the event that
+	// defines when session recording is unavailable and
+	// the SSHRecorderFailureAction RejectSessionWithMessage
+	// or TerminateSessionWithMessage is empty.
+	SSHSessionRecordingFailed SSHEventType = 3
+)
+
+// SSHRecordingAttempt is a single attempt to start a recording.
+type SSHRecordingAttempt struct {
+	// Recorder is the address of the recorder that was attempted.
+	Recorder netip.AddrPort
+
+	// FailureMessage is the error message of the failed attempt.
+	FailureMessage string
+}
+
+// QueryFeatureRequest is a request sent to "/machine/feature/query"
+// to get instructions on how to enable a feature, such as Funnel,
+// for the node's tailnet.
+//
+// See QueryFeatureResponse for response structure.
+type QueryFeatureRequest struct {
+	// Feature is the string identifier for a feature.
+	Feature string `json:",omitempty"`
+	// NodeKey is the client's current node key.
+	NodeKey key.NodePublic `json:",omitempty"`
+}
+
+// QueryFeatureResponse is the response to an QueryFeatureRequest.
+type QueryFeatureResponse struct {
+	// Complete is true when the feature is already enabled.
+	Complete bool `json:",omitempty"`
+
+	// Text holds lines to display in the CLI with information
+	// about the feature and how to enable it.
+	//
+	// Lines are separated by newline characters. The final
+	// newline may be omitted.
+	Text string `json:",omitempty"`
+
+	// URL is the link for the user to visit to take action on
+	// enabling the feature.
+	//
+	// When empty, there is no action for this user to take.
+	URL string `json:",omitempty"`
+
+	// WaitOn specifies the self node capability required to use
+	// the feature. The CLI can watch for changes to the presence,
+	// of this capability, and once included, can proceed with
+	// using the feature.
+	//
+	// If WaitOn is empty, the user does not have an action that
+	// the CLI should block on.
+	WaitOn string `json:",omitempty"`
 }
 
 // OverTLSPublicKeyResponse is the JSON response to /key?v=<n>
@@ -2164,6 +2410,8 @@ type PeerChange struct {
 //
 // Mnemonic: 3.3.40 are numbers above the keys D, E, R, P.
 const DerpMagicIP = "127.3.3.40"
+
+var DerpMagicIPAddr = netip.MustParseAddr(DerpMagicIP)
 
 // EarlyNoise is the early payload that's sent over Noise but before the HTTP/2
 // handshake when connecting to the coordination server.

@@ -13,22 +13,22 @@ import (
 	"fmt"
 	"io"
 	"log"
+	mrand "math/rand"
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"tailscale.com/envknob"
-	"tailscale.com/logtail/backoff"
 	"tailscale.com/net/interfaces"
+	"tailscale.com/net/netmon"
 	"tailscale.com/net/sockstats"
+	"tailscale.com/tstime"
 	tslogger "tailscale.com/types/logger"
 	"tailscale.com/types/logid"
 	"tailscale.com/util/set"
-	"tailscale.com/wgengine/monitor"
 )
 
 // DefaultHost is the default host name to upload logs to when
@@ -49,18 +49,18 @@ type Encoder interface {
 }
 
 type Config struct {
-	Collection     string           // collection name, a domain name
-	PrivateID      logid.PrivateID  // private ID for the primary log stream
-	CopyPrivateID  logid.PrivateID  // private ID for a log stream that is a superset of this log stream
-	BaseURL        string           // if empty defaults to "https://log.tailscale.io"
-	HTTPC          *http.Client     // if empty defaults to http.DefaultClient
-	SkipClientTime bool             // if true, client_time is not written to logs
-	LowMemory      bool             // if true, logtail minimizes memory use
-	TimeNow        func() time.Time // if set, substitutes uses of time.Now
-	Stderr         io.Writer        // if set, logs are sent here instead of os.Stderr
-	StderrLevel    int              // max verbosity level to write to stderr; 0 means the non-verbose messages only
-	Buffer         Buffer           // temp storage, if nil a MemoryBuffer
-	NewZstdEncoder func() Encoder   // if set, used to compress logs for transmission
+	Collection     string          // collection name, a domain name
+	PrivateID      logid.PrivateID // private ID for the primary log stream
+	CopyPrivateID  logid.PrivateID // private ID for a log stream that is a superset of this log stream
+	BaseURL        string          // if empty defaults to "https://log.tailscale.io"
+	HTTPC          *http.Client    // if empty defaults to http.DefaultClient
+	SkipClientTime bool            // if true, client_time is not written to logs
+	LowMemory      bool            // if true, logtail minimizes memory use
+	Clock          tstime.Clock    // if set, Clock.Now substitutes uses of time.Now
+	Stderr         io.Writer       // if set, logs are sent here instead of os.Stderr
+	StderrLevel    int             // max verbosity level to write to stderr; 0 means the non-verbose messages only
+	Buffer         Buffer          // temp storage, if nil a MemoryBuffer
+	NewZstdEncoder func() Encoder  // if set, used to compress logs for transmission
 
 	// MetricsDelta, if non-nil, is a func that returns an encoding
 	// delta in clientmetrics to upload alongside existing logs.
@@ -94,8 +94,8 @@ func NewLogger(cfg Config, logf tslogger.Logf) *Logger {
 	if cfg.HTTPC == nil {
 		cfg.HTTPC = http.DefaultClient
 	}
-	if cfg.TimeNow == nil {
-		cfg.TimeNow = time.Now
+	if cfg.Clock == nil {
+		cfg.Clock = tstime.StdClock{}
 	}
 	if cfg.Stderr == nil {
 		cfg.Stderr = os.Stderr
@@ -128,9 +128,6 @@ func NewLogger(cfg Config, logf tslogger.Logf) *Logger {
 		cfg.FlushDelayFn = func() time.Duration { return 0 }
 	}
 
-	stdLogf := func(f string, a ...any) {
-		fmt.Fprintf(cfg.Stderr, strings.TrimSuffix(f, "\n")+"\n", a...)
-	}
 	var urlSuffix string
 	if !cfg.CopyPrivateID.IsZero() {
 		urlSuffix = "?copyId=" + cfg.CopyPrivateID.String()
@@ -147,10 +144,8 @@ func NewLogger(cfg Config, logf tslogger.Logf) *Logger {
 		drainWake:      make(chan struct{}, 1),
 		sentinel:       make(chan int32, 16),
 		flushDelayFn:   cfg.FlushDelayFn,
-		timeNow:        cfg.TimeNow,
-		bo:             backoff.NewBackoff("logtail", stdLogf, 30*time.Second),
+		clock:          cfg.Clock,
 		metricsDelta:   cfg.MetricsDelta,
-		sockstatsLabel: sockstats.LabelLogtailLogger,
 
 		procID:              procID,
 		includeProcSequence: cfg.IncludeProcSequence,
@@ -158,6 +153,7 @@ func NewLogger(cfg Config, logf tslogger.Logf) *Logger {
 		shutdownStart: make(chan struct{}),
 		shutdownDone:  make(chan struct{}),
 	}
+	l.SetSockstatsLabel(sockstats.LabelLogtailLogger)
 	if cfg.NewZstdEncoder != nil {
 		l.zstdEncoder = cfg.NewZstdEncoder()
 	}
@@ -179,33 +175,37 @@ type Logger struct {
 	url            string
 	lowMem         bool
 	skipClientTime bool
-	linkMonitor    *monitor.Mon
+	netMonitor     *netmon.Monitor
 	buffer         Buffer
 	drainWake      chan struct{}        // signal to speed up drain
 	flushDelayFn   func() time.Duration // negative or zero return value to upload aggressively, or >0 to batch at this delay
 	flushPending   atomic.Bool
 	sentinel       chan int32
-	timeNow        func() time.Time
-	bo             *backoff.Backoff
+	clock          tstime.Clock
 	zstdEncoder    Encoder
 	uploadCancel   func()
 	explainedRaw   bool
 	metricsDelta   func() string // or nil
 	privateID      logid.PrivateID
 	httpDoCalls    atomic.Int32
-	sockstatsLabel sockstats.Label
+	sockstatsLabel atomicSocktatsLabel
 
 	procID              uint32
 	includeProcSequence bool
 
 	writeLock    sync.Mutex // guards procSequence, flushTimer, buffer.Write calls
 	procSequence uint64
-	flushTimer   *time.Timer // used when flushDelay is >0
+	flushTimer   tstime.TimerController // used when flushDelay is >0
 
 	shutdownStartMu sync.Mutex    // guards the closing of shutdownStart
 	shutdownStart   chan struct{} // closed when shutdown begins
 	shutdownDone    chan struct{} // closed when shutdown complete
 }
+
+type atomicSocktatsLabel struct{ p atomic.Uint32 }
+
+func (p *atomicSocktatsLabel) Load() sockstats.Label       { return sockstats.Label(p.p.Load()) }
+func (p *atomicSocktatsLabel) Store(label sockstats.Label) { p.p.Store(uint32(label)) }
 
 // SetVerbosityLevel controls the verbosity level that should be
 // written to stderr. 0 is the default (not verbose). Levels 1 or higher
@@ -214,17 +214,17 @@ func (l *Logger) SetVerbosityLevel(level int) {
 	atomic.StoreInt64(&l.stderrLevel, int64(level))
 }
 
-// SetLinkMonitor sets the optional the link monitor.
+// SetNetMon sets the optional the network monitor.
 //
 // It should not be changed concurrently with log writes and should
 // only be set once.
-func (l *Logger) SetLinkMonitor(lm *monitor.Mon) {
-	l.linkMonitor = lm
+func (l *Logger) SetNetMon(lm *netmon.Monitor) {
+	l.netMonitor = lm
 }
 
 // SetSockstatsLabel sets the label used in sockstat logs to identify network traffic from this logger.
 func (l *Logger) SetSockstatsLabel(label sockstats.Label) {
-	l.sockstatsLabel = label
+	l.sockstatsLabel.Store(label)
 }
 
 // PrivateID returns the logger's private log ID.
@@ -373,23 +373,38 @@ func (l *Logger) uploading(ctx context.Context) {
 			}
 		}
 
-		for len(body) > 0 {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-			uploaded, err := l.upload(ctx, body, origlen)
+		var lastError string
+		var numFailures int
+		var firstFailure time.Time
+		for len(body) > 0 && ctx.Err() == nil {
+			retryAfter, err := l.upload(ctx, body, origlen)
 			if err != nil {
+				numFailures++
+				firstFailure = l.clock.Now()
+
 				if !l.internetUp() {
 					fmt.Fprintf(l.stderr, "logtail: internet down; waiting\n")
 					l.awaitInternetUp(ctx)
 					continue
 				}
-				fmt.Fprintf(l.stderr, "logtail: upload: %v\n", err)
-			}
-			l.bo.BackOff(ctx, err)
-			if uploaded {
+
+				// Only print the same message once.
+				if currError := err.Error(); lastError != currError {
+					fmt.Fprintf(l.stderr, "logtail: upload: %v\n", err)
+					lastError = currError
+				}
+
+				// Sleep for the specified retryAfter period,
+				// otherwise default to some random value.
+				if retryAfter <= 0 {
+					retryAfter = time.Duration(30+mrand.Intn(30)) * time.Second
+				}
+				tstime.Sleep(ctx, retryAfter)
+			} else {
+				// Only print a success message after recovery.
+				if numFailures > 0 {
+					fmt.Fprintf(l.stderr, "logtail: upload succeeded after %d failures and %s\n", numFailures, l.clock.Since(firstFailure).Round(time.Second))
+				}
 				break
 			}
 		}
@@ -403,16 +418,16 @@ func (l *Logger) uploading(ctx context.Context) {
 }
 
 func (l *Logger) internetUp() bool {
-	if l.linkMonitor == nil {
+	if l.netMonitor == nil {
 		// No way to tell, so assume it is.
 		return true
 	}
-	return l.linkMonitor.InterfaceState().AnyInterfaceUp()
+	return l.netMonitor.InterfaceState().AnyInterfaceUp()
 }
 
 func (l *Logger) awaitInternetUp(ctx context.Context) {
 	upc := make(chan bool, 1)
-	defer l.linkMonitor.RegisterChangeCallback(func(changed bool, st *interfaces.State) {
+	defer l.netMonitor.RegisterChangeCallback(func(changed bool, st *interfaces.State) {
 		if st.AnyInterfaceUp() {
 			select {
 			case upc <- true:
@@ -433,9 +448,9 @@ func (l *Logger) awaitInternetUp(ctx context.Context) {
 // upload uploads body to the log server.
 // origlen indicates the pre-compression body length.
 // origlen of -1 indicates that the body is not compressed.
-func (l *Logger) upload(ctx context.Context, body []byte, origlen int) (uploaded bool, err error) {
+func (l *Logger) upload(ctx context.Context, body []byte, origlen int) (retryAfter time.Duration, err error) {
 	const maxUploadTime = 45 * time.Second
-	ctx = sockstats.WithSockStats(ctx, l.sockstatsLabel, l.Logf)
+	ctx = sockstats.WithSockStats(ctx, l.sockstatsLabel.Load(), l.Logf)
 	ctx, cancel := context.WithTimeout(ctx, maxUploadTime)
 	defer cancel()
 
@@ -460,17 +475,16 @@ func (l *Logger) upload(ctx context.Context, body []byte, origlen int) (uploaded
 	l.httpDoCalls.Add(1)
 	resp, err := l.httpc.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("log upload of %d bytes %s failed: %v", len(body), compressedNote, err)
+		return 0, fmt.Errorf("log upload of %d bytes %s failed: %v", len(body), compressedNote, err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		uploaded = resp.StatusCode == 400 // the server saved the logs anyway
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return uploaded, fmt.Errorf("log upload of %d bytes %s failed %d: %q", len(body), compressedNote, resp.StatusCode, b)
+	if resp.StatusCode != http.StatusOK {
+		n, _ := strconv.Atoi(resp.Header.Get("Retry-After"))
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
+		return time.Duration(n) * time.Second, fmt.Errorf("log upload of %d bytes %s failed %d: %s", len(body), compressedNote, resp.StatusCode, bytes.TrimSpace(b))
 	}
-
-	return true, nil
+	return 0, nil
 }
 
 // Flush uploads all logs to the server. It blocks until complete or there is an
@@ -531,7 +545,7 @@ func (l *Logger) sendLocked(jsonBlob []byte) (int, error) {
 	if flushDelay > 0 {
 		if l.flushPending.CompareAndSwap(false, true) {
 			if l.flushTimer == nil {
-				l.flushTimer = time.AfterFunc(flushDelay, l.tryDrainWake)
+				l.flushTimer = l.clock.AfterFunc(flushDelay, l.tryDrainWake)
 			} else {
 				l.flushTimer.Reset(flushDelay)
 			}
@@ -545,7 +559,7 @@ func (l *Logger) sendLocked(jsonBlob []byte) (int, error) {
 // TODO: instead of allocating, this should probably just append
 // directly into the output log buffer.
 func (l *Logger) encodeText(buf []byte, skipClientTime bool, procID uint32, procSequence uint64, level int) []byte {
-	now := l.timeNow()
+	now := l.clock.Now()
 
 	// Factor in JSON encoding overhead to try to only do one alloc
 	// in the make below (so appends don't resize the buffer).
@@ -660,7 +674,7 @@ func (l *Logger) encodeLocked(buf []byte, level int) []byte {
 		return l.encodeText(buf, l.skipClientTime, l.procID, l.procSequence, level) // text fast-path
 	}
 
-	now := l.timeNow()
+	now := l.clock.Now()
 
 	obj := make(map[string]any)
 	if err := json.Unmarshal(buf, &obj); err != nil {

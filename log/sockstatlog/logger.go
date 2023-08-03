@@ -20,6 +20,7 @@ import (
 	"tailscale.com/logpolicy"
 	"tailscale.com/logtail"
 	"tailscale.com/logtail/filch"
+	"tailscale.com/net/netmon"
 	"tailscale.com/net/sockstats"
 	"tailscale.com/smallzstd"
 	"tailscale.com/types/logger"
@@ -33,7 +34,7 @@ const pollInterval = time.Second / 10
 // logInterval specifies how often to log sockstat events to disk.
 // This delay is added to prevent an infinite loop when logs are uploaded,
 // which itself creates additional sockstat events.
-const logInterval = 3 * time.Second
+const logInterval = 10 * time.Second
 
 // maxLogFileSize specifies the maximum size of a log file before it is rotated.
 // Our logs are fairly compact, and we are mostly only looking at a few hours of data.
@@ -83,7 +84,7 @@ type event struct {
 // SockstatLogID reproducibly derives a new logid.PrivateID for sockstat logging from a node's public backend log ID.
 // The returned PrivateID is the sha256 sum of logID + "sockstat".
 // If a node's public log ID becomes known, it is trivial to spoof sockstat logs for that node.
-// Given the this is just for debugging, we're not too concerned about that.
+// Given that this is just for debugging, we're not too concerned about that.
 func SockstatLogID(logID logid.PublicID) logid.PrivateID {
 	return logid.PrivateID(sha256.Sum256([]byte(logID.String() + "sockstat")))
 }
@@ -92,7 +93,8 @@ func SockstatLogID(logID logid.PublicID) logid.PrivateID {
 // On platforms that do not support sockstat logging, a nil Logger will be returned.
 // The returned Logger is not yet enabled, and must be shut down with Shutdown when it is no longer needed.
 // Logs will be uploaded to the log server using a new log ID derived from the provided backend logID.
-func NewLogger(logdir string, logf logger.Logf, logID logid.PublicID) (*Logger, error) {
+// The netMon parameter is optional; if non-nil it's used to do faster interface lookups.
+func NewLogger(logdir string, logf logger.Logf, logID logid.PublicID, netMon *netmon.Monitor) (*Logger, error) {
 	if !sockstats.IsAvailable {
 		return nil, nil
 	}
@@ -112,7 +114,7 @@ func NewLogger(logdir string, logf logger.Logf, logID logid.PublicID) (*Logger, 
 	logger := &Logger{
 		logf:  logf,
 		filch: filch,
-		tr:    logpolicy.NewLogtailTransport(logtail.DefaultHost),
+		tr:    logpolicy.NewLogtailTransport(logtail.DefaultHost, netMon, logf),
 	}
 	logger.logger = logtail.NewLogger(logtail.Config{
 		BaseURL:    logpolicy.LogURL(),

@@ -45,9 +45,12 @@ import (
 	"tailscale.com/logpolicy"
 	"tailscale.com/logtail/backoff"
 	"tailscale.com/net/dns"
+	"tailscale.com/net/netmon"
 	"tailscale.com/net/tstun"
+	"tailscale.com/tsd"
 	"tailscale.com/types/logger"
 	"tailscale.com/types/logid"
+	"tailscale.com/util/osdiag"
 	"tailscale.com/util/winutil"
 	"tailscale.com/version"
 	"tailscale.com/wf"
@@ -124,6 +127,10 @@ var syslogf logger.Logf = logger.Discard
 // At this point we're still the parent process that
 // Windows started.
 func runWindowsService(pol *logpolicy.Policy) error {
+	go func() {
+		osdiag.LogSupportInfo(logger.WithPrefix(log.Printf, "Support Info: "), osdiag.LogSupportInfoReasonStartup)
+	}()
+
 	if winutil.GetPolicyInteger("LogSCMInteractions", 0) != 0 {
 		syslog, err := eventlog.Open(serviceName)
 		if err == nil {
@@ -291,8 +298,15 @@ func beWindowsSubprocess() bool {
 		}
 	}()
 
+	sys := new(tsd.System)
+	netMon, err := netmon.New(log.Printf)
+	if err != nil {
+		log.Fatalf("Could not create netMon: %v", err)
+	}
+	sys.Set(netMon)
+
 	publicLogID, _ := logid.ParsePublicID(logID)
-	err := startIPNServer(ctx, log.Printf, publicLogID)
+	err = startIPNServer(ctx, log.Printf, publicLogID, sys)
 	if err != nil {
 		log.Fatalf("ipnserver: %v", err)
 	}

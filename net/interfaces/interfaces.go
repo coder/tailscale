@@ -351,12 +351,6 @@ func (s *State) String() string {
 	return sb.String()
 }
 
-// ChangeFunc is a callback function (usually registered with
-// wgengine/monitor's Mon) that's called when the network
-// changed. The changed parameter is whether the network changed
-// enough for State to have changed since the last callback.
-type ChangeFunc func(changed bool, state *State)
-
 // An InterfaceFilter indicates whether EqualFiltered should use i when deciding whether two States are equal.
 // ips are all the IPPrefixes associated with i.
 type InterfaceFilter func(i Interface, ips []netip.Prefix) bool
@@ -512,6 +506,8 @@ var getPAC func() string
 // GetState returns the state of all the current machine's network interfaces.
 //
 // It does not set the returned State.IsExpensive. The caller can populate that.
+//
+// Deprecated: use netmon.Monitor.InterfaceState instead.
 func GetState() (*State, error) {
 	s := &State{
 		InterfaceIPs: make(map[string][]netip.Prefix),
