@@ -1124,6 +1124,7 @@ func (de *endpoint) stopAndReset() {
 func (de *endpoint) resetLocked() {
 	de.lastSend = 0
 	de.lastFullPing = 0
+	de.c.logf("magicsock: disco: node %v %v now using DERP only (reset)", de.publicKey.ShortString(), de.discoShort())
 	de.bestAddr = addrLatency{}
 	de.bestAddrAt = 0
 	de.trustBestAddrUntil = 0

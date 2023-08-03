@@ -311,6 +311,10 @@ func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) cha
 	}
 	c.logf("magicsock: adding connection to derp-%v for %v", regionID, why)
 
+	if c.derpMap == nil || c.derpMap.Regions[regionID] == nil {
+		return nil
+	}
+
 	firstDerp := false
 	if c.activeDerp == nil {
 		firstDerp = true
@@ -341,7 +345,16 @@ func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) cha
 	dc.SetCanAckPings(true)
 	dc.NotePreferred(c.myDerp == regionID)
 	dc.SetAddressFamilySelector(derpAddrFamSelector{c})
+	dc.SetForcedWebsocketCallback(c.derpForcedWebsocketFunc)
 	dc.DNSCache = dnscache.Get()
+	header := c.derpHeader.Load()
+	if header != nil {
+		dc.Header = header.Clone()
+	}
+	dialer := c.derpRegionDialer.Load()
+	if dialer != nil {
+		dc.SetRegionDialer(*dialer)
+	}
 
 	ctx, cancel := context.WithCancel(c.connCtx)
 	ch := make(chan derpWriteRequest, bufferedDerpWritesBeforeDrop())
@@ -374,6 +387,8 @@ func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) cha
 		startGate = c.derpStarted
 		go func() {
 			dc.Connect(ctx)
+			c.mu.Lock()
+			defer c.mu.Unlock()
 			close(c.derpStarted)
 			c.muCond.Broadcast()
 		}()
