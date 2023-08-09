@@ -10,9 +10,9 @@ import (
 	"reflect"
 
 	"github.com/tailscale/wireguard-go/tun"
+	"tailscale.com/net/netmon"
 	"tailscale.com/types/logger"
 	"tailscale.com/types/preftype"
-	"tailscale.com/wgengine/monitor"
 )
 
 // Router is responsible for managing the system network stack.
@@ -34,11 +34,11 @@ type Router interface {
 // New returns a new Router for the current platform, using the
 // provided tun device.
 //
-// If linkMon is nil, it's not used. It's currently (2021-07-20) only
+// If netMon is nil, it's not used. It's currently (2021-07-20) only
 // used on Linux in some situations.
-func New(logf logger.Logf, tundev tun.Device, linkMon *monitor.Mon) (Router, error) {
+func New(logf logger.Logf, tundev tun.Device, netMon *netmon.Monitor) (Router, error) {
 	logf = logger.WithPrefix(logf, "router: ")
-	return newUserspaceRouter(logf, tundev, linkMon)
+	return newUserspaceRouter(logf, tundev, netMon)
 }
 
 // Cleanup restores the system network configuration to its original state
@@ -66,6 +66,11 @@ type Config struct {
 	// There are no priorities set in how these routes are added, normal
 	// routing rules apply.
 	LocalRoutes []netip.Prefix
+
+	// NewMTU is currently only used by the MacOS network extension
+	// app to set the MTU of the tun in the router configuration
+	// callback. If zero, the MTU is unchanged.
+	NewMTU int
 
 	// Linux-only things below, ignored on other platforms.
 	SubnetRoutes     []netip.Prefix         // subnets being advertised to other Tailscale nodes

@@ -15,16 +15,10 @@ import (
 	"golang.org/x/sys/unix"
 	"tailscale.com/envknob"
 	"tailscale.com/net/interfaces"
+	"tailscale.com/net/netmon"
 	"tailscale.com/types/logger"
+	"tailscale.com/util/linuxfw"
 )
-
-// tailscaleBypassMark is the mark indicating that packets originating
-// from a socket should bypass Tailscale-managed routes during routing
-// table lookups.
-//
-// Keep this in sync with tailscaleBypassMark in
-// wgengine/router/router_linux.go.
-const tailscaleBypassMark = 0x80000
 
 // socketMarkWorksOnce is the sync.Once & cached value for useSocketMark.
 var socketMarkWorksOnce struct {
@@ -85,7 +79,7 @@ func ignoreErrors() bool {
 	return false
 }
 
-func control(logger.Logf) func(network, address string, c syscall.RawConn) error {
+func control(logger.Logf, *netmon.Monitor) func(network, address string, c syscall.RawConn) error {
 	return controlC
 }
 
@@ -118,7 +112,7 @@ func controlC(network, address string, c syscall.RawConn) error {
 }
 
 func setBypassMark(fd uintptr) error {
-	if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, tailscaleBypassMark); err != nil {
+	if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, linuxfw.TailscaleBypassMarkNum); err != nil {
 		return fmt.Errorf("setting SO_MARK bypass: %w", err)
 	}
 	return nil

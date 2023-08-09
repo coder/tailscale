@@ -8,6 +8,7 @@ package sockstats
 import (
 	"context"
 
+	"tailscale.com/net/netmon"
 	"tailscale.com/types/logger"
 )
 
@@ -29,5 +30,9 @@ func getValidation() *ValidationSockStats {
 	return nil
 }
 
-func setLinkMonitor(lm LinkMonitor) {
+func setNetMon(netMon *netmon.Monitor) {
+}
+
+func debugInfo() string {
+	return ""
 }

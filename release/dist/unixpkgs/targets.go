@@ -4,6 +4,7 @@
 package unixpkgs
 
 import (
+	"crypto"
 	"fmt"
 	"sort"
 	"strings"
@@ -14,7 +15,7 @@ import (
 	_ "github.com/goreleaser/nfpm/rpm"
 )
 
-func Targets() []dist.Target {
+func Targets(signer crypto.Signer) []dist.Target {
 	var ret []dist.Target
 	for goosgoarch := range tarballs {
 		goos, goarch := splitGoosGoarch(goosgoarch)
@@ -23,6 +24,7 @@ func Targets() []dist.Target {
 				"GOOS":   goos,
 				"GOARCH": goarch,
 			},
+			signer: signer,
 		})
 	}
 	for goosgoarch := range debs {
@@ -53,6 +55,7 @@ func Targets() []dist.Target {
 			"GOARCH": "386",
 			"GO386":  "softfloat",
 		},
+		signer: signer,
 	})
 
 	sort.Slice(ret, func(i, j int) bool {
@@ -82,31 +85,31 @@ var (
 	}
 
 	debs = map[string]bool{
-		"linux/386":     true,
-		"linux/amd64":   true,
-		"linux/arm":     true,
-		"linux/arm64":   true,
-		"linux/riscv64": true,
-		// TODO: maybe mipses, we accidentally started building them at some
-		// point even though they probably don't work right.
-		// "linux/mips":     true,
-		// "linux/mipsle":   true,
+		"linux/386":      true,
+		"linux/amd64":    true,
+		"linux/arm":      true,
+		"linux/arm64":    true,
+		"linux/riscv64":  true,
+		"linux/mipsle":   true,
+		"linux/mips64le": true,
+		"linux/mips":     true,
+		// Debian does not support big endian mips64. Leave that out until we know
+		// we need it.
 		// "linux/mips64":   true,
-		// "linux/mips64le": true,
 	}
 
 	rpms = map[string]bool{
-		"linux/386":     true,
-		"linux/amd64":   true,
-		"linux/arm":     true,
-		"linux/arm64":   true,
-		"linux/riscv64": true,
-		// TODO: maybe mipses, we accidentally started building them at some
-		// point even though they probably don't work right.
+		"linux/386":      true,
+		"linux/amd64":    true,
+		"linux/arm":      true,
+		"linux/arm64":    true,
+		"linux/riscv64":  true,
+		"linux/mipsle":   true,
+		"linux/mips64le": true,
+		// Fedora only supports little endian mipses. Maybe some other distribution
+		// supports big-endian? Leave them out for now.
 		// "linux/mips":     true,
-		// "linux/mipsle":   true,
 		// "linux/mips64":   true,
-		// "linux/mips64le": true,
 	}
 )
 

@@ -101,8 +101,8 @@ You can also [list all devices in the tailnet](#list-tailnet-devices) to get the
 ``` jsonc
 {
   // addresses (array of strings) is a list of Tailscale IP
-  // addresses for the device, including both ipv4 (formatted as 100.x.y.z)
-  // and ipv6 (formatted as fd7a:115c:a1e0:a:b:c:d:e) addresses.
+  // addresses for the device, including both IPv4 (formatted as 100.x.y.z)
+  // and IPv6 (formatted as fd7a:115c:a1e0:a:b:c:d:e) addresses.
   "addresses": [
     "100.87.74.78",
     "fd7a:115c:a1e0:ac82:4843:ca90:697d:c36e"
@@ -503,7 +503,8 @@ Returns the enabled and advertised subnet routes for a device.
 POST /api/v2/device/{deviceID}/authorized
 ```
 
-Authorize a device. This call marks a device as authorized for tailnets where device authorization is required.
+Authorize a device.
+This call marks a device as authorized or revokes its authorization for tailnets where device authorization is required, according to the `authorized` field in the payload.
 
 This returns a successful 2xx response with an empty JSON object in the response body.
 
@@ -515,7 +516,8 @@ The ID of the device.
 
 #### `authorized` (required in `POST` body)
 
-Specify whether the device is authorized. Only 'true' is currently supported.
+Specify whether the device is authorized. False to deauthorize an authorized device, and true to authorize a new device or to re-authorize a previously deauthorized device.
+
 
 ``` jsonc
 {
@@ -1113,6 +1115,21 @@ Look at the response body to determine whether there was a problem within your A
   }
   ```
 
+If your tailnet has [user and group provisioning](https://tailscale.com/kb/1180/sso-okta-scim/) turned on, we will also warn you about
+any groups that are used in the policy file that are not being synced from SCIM. Explicitly defined groups will not trigger this warning.
+
+```jsonc
+{
+  "message":"warning(s) found",
+  "data":[
+          {
+            "user": "group:unknown@example.com",
+            "warnings":["group is not syncing from SCIM and will be ignored by rules in the policy file"]
+          }
+        ]
+}
+```
+
 <a href="tailnet-devices"></a>
 
 ## List tailnet devices
@@ -1221,6 +1238,11 @@ The remaining three methods operate on auth keys and API access tokens.
 
   // expirySeconds (int) is the duration in seconds a new key is valid.
   "expirySeconds": 86400
+
+  // description (string) is an optional short phrase that describes what
+  // this key is used for. It can be a maximum of 50 alphanumeric characters.
+  // Hyphens and underscores are also allowed.
+  "description": "short description of key purpose"
 }
 ```
 
@@ -1307,6 +1329,9 @@ Note the following about required vs. optional values:
   Specifies the duration in seconds until the key should expire.
   Defaults to 90 days if not supplied.
 
+- **`description`:** Optional in `POST` body.
+  A short string specifying the purpose of the key. Can be a maximum of 50 alphanumeric characters. Hyphens and spaces are also allowed.
+
 ### Request example
 
 ``` jsonc
@@ -1324,7 +1349,8 @@ curl "https://api.tailscale.com/api/v2/tailnet/example.com/keys" \
       }
     }
   },
-  "expirySeconds": 86400
+  "expirySeconds": 86400,
+  "description": "dev access"
 }'
 ```
 
@@ -1350,7 +1376,8 @@ It holds the capabilities specified in the request and can no longer be retrieve
         "tags": [ "tag:example" ]
       }
     }
-  }
+  },
+  "description": "dev access"
 }
 ```
 
@@ -1402,7 +1429,8 @@ The response is a JSON object with information about the key supplied.
         ]
       }
     }
-  }
+  },
+  "description": "dev access"
 }
 ```
 

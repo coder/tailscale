@@ -10,8 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/netip"
-	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -25,9 +25,9 @@ import (
 	"tailscale.com/health"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/net/dns"
-	"tailscale.com/net/dns/resolver"
 	"tailscale.com/net/flowtrack"
 	"tailscale.com/net/interfaces"
+	"tailscale.com/net/netmon"
 	"tailscale.com/net/packet"
 	"tailscale.com/net/sockstats"
 	"tailscale.com/net/tsaddr"
@@ -48,7 +48,6 @@ import (
 	"tailscale.com/wgengine/capture"
 	"tailscale.com/wgengine/filter"
 	"tailscale.com/wgengine/magicsock"
-	"tailscale.com/wgengine/monitor"
 	"tailscale.com/wgengine/netlog"
 	"tailscale.com/wgengine/router"
 	"tailscale.com/wgengine/wgcfg"
@@ -84,21 +83,21 @@ const statusPollInterval = 1 * time.Minute
 const networkLoggerUploadTimeout = 5 * time.Second
 
 type userspaceEngine struct {
-	logf              logger.Logf
-	wgLogger          *wglog.Logger //a wireguard-go logging wrapper
-	reqCh             chan struct{}
-	waitCh            chan struct{} // chan is closed when first Close call completes; contrast with closing bool
-	timeNow           func() mono.Time
-	tundev            *tstun.Wrapper
-	wgdev             *device.Device
-	router            router.Router
-	confListenPort    uint16 // original conf.ListenPort
-	dns               *dns.Manager
-	magicConn         *magicsock.Conn
-	linkMon           *monitor.Mon
-	linkMonOwned      bool       // whether we created linkMon (and thus need to close it)
-	linkMonUnregister func()     // unsubscribes from changes; used regardless of linkMonOwned
-	birdClient        BIRDClient // or nil
+	logf             logger.Logf
+	wgLogger         *wglog.Logger //a wireguard-go logging wrapper
+	reqCh            chan struct{}
+	waitCh           chan struct{} // chan is closed when first Close call completes; contrast with closing bool
+	timeNow          func() mono.Time
+	tundev           *tstun.Wrapper
+	wgdev            *device.Device
+	router           router.Router
+	confListenPort   uint16 // original conf.ListenPort
+	dns              *dns.Manager
+	magicConn        *magicsock.Conn
+	netMon           *netmon.Monitor
+	netMonOwned      bool       // whether we created netMon (and thus need to close it)
+	netMonUnregister func()     // unsubscribes from changes; used regardless of netMonOwned
+	birdClient       BIRDClient // or nil
 
 	testMaybeReconfigHook func() // for tests; if non-nil, fires if maybeReconfigWireguardLocked called
 
@@ -150,29 +149,6 @@ type userspaceEngine struct {
 	// Lock ordering: magicsock.Conn.mu, wgLock, then mu.
 }
 
-// InternalsGetter is implemented by Engines that can export their internals.
-type InternalsGetter interface {
-	GetInternals() (_ *tstun.Wrapper, _ *magicsock.Conn, _ *dns.Manager, ok bool)
-}
-
-func (e *userspaceEngine) GetInternals() (_ *tstun.Wrapper, _ *magicsock.Conn, _ *dns.Manager, ok bool) {
-	return e.tundev, e.magicConn, e.dns, true
-}
-
-// ResolvingEngine is implemented by Engines that have DNS resolvers.
-type ResolvingEngine interface {
-	GetResolver() (_ *resolver.Resolver, ok bool)
-}
-
-var (
-	_ ResolvingEngine = (*userspaceEngine)(nil)
-	_ ResolvingEngine = (*watchdogEngine)(nil)
-)
-
-func (e *userspaceEngine) GetResolver() (r *resolver.Resolver, ok bool) {
-	return e.dns.Resolver(), true
-}
-
 // BIRDClient handles communication with the BIRD Internet Routing Daemon.
 type BIRDClient interface {
 	EnableProtocol(proto string) error
@@ -199,9 +175,9 @@ type Config struct {
 	// If nil, a fake OSConfigurator that does nothing is used.
 	DNS dns.OSConfigurator
 
-	// LinkMonitor optionally provides an existing link monitor to re-use.
-	// If nil, a new link monitor is created.
-	LinkMonitor *monitor.Mon
+	// NetMon optionally provides an existing network monitor to re-use.
+	// If nil, a new network monitor is created.
+	NetMon *netmon.Monitor
 
 	// Dialer is the dialer to use for outbound connections.
 	// If nil, a new Dialer is created
@@ -219,47 +195,37 @@ type Config struct {
 	// BIRDClient, if non-nil, will be used to configure BIRD whenever
 	// this node is a primary subnet router.
 	BIRDClient BIRDClient
+
+	// SetSubsystem, if non-nil, is called for each new subsystem created, just before a successful return.
+	SetSubsystem func(any)
 }
 
-func NewFakeUserspaceEngine(logf logger.Logf, listenPort uint16) (Engine, error) {
-	logf("Starting userspace WireGuard engine (with fake TUN device)")
-	return NewUserspaceEngine(logf, Config{
-		ListenPort:    listenPort,
+// NewFakeUserspaceEngine returns a new userspace engine for testing.
+//
+// The opts may contain the following types:
+//
+//   - int or uint16: to set the ListenPort.
+func NewFakeUserspaceEngine(logf logger.Logf, opts ...any) (Engine, error) {
+	conf := Config{
 		RespondToPing: true,
-	})
-}
-
-// NetstackRouterType is a gross cross-package init-time registration
-// from netstack to here, informing this package of netstack's router
-// type.
-var NetstackRouterType reflect.Type
-
-// IsNetstackRouter reports whether e is either fully netstack based
-// (without TUN) or is at least using netstack for routing.
-func IsNetstackRouter(e Engine) bool {
-	switch e := e.(type) {
-	case *userspaceEngine:
-		if reflect.TypeOf(e.router) == NetstackRouterType {
-			return true
+	}
+	for _, o := range opts {
+		switch v := o.(type) {
+		case uint16:
+			conf.ListenPort = v
+		case int:
+			if v < 0 || v > math.MaxUint16 {
+				return nil, fmt.Errorf("invalid ListenPort: %d", v)
+			}
+			conf.ListenPort = uint16(v)
+		case func(any):
+			conf.SetSubsystem = v
+		default:
+			return nil, fmt.Errorf("unknown option type %T", v)
 		}
-	case *watchdogEngine:
-		return IsNetstackRouter(e.wrap)
 	}
-	return IsNetstack(e)
-}
-
-// IsNetstack reports whether e is a netstack-based TUN-free engine.
-func IsNetstack(e Engine) bool {
-	ig, ok := e.(InternalsGetter)
-	if !ok {
-		return false
-	}
-	tw, _, _, ok := ig.GetInternals()
-	if !ok {
-		return false
-	}
-	name, err := tw.Name()
-	return err == nil && name == "FakeTUN"
+	logf("Starting userspace WireGuard engine (with fake TUN device)")
+	return NewUserspaceEngine(logf, conf)
 }
 
 // NewUserspaceEngine creates the named tun device and returns a
@@ -316,34 +282,34 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 	e.isLocalAddr.Store(tsaddr.NewContainsIPFunc(nil))
 	e.isDNSIPOverTailscale.Store(tsaddr.NewContainsIPFunc(nil))
 
-	if conf.LinkMonitor != nil {
-		e.linkMon = conf.LinkMonitor
+	if conf.NetMon != nil {
+		e.netMon = conf.NetMon
 	} else {
-		mon, err := monitor.New(logf)
+		mon, err := netmon.New(logf)
 		if err != nil {
 			return nil, err
 		}
 		closePool.add(mon)
-		e.linkMon = mon
-		e.linkMonOwned = true
+		e.netMon = mon
+		e.netMonOwned = true
 	}
 
 	tunName, _ := conf.Tun.Name()
 	conf.Dialer.SetTUNName(tunName)
-	conf.Dialer.SetLinkMonitor(e.linkMon)
-	e.dns = dns.NewManager(logf, conf.DNS, e.linkMon, conf.Dialer, fwdDNSLinkSelector{e, tunName})
+	conf.Dialer.SetNetMon(e.netMon)
+	e.dns = dns.NewManager(logf, conf.DNS, e.netMon, conf.Dialer, fwdDNSLinkSelector{e, tunName})
 
 	// TODO: there's probably a better place for this
-	sockstats.SetLinkMonitor(e.linkMon)
+	sockstats.SetNetMon(e.netMon)
 
-	logf("link state: %+v", e.linkMon.InterfaceState())
+	logf("link state: %+v", e.netMon.InterfaceState())
 
-	unregisterMonWatch := e.linkMon.RegisterChangeCallback(func(changed bool, st *interfaces.State) {
+	unregisterMonWatch := e.netMon.RegisterChangeCallback(func(changed bool, st *interfaces.State) {
 		tshttpproxy.InvalidateCache()
 		e.linkChange(changed, st)
 	})
 	closePool.addFunc(unregisterMonWatch)
-	e.linkMonUnregister = unregisterMonWatch
+	e.netMonUnregister = unregisterMonWatch
 
 	endpointsFn := func(endpoints []tailcfg.Endpoint) {
 		e.mu.Lock()
@@ -359,7 +325,7 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		DERPActiveFunc:   e.RequestStatus,
 		IdleFunc:         e.tundev.IdleDuration,
 		NoteRecvActivity: e.noteRecvActivity,
-		LinkMonitor:      e.linkMon,
+		NetMon:           e.netMon,
 	}
 
 	var err error
@@ -368,7 +334,7 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		return nil, fmt.Errorf("wgengine: %v", err)
 	}
 	closePool.add(e.magicConn)
-	e.magicConn.SetNetworkUp(e.linkMon.InterfaceState().AnyInterfaceUp())
+	e.magicConn.SetNetworkUp(e.netMon.InterfaceState().AnyInterfaceUp())
 
 	tsTUNDev.SetDiscoKey(e.magicConn.DiscoPublicKey())
 
@@ -455,8 +421,17 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 	if err := e.router.Set(nil); err != nil {
 		return nil, fmt.Errorf("router.Set(nil): %w", err)
 	}
-	e.logf("Starting link monitor...")
-	e.linkMon.Start()
+	e.logf("Starting network monitor...")
+	e.netMon.Start()
+
+	if conf.SetSubsystem != nil {
+		conf.SetSubsystem(e.tundev)
+		conf.SetSubsystem(e.magicConn)
+		conf.SetSubsystem(e.dns)
+		conf.SetSubsystem(conf.Router)
+		conf.SetSubsystem(conf.Dialer)
+		conf.SetSubsystem(e.netMon)
+	}
 
 	e.logf("Engine created.")
 	return e, nil
@@ -917,7 +892,7 @@ func (e *userspaceEngine) Reconfig(cfg *wgcfg.Config, routerCfg *router.Config, 
 		nid := cfg.NetworkLogging.NodeID
 		tid := cfg.NetworkLogging.DomainID
 		e.logf("wgengine: Reconfig: starting up network logger (node:%s tailnet:%s)", nid.Public(), tid.Public())
-		if err := e.networkLogger.Startup(cfg.NodeID, nid, tid, e.tundev, e.magicConn); err != nil {
+		if err := e.networkLogger.Startup(cfg.NodeID, nid, tid, e.tundev, e.magicConn, e.netMon); err != nil {
 			e.logf("wgengine: Reconfig: error starting up network logger: %v", err)
 		}
 		e.networkLogger.ReconfigRoutes(routerCfg)
@@ -1094,9 +1069,9 @@ func (e *userspaceEngine) Close() {
 	r := bufio.NewReader(strings.NewReader(""))
 	e.wgdev.IpcSetOperation(r)
 	e.magicConn.Close()
-	e.linkMonUnregister()
-	if e.linkMonOwned {
-		e.linkMon.Close()
+	e.netMonUnregister()
+	if e.netMonOwned {
+		e.netMon.Close()
 	}
 	e.dns.Down()
 	e.router.Close()
@@ -1119,15 +1094,11 @@ func (e *userspaceEngine) Wait() {
 	<-e.waitCh
 }
 
-func (e *userspaceEngine) GetLinkMonitor() *monitor.Mon {
-	return e.linkMon
-}
-
 // LinkChange signals a network change event. It's currently
-// (2021-03-03) only called on Android. On other platforms, linkMon
+// (2021-03-03) only called on Android. On other platforms, netMon
 // generates link change events for us.
 func (e *userspaceEngine) LinkChange(_ bool) {
-	e.linkMon.InjectEvent()
+	e.netMon.InjectEvent()
 }
 
 func (e *userspaceEngine) linkChange(changed bool, cur *interfaces.State) {

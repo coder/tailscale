@@ -29,6 +29,7 @@ import (
 	"tailscale.com/net/interfaces"
 	"tailscale.com/net/netaddr"
 	"tailscale.com/net/neterror"
+	"tailscale.com/net/netmon"
 	"tailscale.com/net/netns"
 	"tailscale.com/net/ping"
 	"tailscale.com/net/portmapper"
@@ -39,7 +40,10 @@ import (
 	"tailscale.com/types/logger"
 	"tailscale.com/types/nettype"
 	"tailscale.com/types/opt"
+	"tailscale.com/types/ptr"
+	"tailscale.com/types/views"
 	"tailscale.com/util/clientmetric"
+	"tailscale.com/util/cmpx"
 	"tailscale.com/util/mak"
 )
 
@@ -79,6 +83,7 @@ const (
 	defaultInitialRetransmitTime = 100 * time.Millisecond
 )
 
+// Report contains the result of a single netcheck.
 type Report struct {
 	UDP         bool // a UDP STUN round trip completed
 	IPv6        bool // an IPv6 STUN round trip completed
@@ -158,6 +163,13 @@ type Client struct {
 	// If nil, log.Printf is used.
 	Logf logger.Logf
 
+	// NetMon optionally provides a netmon.Monitor to use to get the current
+	// (cached) network interface.
+	// If nil, the interface will be looked up dynamically.
+	// TODO(bradfitz): make NetMon required. As of 2023-08-01, it basically always is
+	// present anyway.
+	NetMon *netmon.Monitor
+
 	// TimeNow, if non-nil, is used instead of time.Now.
 	TimeNow func() time.Time
 
@@ -200,7 +212,7 @@ type Client struct {
 	prev     map[time.Time]*Report // some previous reports
 	last     *Report               // most recent report
 	lastFull time.Time             // time of last full (non-incremental) report
-	curState *reportState          // non-nil if we're in a call to GetReportn
+	curState *reportState          // non-nil if we're in a call to GetReport
 	resolver *dnscache.Resolver    // only set if UseDNSCache is true
 }
 
@@ -443,10 +455,9 @@ func makeProbePlan(dm *tailcfg.DERPMap, ifState *interfaces.State, last *Report)
 				do6 = false
 			}
 			n := reg.Nodes[try%len(reg.Nodes)]
-			prevLatency := last.RegionLatency[reg.RegionID] * 120 / 100
-			if prevLatency == 0 {
-				prevLatency = defaultActiveRetransmitTime
-			}
+			prevLatency := cmpx.Or(
+				last.RegionLatency[reg.RegionID]*120/100,
+				defaultActiveRetransmitTime)
 			delay := time.Duration(try) * prevLatency
 			if try > 1 {
 				delay += time.Duration(try) * 50 * time.Millisecond
@@ -868,22 +879,29 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap) (_ *Report,
 		return c.finishAndStoreReport(rs, dm), nil
 	}
 
-	ifState, err := interfaces.GetState()
-	if err != nil {
-		c.logf("[v1] interfaces: %v", err)
-		return nil, err
+	var ifState *interfaces.State
+	if c.NetMon == nil {
+		directState, err := interfaces.GetState()
+		if err != nil {
+			c.logf("[v1] interfaces: %v", err)
+			return nil, err
+		} else {
+			ifState = directState
+		}
+	} else {
+		ifState = c.NetMon.InterfaceState()
 	}
 
 	// See if IPv6 works at all, or if it's been hard disabled at the
 	// OS level.
-	v6udp, err := nettype.MakePacketListenerWithNetIP(netns.Listener(c.logf)).ListenPacket(ctx, "udp6", "[::1]:0")
+	v6udp, err := nettype.MakePacketListenerWithNetIP(netns.Listener(c.logf, c.NetMon)).ListenPacket(ctx, "udp6", "[::1]:0")
 	if err == nil {
 		rs.report.OSHasIPv6 = true
 		v6udp.Close()
 	}
 
 	// Create a UDP4 socket used for sending to our discovered IPv4 address.
-	rs.pc4Hair, err = nettype.MakePacketListenerWithNetIP(netns.Listener(c.logf)).ListenPacket(ctx, "udp4", ":0")
+	rs.pc4Hair, err = nettype.MakePacketListenerWithNetIP(netns.Listener(c.logf, c.NetMon)).ListenPacket(ctx, "udp4", ":0")
 	if err != nil {
 		c.logf("udp4: %v", err)
 		return nil, err
@@ -913,7 +931,7 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap) (_ *Report,
 	if f := c.GetSTUNConn4; f != nil {
 		rs.pc4 = f()
 	} else {
-		u4, err := nettype.MakePacketListenerWithNetIP(netns.Listener(c.logf)).ListenPacket(ctx, "udp4", c.udpBindAddr())
+		u4, err := nettype.MakePacketListenerWithNetIP(netns.Listener(c.logf, nil)).ListenPacket(ctx, "udp4", c.udpBindAddr())
 		if err != nil {
 			c.logf("udp4: %v", err)
 			return nil, err
@@ -926,13 +944,23 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap) (_ *Report,
 		if f := c.GetSTUNConn6; f != nil {
 			rs.pc6 = f()
 		} else {
-			u6, err := nettype.MakePacketListenerWithNetIP(netns.Listener(c.logf)).ListenPacket(ctx, "udp6", c.udpBindAddr())
+			u6, err := nettype.MakePacketListenerWithNetIP(netns.Listener(c.logf, nil)).ListenPacket(ctx, "udp6", c.udpBindAddr())
 			if err != nil {
 				c.logf("udp6: %v", err)
 			} else {
 				rs.pc6 = u6
 				go c.readPackets(ctx, u6)
 			}
+		}
+
+		// If our interfaces.State suggested we have IPv6 support but then we
+		// failed to get an IPv6 sending socket (as in
+		// https://github.com/tailscale/tailscale/issues/7949), then change
+		// ifState.HaveV6 before we make a probe plan that involves sending IPv6
+		// packets and thus assuming rs.pc6 is non-nil.
+		if rs.pc6 == nil {
+			ifState = ptr.To(*ifState) // shallow clone
+			ifState.HaveV6 = false
 		}
 	}
 
@@ -1107,7 +1135,7 @@ func (c *Client) finishAndStoreReport(rs *reportState, dm *tailcfg.DERPMap) *Rep
 	report := rs.report.Clone()
 	rs.mu.Unlock()
 
-	c.addReportHistoryAndSetPreferredDERP(report)
+	c.addReportHistoryAndSetPreferredDERP(report, dm.View())
 	c.logConciseReport(report, dm)
 
 	return report
@@ -1360,10 +1388,7 @@ func (c *Client) measureAllICMPLatency(ctx context.Context, rs *reportState, nee
 	ctx, done := context.WithTimeout(ctx, icmpProbeTimeout)
 	defer done()
 
-	p, err := ping.New(ctx, c.logf)
-	if err != nil {
-		return err
-	}
+	p := ping.New(ctx, c.logf, netns.Listener(c.logf, c.NetMon))
 	defer p.Close()
 
 	c.logf("UDP is blocked, trying ICMP")
@@ -1484,9 +1509,20 @@ func (c *Client) timeNow() time.Time {
 	return time.Now()
 }
 
+const (
+	// preferredDERPAbsoluteDiff specifies the minimum absolute difference
+	// in latencies between two DERP regions that would cause a node to
+	// switch its PreferredDERP ("home DERP"). This ensures that if a node
+	// is 5ms from two different DERP regions, it doesn't flip-flop back
+	// and forth between them if one region gets slightly slower (e.g. if a
+	// node is near region 1 @ 4ms and region 2 @ 5ms, region 1 getting
+	// 5ms slower would cause a flap).
+	preferredDERPAbsoluteDiff = 10 * time.Millisecond
+)
+
 // addReportHistoryAndSetPreferredDERP adds r to the set of recent Reports
 // and mutates r.PreferredDERP to contain the best recent one.
-func (c *Client) addReportHistoryAndSetPreferredDERP(r *Report) {
+func (c *Client) addReportHistoryAndSetPreferredDERP(r *Report, dm tailcfg.DERPMapView) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -1518,11 +1554,33 @@ func (c *Client) addReportHistoryAndSetPreferredDERP(r *Report) {
 		}
 	}
 
+	// Scale each region's best latency by any provided scores from the
+	// DERPMap, for use in comparison below.
+	var scores views.Map[int, float64]
+	if hp := dm.HomeParams(); hp.Valid() {
+		scores = hp.RegionScore()
+	}
+	for regionID, d := range bestRecent {
+		if score := scores.Get(regionID); score > 0 {
+			bestRecent[regionID] = time.Duration(float64(d) * score)
+		}
+	}
+
 	// Then, pick which currently-alive DERP server from the
 	// current report has the best latency over the past maxAge.
-	var bestAny time.Duration
-	var oldRegionCurLatency time.Duration
+	var (
+		bestAny             time.Duration // global minimum
+		oldRegionCurLatency time.Duration // latency of old PreferredDERP
+	)
 	for regionID, d := range r.RegionLatency {
+		// Scale this report's latency by any scores provided by the
+		// server; we did this for the bestRecent map above, but we
+		// don't mutate the actual reports in-place (in case scores
+		// change), so we need to do it here as well.
+		if score := scores.Get(regionID); score > 0 {
+			d = time.Duration(float64(d) * score)
+		}
+
 		if regionID == prevDERP {
 			oldRegionCurLatency = d
 		}
@@ -1533,13 +1591,27 @@ func (c *Client) addReportHistoryAndSetPreferredDERP(r *Report) {
 		}
 	}
 
-	// If we're changing our preferred DERP but the old one's still
-	// accessible and the new one's not much better, just stick with
-	// where we are.
-	if prevDERP != 0 &&
-		r.PreferredDERP != prevDERP &&
-		oldRegionCurLatency != 0 &&
-		bestAny > oldRegionCurLatency/3*2 {
+	// If we're changing our preferred DERP, we want to add some stickiness
+	// to the current DERP region. We avoid changing if the old region is
+	// still accessible and one of the conditions below is true.
+	keepOld := false
+	changingPreferred := prevDERP != 0 && r.PreferredDERP != prevDERP
+	oldRegionIsAccessible := oldRegionCurLatency != 0
+	if changingPreferred && oldRegionIsAccessible {
+		// bestAny < any other value, so oldRegionCurLatency - bestAny >= 0
+		if oldRegionCurLatency-bestAny < preferredDERPAbsoluteDiff {
+			// The absolute value of latency difference is below
+			// our minimum threshold.
+			keepOld = true
+		}
+		if bestAny > oldRegionCurLatency/3*2 {
+			// Old region is about the same on a percentage basis
+			keepOld = true
+		}
+	}
+	if keepOld {
+		// Reset the report's PreferredDERP to be the previous value,
+		// which undoes any region change we made above.
 		r.PreferredDERP = prevDERP
 	}
 }
@@ -1646,10 +1718,7 @@ func (rs *reportState) runProbe(ctx context.Context, dm *tailcfg.DERPMap, probe 
 // proto is 4 or 6
 // If it returns nil, the node is skipped.
 func (c *Client) nodeAddr(ctx context.Context, n *tailcfg.DERPNode, proto probeProto) (ap netip.AddrPort) {
-	port := n.STUNPort
-	if port == 0 {
-		port = 3478
-	}
+	port := cmpx.Or(n.STUNPort, 3478)
 	if port < 0 || port > 1<<16-1 {
 		return
 	}
@@ -1713,6 +1782,7 @@ func (c *Client) nodeAddr(ctx context.Context, n *tailcfg.DERPNode, proto probeP
 				Forward:     net.DefaultResolver,
 				UseLastGood: true,
 				Logf:        c.logf,
+				NetMon:      c.NetMon,
 			}
 		}
 		resolver := c.resolver

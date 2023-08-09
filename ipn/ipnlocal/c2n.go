@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"tailscale.com/envknob"
+	"tailscale.com/net/sockstats"
 	"tailscale.com/tailcfg"
 	"tailscale.com/util/clientmetric"
 	"tailscale.com/util/goroutines"
@@ -48,7 +49,7 @@ func (b *LocalBackend) handleC2N(w http.ResponseWriter, r *http.Request) {
 		}
 	case "/debug/goroutines":
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write(goroutines.ScrubbedGoroutineDump())
+		w.Write(goroutines.ScrubbedGoroutineDump(true))
 	case "/debug/prefs":
 		writeJSON(b.Prefs())
 	case "/debug/metrics":
@@ -60,7 +61,7 @@ func (b *LocalBackend) handleC2N(w http.ResponseWriter, r *http.Request) {
 		if secs == 0 {
 			secs -= 1
 		}
-		until := time.Now().Add(time.Duration(secs) * time.Second)
+		until := b.clock.Now().Add(time.Duration(secs) * time.Second)
 		err := b.SetComponentDebugLogging(component, until)
 		var res struct {
 			Error string `json:",omitempty"`
@@ -94,7 +95,8 @@ func (b *LocalBackend) handleC2N(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		b.sockstatLogger.Flush()
-		fmt.Fprintln(w, b.sockstatLogger.LogID())
+		fmt.Fprintf(w, "logid: %s\n", b.sockstatLogger.LogID())
+		fmt.Fprintf(w, "debug info: %v\n", sockstats.DebugInfo())
 	default:
 		http.Error(w, "unknown c2n path", http.StatusBadRequest)
 	}

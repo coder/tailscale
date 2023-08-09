@@ -37,6 +37,7 @@ import (
 	"tailscale.com/net/dnscache"
 	"tailscale.com/net/dnsfallback"
 	"tailscale.com/net/interfaces"
+	"tailscale.com/net/netmon"
 	"tailscale.com/net/netutil"
 	"tailscale.com/net/tlsdial"
 	"tailscale.com/net/tsdial"
@@ -54,20 +55,20 @@ import (
 	"tailscale.com/util/multierr"
 	"tailscale.com/util/singleflight"
 	"tailscale.com/util/systemd"
-	"tailscale.com/wgengine/monitor"
 )
 
 // Direct is the client that connects to a tailcontrol server for a node.
 type Direct struct {
 	httpc                  *http.Client // HTTP client used to talk to tailcontrol
 	dialer                 *tsdial.Dialer
+	dnsCache               *dnscache.Resolver
 	serverURL              string // URL of the tailcontrol server
 	timeNow                func() time.Time
 	lastPrintMap           time.Time
 	newDecompressor        func() (Decompressor, error)
 	keepAlive              bool
 	logf                   logger.Logf
-	linkMon                *monitor.Mon // or nil
+	netMon                 *netmon.Monitor // or nil
 	discoPubKey            key.DiscoPublic
 	getMachinePrivKey      func() (key.MachinePrivate, error)
 	debugFlags             []string
@@ -113,7 +114,7 @@ type Options struct {
 	HTTPTestClient       *http.Client                 // optional HTTP client to use (for tests only)
 	NoiseTestClient      *http.Client                 // optional HTTP client to use for noise RPCs (tests only)
 	DebugFlags           []string                     // debug settings to send to control
-	LinkMonitor          *monitor.Mon                 // optional link monitor
+	NetMon               *netmon.Monitor              // optional network monitor
 	PopBrowserURL        func(url string)             // optional func to open browser
 	OnClientVersion      func(*tailcfg.ClientVersion) // optional func to inform GUI of client version status
 	OnControlTime        func(time.Time)              // optional func to notify callers of new time from control
@@ -199,6 +200,14 @@ func NewDirect(opts Options) (*Direct, error) {
 		opts.Logf = log.Printf
 	}
 
+	dnsCache := &dnscache.Resolver{
+		Forward:          dnscache.Get().Forward, // use default cache's forwarder
+		UseLastGood:      true,
+		LookupIPFallback: dnsfallback.MakeLookupFunc(opts.Logf, opts.NetMon),
+		Logf:             opts.Logf,
+		NetMon:           opts.NetMon,
+	}
+
 	httpc := opts.HTTPTestClient
 	if httpc == nil && runtime.GOOS == "js" {
 		// In js/wasm, net/http.Transport (as of Go 1.18) will
@@ -208,12 +217,6 @@ func NewDirect(opts Options) (*Direct, error) {
 		httpc = http.DefaultClient
 	}
 	if httpc == nil {
-		dnsCache := &dnscache.Resolver{
-			Forward:          dnscache.Get().Forward, // use default cache's forwarder
-			UseLastGood:      true,
-			LookupIPFallback: dnsfallback.Lookup(opts.Logf),
-			Logf:             opts.Logf,
-		}
 		tr := http.DefaultTransport.(*http.Transport).Clone()
 		tr.Proxy = tshttpproxy.ProxyFromEnvironment
 		tshttpproxy.SetTransportGetProxyConnectHeader(tr)
@@ -241,7 +244,7 @@ func NewDirect(opts Options) (*Direct, error) {
 		discoPubKey:            opts.DiscoPublicKey,
 		debugFlags:             opts.DebugFlags,
 		keepSharerAndUserSplit: opts.KeepSharerAndUserSplit,
-		linkMon:                opts.LinkMonitor,
+		netMon:                 opts.NetMon,
 		skipIPForwardingCheck:  opts.SkipIPForwardingCheck,
 		pinger:                 opts.Pinger,
 		popBrowser:             opts.PopBrowserURL,
@@ -249,6 +252,7 @@ func NewDirect(opts Options) (*Direct, error) {
 		onControlTime:          opts.OnControlTime,
 		c2nHandler:             opts.C2NHandler,
 		dialer:                 opts.Dialer,
+		dnsCache:               dnsCache,
 		dialPlan:               opts.DialPlan,
 	}
 	if opts.Hostinfo == nil {
@@ -766,6 +770,8 @@ func (c *Direct) SetEndpoints(endpoints []tailcfg.Endpoint) (changed bool) {
 
 // PollNetMap makes a /map request to download the network map, calling cb with
 // each new netmap.
+// It always returns a non-nil error describing the reason for the failure
+// or why the request ended.
 func (c *Direct) PollNetMap(ctx context.Context, cb func(*netmap.NetworkMap)) error {
 	return c.sendMapRequest(ctx, -1, false, cb)
 }
@@ -794,7 +800,12 @@ func (c *Direct) SendLiteMapUpdate(ctx context.Context) error {
 // every minute.
 const pollTimeout = 120 * time.Second
 
-// cb nil means to omit peers.
+// sendMapRequest makes a /map request to download the network map, calling cb with
+// each new netmap. If maxPolls is -1, it will poll forever and only returns if
+// the context expires or the server returns an error/closes the connection and as
+// such always returns a non-nil error.
+//
+// If cb is nil, OmitPeers will be set to true.
 func (c *Direct) sendMapRequest(ctx context.Context, maxPolls int, readOnly bool, cb func(*netmap.NetworkMap)) error {
 	metricMapRequests.Add(1)
 	metricMapRequestsActive.Add(1)
@@ -871,8 +882,8 @@ func (c *Direct) sendMapRequest(ctx context.Context, maxPolls int, readOnly bool
 		ReadOnly: readOnly && !allowStream,
 	}
 	var extraDebugFlags []string
-	if hi != nil && c.linkMon != nil && !c.skipIPForwardingCheck &&
-		ipForwardingBroken(hi.RoutableIPs, c.linkMon.InterfaceState()) {
+	if hi != nil && c.netMon != nil && !c.skipIPForwardingCheck &&
+		ipForwardingBroken(hi.RoutableIPs, c.netMon.InterfaceState()) {
 		extraDebugFlags = append(extraDebugFlags, "warn-ip-forwarding-off")
 	}
 	if health.RouterHealth() != nil {
@@ -1508,7 +1519,16 @@ func (c *Direct) getNoiseClient() (*NoiseClient, error) {
 			return nil, err
 		}
 		c.logf("creating new noise client")
-		nc, err := NewNoiseClient(k, serverNoiseKey, c.serverURL, c.dialer, dp)
+		nc, err := NewNoiseClient(NoiseOpts{
+			PrivKey:      k,
+			ServerPubKey: serverNoiseKey,
+			ServerURL:    c.serverURL,
+			Dialer:       c.dialer,
+			DNSCache:     c.dnsCache,
+			Logf:         c.logf,
+			NetMon:       c.netMon,
+			DialPlan:     dp,
+		})
 		if err != nil {
 			return nil, err
 		}

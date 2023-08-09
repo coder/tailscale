@@ -32,14 +32,17 @@ import (
 	"tailscale.com/derp"
 	"tailscale.com/envknob"
 	"tailscale.com/net/dnscache"
+	"tailscale.com/net/netmon"
 	"tailscale.com/net/netns"
 	"tailscale.com/net/sockstats"
 	"tailscale.com/net/tlsdial"
 	"tailscale.com/net/tshttpproxy"
 	"tailscale.com/syncs"
 	"tailscale.com/tailcfg"
+	"tailscale.com/tstime"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
+	"tailscale.com/util/cmpx"
 )
 
 // Client is a DERP-over-HTTP client.
@@ -58,8 +61,14 @@ type Client struct {
 	forcedWebsocket         atomic.Bool // optional; set if the server has failed to upgrade the connection on the DERP server
 	forcedWebsocketCallback atomic.Pointer[func(int, string)]
 
+	// BaseContext, if non-nil, returns the base context to use for dialing a
+	// new derp server. If nil, context.Background is used.
+	// In either case, additional timeouts may be added to the base context.
+	BaseContext func() context.Context
+
 	privateKey key.NodePrivate
 	logf       logger.Logf
+	netMon     *netmon.Monitor // optional; nil means interfaces will be looked up on-demand
 	dialer     func(ctx context.Context, network, addr string) (net.Conn, error)
 
 	// regionDialer allows the caller to override the dialer used to
@@ -89,6 +98,7 @@ type Client struct {
 	serverPubKey key.NodePublic
 	tlsState     *tls.ConnectionState
 	pingOut      map[derp.PingMessage]chan<- bool // chan to send to on pong
+	clock        tstime.Clock
 }
 
 func (c *Client) String() string {
@@ -97,14 +107,17 @@ func (c *Client) String() string {
 
 // NewRegionClient returns a new DERP-over-HTTP client. It connects lazily.
 // To trigger a connection, use Connect.
-func NewRegionClient(privateKey key.NodePrivate, logf logger.Logf, getRegion func() *tailcfg.DERPRegion) *Client {
+// The netMon parameter is optional; if non-nil it's used to do faster interface lookups.
+func NewRegionClient(privateKey key.NodePrivate, logf logger.Logf, netMon *netmon.Monitor, getRegion func() *tailcfg.DERPRegion) *Client {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Client{
 		privateKey: privateKey,
 		logf:       logf,
+		netMon:     netMon,
 		getRegion:  getRegion,
 		ctx:        ctx,
 		cancelCtx:  cancel,
+		clock:      tstime.StdClock{},
 	}
 	return c
 }
@@ -112,7 +125,7 @@ func NewRegionClient(privateKey key.NodePrivate, logf logger.Logf, getRegion fun
 // NewNetcheckClient returns a Client that's only able to have its DialRegionTLS method called.
 // It's used by the netcheck package.
 func NewNetcheckClient(logf logger.Logf) *Client {
-	return &Client{logf: logf}
+	return &Client{logf: logf, clock: tstime.StdClock{}}
 }
 
 // NewClient returns a new DERP-over-HTTP client. It connects lazily.
@@ -133,6 +146,7 @@ func NewClient(privateKey key.NodePrivate, serverURL string, logf logger.Logf) (
 		url:        u,
 		ctx:        ctx,
 		cancelCtx:  cancel,
+		clock:      tstime.StdClock{},
 	}
 	return c, nil
 }
@@ -142,6 +156,19 @@ func NewClient(privateKey key.NodePrivate, serverURL string, logf logger.Logf) (
 func (c *Client) Connect(ctx context.Context) error {
 	_, _, err := c.connect(ctx, "derphttp.Client.Connect")
 	return err
+}
+
+// newContext returns a new context for setting up a new DERP connection.
+// It uses either c.BaseContext or returns context.Background.
+func (c *Client) newContext() context.Context {
+	if c.BaseContext != nil {
+		ctx := c.BaseContext()
+		if ctx == nil {
+			panic("BaseContext returned nil")
+		}
+		return ctx
+	}
+	return context.Background()
 }
 
 // TLSConnectionState returns the last TLS connection state, if any.
@@ -611,7 +638,7 @@ func (c *Client) dialURL(ctx context.Context) (net.Conn, error) {
 		return c.dialer(ctx, "tcp", net.JoinHostPort(host, urlPort(c.url)))
 	}
 	hostOrIP := host
-	dialer := netns.NewDialer(c.logf)
+	dialer := netns.NewDialer(c.logf, c.netMon)
 
 	if c.DNSCache != nil {
 		ip, _, _, err := c.DNSCache.LookupIP(ctx, host)
@@ -711,7 +738,7 @@ func (c *Client) DialRegionTLS(ctx context.Context, reg *tailcfg.DERPRegion) (tl
 }
 
 func (c *Client) dialContext(ctx context.Context, proto, addr string) (net.Conn, error) {
-	return netns.NewDialer(c.logf).DialContext(ctx, proto, addr)
+	return netns.NewDialer(c.logf, c.netMon).DialContext(ctx, proto, addr)
 }
 
 // shouldDialProto reports whether an explicitly provided IPv4 or IPv6
@@ -763,21 +790,18 @@ func (c *Client) dialNode(ctx context.Context, n *tailcfg.DERPNode) (net.Conn, e
 		nwait++
 		go func() {
 			if proto == "tcp4" && c.preferIPv6() {
-				t := time.NewTimer(200 * time.Millisecond)
+				t, tChannel := c.clock.NewTimer(200 * time.Millisecond)
 				select {
 				case <-ctx.Done():
 					// Either user canceled original context,
 					// it timed out, or the v6 dial succeeded.
 					t.Stop()
 					return
-				case <-t.C:
+				case <-tChannel:
 					// Start v4 dial
 				}
 			}
-			dst := dstPrimary
-			if dst == "" {
-				dst = n.HostName
-			}
+			dst := cmpx.Or(dstPrimary, n.HostName)
 			port := "443"
 			if n.DERPPort != 0 {
 				port = fmt.Sprint(n.DERPPort)
@@ -894,7 +918,7 @@ func (c *Client) dialNodeUsingProxy(ctx context.Context, n *tailcfg.DERPNode, pr
 }
 
 func (c *Client) Send(dstKey key.NodePublic, b []byte) error {
-	client, _, err := c.connect(context.TODO(), "derphttp.Client.Send")
+	client, _, err := c.connect(c.newContext(), "derphttp.Client.Send")
 	if err != nil {
 		return err
 	}
@@ -994,7 +1018,7 @@ func (c *Client) LocalAddr() (netip.AddrPort, error) {
 }
 
 func (c *Client) ForwardPacket(from, to key.NodePublic, b []byte) error {
-	client, _, err := c.connect(context.TODO(), "derphttp.Client.ForwardPacket")
+	client, _, err := c.connect(c.newContext(), "derphttp.Client.ForwardPacket")
 	if err != nil {
 		return err
 	}
@@ -1060,7 +1084,7 @@ func (c *Client) NotePreferred(v bool) {
 //
 // Only trusted connections (using MeshKey) are allowed to use this.
 func (c *Client) WatchConnectionChanges() error {
-	client, _, err := c.connect(context.TODO(), "derphttp.Client.WatchConnectionChanges")
+	client, _, err := c.connect(c.newContext(), "derphttp.Client.WatchConnectionChanges")
 	if err != nil {
 		return err
 	}
@@ -1075,7 +1099,7 @@ func (c *Client) WatchConnectionChanges() error {
 //
 // Only trusted connections (using MeshKey) are allowed to use this.
 func (c *Client) ClosePeer(target key.NodePublic) error {
-	client, _, err := c.connect(context.TODO(), "derphttp.Client.ClosePeer")
+	client, _, err := c.connect(c.newContext(), "derphttp.Client.ClosePeer")
 	if err != nil {
 		return err
 	}
@@ -1096,7 +1120,7 @@ func (c *Client) Recv() (derp.ReceivedMessage, error) {
 // RecvDetail is like Recv, but additional returns the connection generation on each message.
 // The connGen value is incremented every time the derphttp.Client reconnects to the server.
 func (c *Client) RecvDetail() (m derp.ReceivedMessage, connGen int, err error) {
-	client, connGen, err := c.connect(context.TODO(), "derphttp.Client.Recv")
+	client, connGen, err := c.connect(c.newContext(), "derphttp.Client.Recv")
 	if err != nil {
 		return nil, 0, err
 	}

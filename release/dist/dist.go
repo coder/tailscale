@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"tailscale.com/util/multierr"
 	"tailscale.com/version/mkversion"
@@ -44,6 +45,8 @@ type Build struct {
 	Go string
 	// Version is the version info of the build.
 	Version mkversion.VersionInfo
+	// Time is the timestamp of the build.
+	Time time.Time
 
 	// once is a cache of function invocations that should run once per process
 	// (for example building a helper docker container)
@@ -86,6 +89,7 @@ func NewBuild(repo, out string) (*Build, error) {
 		Out:          out,
 		Go:           goTool,
 		Version:      mkversion.Info(),
+		Time:         time.Now().UTC(),
 		extra:        map[any]any{},
 		goBuildLimit: make(chan struct{}, runtime.NumCPU()),
 	}
@@ -114,6 +118,9 @@ func (b *Build) Build(targets []Target) (files []string, err error) {
 		go func(i int, t Target) {
 			var err error
 			defer func() {
+				if err != nil {
+					err = fmt.Errorf("%s: %w", t, err)
+				}
 				errs[i] = err
 				wg.Done()
 			}()
@@ -177,6 +184,17 @@ func (b *Build) TmpDir() string {
 // binary. Builds are cached by path and env, so each build only happens once
 // per process execution.
 func (b *Build) BuildGoBinary(path string, env map[string]string) (string, error) {
+	return b.BuildGoBinaryWithTags(path, env, nil)
+}
+
+// BuildGoBinaryWithTags builds the Go binary at path and returns the
+// path to the binary. Builds are cached by path, env and tags, so
+// each build only happens once per process execution.
+//
+// The passed in tags override gocross's automatic selection of build
+// tags, so you will have to figure out and specify all the tags
+// relevant to your build.
+func (b *Build) BuildGoBinaryWithTags(path string, env map[string]string, tags []string) (string, error) {
 	err := b.Once("init-go", func() error {
 		log.Printf("Initializing Go toolchain")
 		// If the build is using a tool/go, it may need to download a toolchain
@@ -190,7 +208,7 @@ func (b *Build) BuildGoBinary(path string, env map[string]string) (string, error
 		return "", err
 	}
 
-	buildKey := []any{"go-build", path, env}
+	buildKey := []any{"go-build", path, env, tags}
 	return b.goBuilds.Do(buildKey, func() (string, error) {
 		b.goBuildLimit <- struct{}{}
 		defer func() { <-b.goBuildLimit }()
@@ -200,9 +218,17 @@ func (b *Build) BuildGoBinary(path string, env map[string]string) (string, error
 			envStrs = append(envStrs, k+"="+v)
 		}
 		sort.Strings(envStrs)
-		log.Printf("Building %s (with env %s)", path, strings.Join(envStrs, " "))
 		buildDir := b.TmpDir()
-		cmd := b.Command(b.Repo, b.Go, "build", "-v", "-o", buildDir, path)
+		args := []string{"build", "-v", "-o", buildDir}
+		if len(tags) > 0 {
+			tagsStr := strings.Join(tags, ",")
+			log.Printf("Building %s (with env %s, tags %s)", path, strings.Join(envStrs, " "), tagsStr)
+			args = append(args, "-tags="+tagsStr)
+		} else {
+			log.Printf("Building %s (with env %s)", path, strings.Join(envStrs, " "))
+		}
+		args = append(args, path)
+		cmd := b.Command(b.Repo, b.Go, args...)
 		for k, v := range env {
 			cmd.Cmd.Env = append(cmd.Cmd.Env, k+"="+v)
 		}

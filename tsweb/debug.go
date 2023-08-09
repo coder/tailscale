@@ -51,7 +51,7 @@ func Debugger(mux *http.ServeMux) *DebugHandler {
 	// Register this one directly on mux, rather than using
 	// ret.URL/etc, as we don't need another line of output on the
 	// index page. The /pprof/ index already covers it.
-	mux.Handle("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
+	mux.Handle("/debug/pprof/profile", BrowserHeaderHandler(http.HandlerFunc(pprof.Profile)))
 
 	ret.KVFunc("Uptime", func() any { return varz.Uptime() })
 	ret.KV("Version", version.Long())
@@ -80,6 +80,7 @@ func (d *DebugHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	AddBrowserHeaders(w)
 	f := func(format string, args ...any) { fmt.Fprintf(w, format, args...) }
 	f("<html><body><h1>%s debug</h1><ul>", version.CmdName())
 	for _, kv := range d.kvs {
@@ -97,7 +98,7 @@ func (d *DebugHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // entry in /debug/ for it.
 func (d *DebugHandler) Handle(slug, desc string, handler http.Handler) {
 	href := "/debug/" + slug
-	d.mux.Handle(href, Protected(handler))
+	d.mux.Handle(href, Protected(debugBrowserHeaderHandler(handler)))
 	d.URL(href, desc)
 }
 
@@ -139,4 +140,18 @@ func gcHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	runtime.GC()
 	w.Write([]byte("Done.\n"))
+}
+
+// debugBrowserHeaderHandler is a wrapper around BrowserHeaderHandler with a
+// more relaxed Content-Security-Policy that's acceptable for internal debug
+// pages. It should not be used on any public-facing handlers!
+func debugBrowserHeaderHandler(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		AddBrowserHeaders(w)
+		// The only difference from AddBrowserHeaders is that this policy
+		// allows inline CSS styles. They make debug pages much easier to
+		// prototype, while the risk of user-injected CSS is relatively low.
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'self'; block-all-mixed-content; plugin-types 'none'; style-src 'self' 'unsafe-inline'")
+		h.ServeHTTP(w, r)
+	})
 }
