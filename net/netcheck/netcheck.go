@@ -1391,7 +1391,8 @@ func (c *Client) measureAllICMPLatency(ctx context.Context, rs *reportState, nee
 	p := ping.New(ctx, c.logf, netns.Listener(c.logf, c.NetMon))
 	defer p.Close()
 
-	c.logf("UDP is blocked, trying ICMP")
+	// Coder: this is misleading because we always try ICMP and DERP.
+	//c.logf("UDP is blocked, trying ICMP")
 
 	var wg sync.WaitGroup
 	wg.Add(len(need))
@@ -1661,7 +1662,7 @@ func (rs *reportState) runProbe(ctx context.Context, dm *tailcfg.DERPMap, probe 
 
 	// Coder: The address below won't be valid if the node doesn't have a
 	// STUNPort.
-	if node.STUNPort < 1 {
+	if node.STUNPort < 0 {
 		return
 	}
 
@@ -1692,6 +1693,8 @@ func (rs *reportState) runProbe(ctx context.Context, dm *tailcfg.DERPMap, probe 
 	}
 	rs.mu.Unlock()
 
+	c.vlogf("netcheck.runProbe: sending STUN request to %s (%s)", node.Name, addr.String())
+
 	switch probe.proto {
 	case probeIPv4:
 		metricSTUNSend4.Add(1)
@@ -1700,6 +1703,8 @@ func (rs *reportState) runProbe(ctx context.Context, dm *tailcfg.DERPMap, probe 
 			rs.mu.Lock()
 			rs.report.IPv4CanSend = true
 			rs.mu.Unlock()
+		} else {
+			c.vlogf("netcheck.runProbe: error sending STUN request to %s (%s): %v", node.Name, addr.String(), err)
 		}
 	case probeIPv6:
 		metricSTUNSend6.Add(1)
@@ -1708,6 +1713,8 @@ func (rs *reportState) runProbe(ctx context.Context, dm *tailcfg.DERPMap, probe 
 			rs.mu.Lock()
 			rs.report.IPv6CanSend = true
 			rs.mu.Unlock()
+		} else {
+			c.vlogf("netcheck.runProbe: error sending STUN request to %s (%s): %v", node.Name, addr.String(), err)
 		}
 	default:
 		panic("bad probe proto " + fmt.Sprint(probe.proto))
