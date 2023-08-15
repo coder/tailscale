@@ -196,6 +196,8 @@ func (de *endpoint) deleteEndpointLocked(why string, ep netip.AddrPort) {
 	})
 	delete(de.endpointState, ep)
 	if de.bestAddr.AddrPort == ep {
+		de.c.logf("magicsock: disco: node %s %s now using DERP only (endpoint %s deleted)",
+			de.publicKey.ShortString(), de.discoShort(), ep)
 		de.debugUpdates.Add(EndpointChange{
 			When: time.Now(),
 			What: "deleteEndpointLocked-bestAddr-" + why,
