@@ -12,6 +12,7 @@ import (
 	crand "crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"expvar"
@@ -591,7 +592,7 @@ func (s *Server) registerClient(c *sclient) {
 	}
 	s.keyOfAddr[c.remoteIPPort] = c.key
 	s.curClients.Add(1)
-	s.broadcastPeerStateChangeLocked(c.key, true)
+	s.broadcastPeerStateChangeLocked(c.key, c.remoteIPPort, true)
 }
 
 // broadcastPeerStateChangeLocked enqueues a message to all watchers
@@ -599,9 +600,13 @@ func (s *Server) registerClient(c *sclient) {
 // presence changed.
 //
 // s.mu must be held.
-func (s *Server) broadcastPeerStateChangeLocked(peer key.NodePublic, present bool) {
+func (s *Server) broadcastPeerStateChangeLocked(peer key.NodePublic, ipPort netip.AddrPort, present bool) {
 	for w := range s.watchers {
-		w.peerStateChange = append(w.peerStateChange, peerConnState{peer: peer, present: present})
+		w.peerStateChange = append(w.peerStateChange, peerConnState{
+			peer:    peer,
+			present: present,
+			ipPort:  ipPort,
+		})
 		go w.requestMeshUpdate()
 	}
 }
@@ -636,7 +641,7 @@ func (s *Server) unregisterClient(c *sclient) {
 			delete(s.clientsMesh, c.key)
 			s.notePeerGoneFromRegionLocked(c.key)
 		}
-		s.broadcastPeerStateChangeLocked(c.key, false)
+		s.broadcastPeerStateChangeLocked(c.key, netip.AddrPort{}, false)
 	} else {
 		c.debugLogf("removed duplicate client")
 		if dup.removeClient(c) {
@@ -764,7 +769,11 @@ func (s *Server) addWatcher(c *sclient) {
 		if ac == nil {
 			continue
 		}
-		c.peerStateChange = append(c.peerStateChange, peerConnState{peer: peer, present: true})
+		c.peerStateChange = append(c.peerStateChange, peerConnState{
+			peer:    peer,
+			present: true,
+			ipPort:  ac.remoteIPPort,
+		})
 	}
 
 	// And enroll the watcher in future updates (of both
@@ -1462,6 +1471,7 @@ type sclient struct {
 type peerConnState struct {
 	peer    key.NodePublic
 	present bool
+	ipPort  netip.AddrPort // if present, the peer's IP:port
 }
 
 // pkt is a request to write a data frame to an sclient.
@@ -1676,12 +1686,18 @@ func (c *sclient) sendPeerGone(peer key.NodePublic, reason PeerGoneReasonType) e
 }
 
 // sendPeerPresent sends a peerPresent frame, without flushing.
-func (c *sclient) sendPeerPresent(peer key.NodePublic) error {
+func (c *sclient) sendPeerPresent(peer key.NodePublic, ipPort netip.AddrPort) error {
 	c.setWriteDeadline()
-	if err := writeFrameHeader(c.bw.bw(), framePeerPresent, keyLen); err != nil {
+	const frameLen = keyLen + 16 + 2
+	if err := writeFrameHeader(c.bw.bw(), framePeerPresent, frameLen); err != nil {
 		return err
 	}
-	_, err := c.bw.Write(peer.AppendTo(nil))
+	payload := make([]byte, frameLen)
+	_ = peer.AppendTo(payload[:0])
+	a16 := ipPort.Addr().As16()
+	copy(payload[keyLen:], a16[:])
+	binary.BigEndian.PutUint16(payload[keyLen+16:], ipPort.Port())
+	_, err := c.bw.Write(payload)
 	return err
 }
 
@@ -1700,7 +1716,7 @@ func (c *sclient) sendMeshUpdates() error {
 		}
 		var err error
 		if pcs.present {
-			err = c.sendPeerPresent(pcs.peer)
+			err = c.sendPeerPresent(pcs.peer, pcs.ipPort)
 		} else {
 			err = c.sendPeerGone(pcs.peer, PeerGoneReasonDisconnected)
 		}

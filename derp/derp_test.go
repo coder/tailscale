@@ -94,7 +94,7 @@ func TestSendRecv(t *testing.T) {
 		defer cancel()
 
 		brwServer := bufio.NewReadWriter(bufio.NewReader(cin), bufio.NewWriter(cin))
-		go s.Accept(ctx, cin, brwServer, fmt.Sprintf("test-client-%d", i))
+		go s.Accept(ctx, cin, brwServer, fmt.Sprintf("[abc::def]:%v", i))
 
 		key := clientPrivateKeys[i]
 		brw := bufio.NewReadWriter(bufio.NewReader(cout), bufio.NewWriter(cout))
@@ -530,7 +530,7 @@ func newTestServer(t *testing.T, ctx context.Context) *testServer {
 			// TODO: register c in ts so Close also closes it?
 			go func(i int) {
 				brwServer := bufio.NewReadWriter(bufio.NewReader(c), bufio.NewWriter(c))
-				go s.Accept(ctx, c, brwServer, fmt.Sprintf("test-client-%d", i))
+				go s.Accept(ctx, c, brwServer, c.RemoteAddr().String())
 			}(i)
 		}
 	}()
@@ -617,7 +617,7 @@ func (tc *testClient) wantPresent(t *testing.T, peers ...key.NodePublic) {
 		}
 		switch m := m.(type) {
 		case PeerPresentMessage:
-			got := key.NodePublic(m)
+			got := m.Key
 			if !want[got] {
 				t.Fatalf("got peer present for %v; want present for %v", tc.ts.keyName(got), logger.ArgWriter(func(bw *bufio.Writer) {
 					for _, pub := range peers {
@@ -625,6 +625,7 @@ func (tc *testClient) wantPresent(t *testing.T, peers ...key.NodePublic) {
 					}
 				}))
 			}
+			t.Logf("got present with IP %v", m.IPPort)
 			delete(want, got)
 			if len(want) == 0 {
 				return
