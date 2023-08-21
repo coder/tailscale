@@ -65,7 +65,7 @@ type Client struct {
 	//
 	// Example proxies include:
 	// - Azure Application Proxy (which redirects to login)
-	AlwaysUseWebsockets     bool
+	ForceWebsockets         bool
 	forcedWebsocket         atomic.Bool // optional; set if the server has failed to upgrade the connection on the DERP server
 	forcedWebsocketCallback atomic.Pointer[func(int, string)]
 
@@ -309,7 +309,7 @@ func (c *Client) preferIPv6() bool {
 var dialWebsocketFunc func(ctx context.Context, urlStr string, tlsConfig *tls.Config, httpHeader http.Header) (net.Conn, error)
 
 func (c *Client) useWebsockets() bool {
-	if c.AlwaysUseWebsockets {
+	if c.ForceWebsockets {
 		return true
 	}
 	if runtime.GOOS == "js" {

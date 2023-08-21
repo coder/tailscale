@@ -266,7 +266,7 @@ func TestHTTP2OnlyServer(t *testing.T) {
 	c.Close()
 }
 
-func TestAlwaysUseWebsocket(t *testing.T) {
+func TestForceWebsockets(t *testing.T) {
 	serverPrivateKey := key.NewNode()
 	s := derp.NewServer(serverPrivateKey, t.Logf)
 	defer s.Close()
@@ -311,7 +311,7 @@ func TestAlwaysUseWebsocket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	c.AlwaysUseWebsockets = true
+	c.ForceWebsockets = true
 	c.TLSConfig = &tls.Config{
 		ServerName: "example.com",
 		RootCAs:    httpsrv.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs,

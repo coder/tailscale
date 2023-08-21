@@ -171,7 +171,7 @@ type Conn struct {
 	derpHeader atomic.Pointer[http.Header]
 
 	// whether websocket is always used by the DERP HTTP client
-	derpAlwaysUseWebsockets atomic.Bool
+	derpForceWebsockets atomic.Bool
 
 	// derpRegionDialer is passed to the DERP client
 	derpRegionDialer atomic.Pointer[func(ctx context.Context, region *tailcfg.DERPRegion) net.Conn]
@@ -1663,8 +1663,8 @@ func (c *Conn) SetDERPHeader(header http.Header) {
 	c.derpHeader.Store(&header)
 }
 
-func (c *Conn) SetDERPAlwaysUseWebsockets(v bool) {
-	c.derpAlwaysUseWebsockets.Store(v)
+func (c *Conn) SetDERPForceWebsockets(v bool) {
+	c.derpForceWebsockets.Store(v)
 }
 
 func (c *Conn) SetDERPRegionDialer(dialer func(ctx context.Context, region *tailcfg.DERPRegion) net.Conn) {
