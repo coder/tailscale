@@ -58,6 +58,14 @@ type Client struct {
 	MeshKey   string             // optional; for trusted clients
 	IsProber  bool               // optional; for probers to optional declare themselves as such
 
+	// Allow forcing WebSocket fallback for situations where proxies do not
+	// play well with `Upgrade: derp`. Turning this on will cause the client to
+	// always try WebSocket on it's first attempt. The callback will not be
+	// called if this is true.
+	//
+	// Example proxies include:
+	// - Azure Application Proxy (which redirects to login)
+	ForceWebsockets         bool
 	forcedWebsocket         atomic.Bool // optional; set if the server has failed to upgrade the connection on the DERP server
 	forcedWebsocketCallback atomic.Pointer[func(int, string)]
 
@@ -301,6 +309,9 @@ func (c *Client) preferIPv6() bool {
 var dialWebsocketFunc func(ctx context.Context, urlStr string, tlsConfig *tls.Config, httpHeader http.Header) (net.Conn, error)
 
 func (c *Client) useWebsockets() bool {
+	if c.ForceWebsockets {
+		return true
+	}
 	if runtime.GOOS == "js" {
 		return true
 	}

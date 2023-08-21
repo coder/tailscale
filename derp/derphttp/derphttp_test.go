@@ -265,3 +265,63 @@ func TestHTTP2OnlyServer(t *testing.T) {
 
 	c.Close()
 }
+
+func TestForceWebsockets(t *testing.T) {
+	serverPrivateKey := key.NewNode()
+	s := derp.NewServer(serverPrivateKey, t.Logf)
+	defer s.Close()
+
+	httpsrv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		up := r.Header.Get("Upgrade")
+		if up == "" {
+			Handler(s).ServeHTTP(w, r)
+			return
+		}
+		if up != "websocket" {
+			// Should only attempt to upgrade to websocket.
+			t.Errorf("unexpected Upgrade header: %q", up)
+			return
+		}
+
+		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{})
+		if err != nil {
+			t.Errorf("websocket.Accept: %v", err)
+			return
+		}
+		defer c.Close(websocket.StatusInternalError, "closing")
+		wc := wsconn.NetConn(context.Background(), c, websocket.MessageBinary)
+		brw := bufio.NewReadWriter(bufio.NewReader(wc), bufio.NewWriter(wc))
+		s.Accept(context.Background(), wc, brw, r.RemoteAddr)
+	}))
+	defer httpsrv.Close()
+	httpsrv.TLS = &tls.Config{
+		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			// Add this to ensure fast start works!
+			cert := httpsrv.TLS.Certificates[0]
+			cert.Certificate = append(cert.Certificate, s.MetaCert())
+			return &cert, nil
+		},
+	}
+	httpsrv.StartTLS()
+
+	serverURL := httpsrv.URL
+	t.Logf("server URL: %s", serverURL)
+
+	c, err := NewClient(key.NewNode(), serverURL, t.Logf)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	c.ForceWebsockets = true
+	c.TLSConfig = &tls.Config{
+		ServerName: "example.com",
+		RootCAs:    httpsrv.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs,
+	}
+	defer c.Close()
+
+	err = c.Connect(context.Background())
+	if err != nil {
+		t.Fatalf("client errored initial connect: %v", err)
+	}
+
+	c.Close()
+}
