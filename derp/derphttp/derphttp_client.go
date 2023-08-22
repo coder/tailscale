@@ -260,23 +260,26 @@ func (c *Client) urlString(node *tailcfg.DERPNode) string {
 	if c.url != nil {
 		return c.url.String()
 	}
-	if node.HostName == "" {
-		url := &url.URL{
-			Scheme: "https",
-			Host:   fmt.Sprintf("%s:%d", node.IPv4, node.DERPPort),
-			Path:   "/derp",
-		}
-		if node.ForceHTTP {
-			url.Scheme = "http"
-		}
-		return url.String()
+
+	url := &url.URL{
+		Scheme: "https",
+		Host:   node.IPv4,
+		Path:   "/derp",
+	}
+	if debugUseDERPHTTP() || node.ForceHTTP {
+		url.Scheme = "http"
+	}
+	if url.Host == "" {
+		url.Host = node.HostName
 	}
 
-	proto := "https"
-	if debugUseDERPHTTP() || node.ForceHTTP {
-		proto = "http"
+	// Add the DERPPort to the URL host, unless the host already contains a port
+	// or the DERPPort is the default port for the protocol.
+	if node.DERPPort != 0 && !strings.Contains(url.Host, ":") && ((url.Scheme == "https" && node.DERPPort != 443) || (url.Scheme == "http" && node.DERPPort != 80)) {
+		url.Host = fmt.Sprintf("%s:%d", url.Host, node.DERPPort)
 	}
-	return fmt.Sprintf("%s://%s/derp", proto, node.HostName)
+
+	return url.String()
 }
 
 // AddressFamilySelector decides whether IPv6 is preferred for
