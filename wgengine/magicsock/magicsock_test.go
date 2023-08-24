@@ -4,6 +4,7 @@
 package magicsock
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	crand "crypto/rand"
@@ -12,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"net"
 	"net/http"
@@ -37,6 +39,7 @@ import (
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
+	"nhooyr.io/websocket"
 	"tailscale.com/cmd/testwrapper/flakytest"
 	"tailscale.com/derp"
 	"tailscale.com/derp/derphttp"
@@ -48,6 +51,7 @@ import (
 	"tailscale.com/net/ping"
 	"tailscale.com/net/stun/stuntest"
 	"tailscale.com/net/tstun"
+	"tailscale.com/net/wsconn"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tstest"
 	"tailscale.com/tstest/natlab"
@@ -161,7 +165,16 @@ func newMagicStack(t testing.TB, logf logger.Logf, l nettype.PacketListener, der
 	return newMagicStackWithKey(t, logf, l, derpMap, privateKey)
 }
 
+func newMagicStackFunc(t testing.TB, logf logger.Logf, l nettype.PacketListener, derpMap *tailcfg.DERPMap, updateConnFunc func(ms *Conn)) *magicStack {
+	privateKey := key.NewNode()
+	return newMagicStackWithKeyFunc(t, logf, l, derpMap, privateKey, updateConnFunc)
+}
+
 func newMagicStackWithKey(t testing.TB, logf logger.Logf, l nettype.PacketListener, derpMap *tailcfg.DERPMap, privateKey key.NodePrivate) *magicStack {
+	return newMagicStackWithKeyFunc(t, logf, l, derpMap, privateKey, nil)
+}
+
+func newMagicStackWithKeyFunc(t testing.TB, logf logger.Logf, l nettype.PacketListener, derpMap *tailcfg.DERPMap, privateKey key.NodePrivate, updateConnFunc func(ms *Conn)) *magicStack {
 	t.Helper()
 
 	epCh := make(chan []tailcfg.Endpoint, 100) // arbitrary
@@ -186,6 +199,11 @@ func newMagicStackWithKey(t testing.TB, logf logger.Logf, l nettype.PacketListen
 
 	wgLogger := wglog.NewLogger(logf)
 	dev := wgcfg.NewDevice(tsTun, conn.Bind(), wgLogger.DeviceLogger)
+
+	if updateConnFunc != nil {
+		updateConnFunc(conn)
+	}
+
 	dev.Up()
 
 	// Wait for magicsock to connect up to DERP.
@@ -2874,5 +2892,111 @@ func TestAddrForSendLockedForWireGuardOnly(t *testing.T) {
 		if endpoint.bestAddr.AddrPort != test.want {
 			t.Errorf("bestAddr.AddrPort is not as expected: got %v, want %v", endpoint.bestAddr.AddrPort, test.want)
 		}
+	}
+}
+
+// Copied from cmd/derper
+func addWebSocketSupport(s *derp.Server, base http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		up := strings.ToLower(r.Header.Get("Upgrade"))
+
+		// Very early versions of Tailscale set "Upgrade: WebSocket" but didn't actually
+		// speak WebSockets (they still assumed DERP's binary framing). So to distinguish
+		// clients that actually want WebSockets, look for an explicit "derp" subprotocol.
+		if up != "websocket" || !strings.Contains(r.Header.Get("Sec-Websocket-Protocol"), "derp") {
+			base.ServeHTTP(w, r)
+			return
+		}
+
+		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+			Subprotocols:   []string{"derp"},
+			OriginPatterns: []string{"*"},
+			// Disable compression because we transmit WireGuard messages that
+			// are not compressible.
+			// Additionally, Safari has a broken implementation of compression
+			// (see https://github.com/nhooyr/websocket/issues/218) that makes
+			// enabling it actively harmful.
+			CompressionMode: websocket.CompressionDisabled,
+		})
+		if err != nil {
+			log.Printf("websocket.Accept: %v", err)
+			return
+		}
+		defer c.Close(websocket.StatusInternalError, "closing")
+		if c.Subprotocol() != "derp" {
+			c.Close(websocket.StatusPolicyViolation, "client must speak the derp subprotocol")
+			return
+		}
+		wc := wsconn.NetConn(r.Context(), c, websocket.MessageBinary)
+		brw := bufio.NewReadWriter(bufio.NewReader(wc), bufio.NewWriter(wc))
+		s.Accept(r.Context(), wc, brw, r.RemoteAddr)
+	})
+}
+
+func TestDERPForceWebsockets(t *testing.T) {
+	logf, closeLogf := logger.LogfCloser(t.Logf)
+	defer closeLogf()
+
+	// Create a DERP server manually, without a STUN server and with a custom
+	// handler.
+	derpServer := derp.NewServer(key.NewNode(), logf)
+	derpHandler := derphttp.Handler(derpServer)
+	derpHandler = addWebSocketSupport(derpServer, derpHandler)
+
+	var upgradeCount int64
+	httpsrv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		up := r.Header.Get("Upgrade")
+		if up != "" {
+			if up != "websocket" {
+				t.Errorf("unexpected upgrade header: %q", up)
+			} else {
+				atomic.AddInt64(&upgradeCount, 1)
+			}
+		}
+
+		derpHandler.ServeHTTP(w, r)
+	}))
+	httpsrv.Config.ErrorLog = logger.StdLogger(logf)
+	httpsrv.Config.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
+	httpsrv.StartTLS()
+	t.Cleanup(func() {
+		httpsrv.CloseClientConnections()
+		httpsrv.Close()
+		derpServer.Close()
+	})
+
+	derpMap := &tailcfg.DERPMap{
+		Regions: map[int]*tailcfg.DERPRegion{
+			1: {
+				RegionID:   1,
+				RegionCode: "test",
+				Nodes: []*tailcfg.DERPNode{
+					{
+						Name:             "t1",
+						RegionID:         1,
+						HostName:         "test-node.unused",
+						IPv4:             "127.0.0.1",
+						IPv6:             "",
+						STUNPort:         -1,
+						DERPPort:         httpsrv.Listener.Addr().(*net.TCPAddr).Port,
+						InsecureForTests: true,
+					},
+				},
+			},
+		},
+	}
+
+	m := &natlab.Machine{Name: "m1"}
+	ms := newMagicStackFunc(t, logger.WithPrefix(logf, "conn1: "), m, derpMap, func(ms *Conn) {
+		ms.SetDERPForceWebsockets(true)
+	})
+	defer ms.Close()
+
+	if len(ms.conn.activeDerp) == 0 {
+		t.Errorf("unexpected DERP empty got: %v want: >0", len(ms.conn.activeDerp))
+	}
+
+	if atomic.LoadInt64(&upgradeCount) == 0 {
+		t.Errorf("no websocket upgrade requests seen")
 	}
 }
