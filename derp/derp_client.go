@@ -478,7 +478,7 @@ func (c *Client) recvTimeout(timeout time.Duration) (m ReceivedMessage, err erro
 			return nil, err
 		}
 		if n > 1<<20 {
-			return nil, fmt.Errorf("unexpectedly large frame of %d bytes returned", n)
+			return nil, fmt.Errorf("unexpectedly large frame (type 0x%x) of %d bytes returned", t, n)
 		}
 
 		var b []byte // frame payload (past the 5 byte header)
