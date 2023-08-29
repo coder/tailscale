@@ -278,6 +278,8 @@ type Node struct {
 	// current node doesn't have permission to know.
 	Online *bool `json:",omitempty"`
 
+	KeepAlive bool `json:",omitempty"` // open and keep open a connection to this peer
+
 	MachineAuthorized bool `json:",omitempty"` // TODO(crawshaw): replace with MachineStatus
 
 	// Capabilities are capabilities that the node has.
