@@ -28,6 +28,18 @@ type DERPMap struct {
 	OmitDefaultRegions bool `json:"omitDefaultRegions,omitempty"`
 }
 
+// HasSTUN returns true if there are any STUN servers in the DERPMap.
+func (m *DERPMap) HasSTUN() bool {
+	for _, r := range m.Regions {
+		for _, n := range r.Nodes {
+			if n.STUNPort > 0 && !n.STUNOnly {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // / RegionIDs returns the sorted region IDs.
 func (m *DERPMap) RegionIDs() []int {
 	ret := make([]int, 0, len(m.Regions))
