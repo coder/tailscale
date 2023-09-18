@@ -410,7 +410,7 @@ func TestAddReportHistoryAndSetPreferredDERP(t *testing.T) {
 						{
 							Name:     "d1a",
 							RegionID: 1,
-							HostName: "derp1a",
+							HostName: "derp1a.invalid",
 							IPv4:     "",
 							IPv6:     "",
 							DERPPort: 1234,
@@ -426,7 +426,7 @@ func TestAddReportHistoryAndSetPreferredDERP(t *testing.T) {
 						{
 							Name:     "d2a",
 							RegionID: 2,
-							HostName: "derp2a",
+							HostName: "derp2a.invalid",
 							IPv4:     "127.0.0.1",
 							IPv6:     "",
 							STUNPort: 1234,
@@ -1088,7 +1088,7 @@ func TestNeverPickSTUNOnlyRegionAsPreferredDERP(t *testing.T) {
 					{
 						Name:             "s1",
 						RegionID:         2,
-						HostName:         "not-used",
+						HostName:         "s1.invalid",
 						IPv4:             stunAddr.IP.String(),
 						IPv6:             stunAddr.IP.String(),
 						STUNPort:         stunAddr.Port,
