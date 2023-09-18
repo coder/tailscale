@@ -203,6 +203,10 @@ type Client struct {
 	// If false, the default net.Resolver will be used, with no caching.
 	UseDNSCache bool
 
+	// GetDERPHeaders optionally specifies headers to send with all HTTP(S) DERP
+	// probes.
+	GetDERPHeaders func() http.Header
+
 	// For tests
 	testEnoughRegions      int
 	testCaptivePortalDelay time.Duration
@@ -1277,7 +1281,13 @@ func (c *Client) measureHTTPLatency(ctx context.Context, reg *tailcfg.DERPRegion
 
 	var ip netip.Addr
 
+	derpHeaders := http.Header{}
+	if c.GetDERPHeaders != nil {
+		derpHeaders = c.GetDERPHeaders()
+	}
+
 	dc := derphttp.NewNetcheckClient(c.logf)
+	dc.Header = derpHeaders
 	defer dc.Close()
 
 	var hasForceHTTPNode = false
@@ -1355,6 +1365,9 @@ func (c *Client) measureHTTPLatency(ctx context.Context, reg *tailcfg.DERPRegion
 	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s://%s/derp/latency-check", scheme, host), nil)
 	if err != nil {
 		return 0, ip, err
+	}
+	for k := range derpHeaders {
+		req.Header.Set(k, derpHeaders.Get(k))
 	}
 
 	resp, err := hc.Do(req)
