@@ -32,7 +32,7 @@ type DERPMap struct {
 func (m *DERPMap) HasSTUN() bool {
 	for _, r := range m.Regions {
 		for _, n := range r.Nodes {
-			if n.STUNPort > 0 && !n.STUNOnly {
+			if n.STUNPort >= 0 {
 				return true
 			}
 		}
