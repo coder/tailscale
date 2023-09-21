@@ -1022,6 +1022,91 @@ func TestNodeAddrResolve(t *testing.T) {
 	}
 }
 
+func TestProbeHeaders(t *testing.T) {
+	logf, closeLogf := logger.LogfCloser(t.Logf)
+	defer closeLogf()
+
+	// Create a DERP server manually, without a STUN server and with a custom
+	// handler.
+	derpServer := derp.NewServer(key.NewNode(), logf)
+	derpHandler := derphttp.Handler(derpServer)
+
+	expectedHeaders := http.Header{}
+	expectedHeaders.Set("X-Cool-Test", "yes")
+	expectedHeaders.Set("X-Proxy-Auth-Key", "blah blah blah")
+
+	var called atomic.Bool
+	httpsrv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called.Store(true)
+		for k, v := range expectedHeaders {
+			if got := r.Header[k]; !reflect.DeepEqual(got, v) {
+				t.Errorf("unexpected header %q: got %q; want %q", k, got, v)
+			}
+		}
+
+		if r.URL.Path == "/derp/latency-check" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Path == "/derp" {
+			derpHandler.ServeHTTP(w, r)
+			return
+		}
+
+		t.Errorf("unexpected request: %v", r.URL)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	httpsrv.Config.ErrorLog = logger.StdLogger(logf)
+	httpsrv.Config.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
+	httpsrv.StartTLS()
+	t.Cleanup(func() {
+		httpsrv.CloseClientConnections()
+		httpsrv.Close()
+		derpServer.Close()
+	})
+
+	derpMap := &tailcfg.DERPMap{
+		Regions: map[int]*tailcfg.DERPRegion{
+			1: {
+				RegionID:   1,
+				RegionCode: "derpy",
+				Nodes: []*tailcfg.DERPNode{
+					{
+						Name:     "d1",
+						RegionID: 1,
+						HostName: "localhost",
+						// Don't specify an IP address to avoid ICMP pinging,
+						// which will bypass the artificial latency.
+						IPv4:             "",
+						IPv6:             "",
+						STUNPort:         -1,
+						DERPPort:         httpsrv.Listener.Addr().(*net.TCPAddr).Port,
+						InsecureForTests: true,
+					},
+				},
+			},
+		},
+	}
+
+	c := &Client{
+		Logf:           t.Logf,
+		UDPBindAddr:    "127.0.0.1:0",
+		GetDERPHeaders: func() http.Header { return expectedHeaders.Clone() },
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	_, err := c.GetReport(ctx, derpMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !called.Load() {
+		t.Error("didn't call test handler")
+	}
+}
+
 func TestNeverPickSTUNOnlyRegionAsPreferredDERP(t *testing.T) {
 	// Create two DERP regions, one with a STUN server only and one with only a
 	// DERP node. Add artificial latency of 300ms to the DERP region, and test

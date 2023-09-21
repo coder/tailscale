@@ -443,6 +443,13 @@ func NewConn(opts Options) (*Conn, error) {
 		SkipExternalNetwork: inTest(),
 		PortMapper:          c.portMapper,
 		UseDNSCache:         true,
+		GetDERPHeaders: func() http.Header {
+			h := c.derpHeader.Load()
+			if h == nil {
+				return nil
+			}
+			return h.Clone()
+		},
 	}
 
 	c.ignoreSTUNPackets()
