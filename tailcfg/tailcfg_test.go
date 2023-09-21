@@ -729,3 +729,121 @@ func TestCurrentCapabilityVersion(t *testing.T) {
 		t.Errorf("CurrentCapabilityVersion = %d; want %d", CurrentCapabilityVersion, max)
 	}
 }
+
+func TestDERPMapHasSTUN(t *testing.T) {
+	cases := []struct {
+		name    string
+		derpMap *DERPMap
+		want    bool
+	}{
+		{
+			name: "None",
+			derpMap: &DERPMap{
+				Regions: map[int]*DERPRegion{
+					1: {
+						RegionID: 1,
+						Nodes: []*DERPNode{
+							{
+								RegionID: 1,
+								Name:     "1a",
+								STUNPort: -1,
+							},
+						},
+					},
+					2: {
+						RegionID: 2,
+						Nodes: []*DERPNode{
+							{
+								RegionID: 2,
+								Name:     "2a",
+								STUNPort: -1,
+							},
+						},
+					},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "One",
+			derpMap: &DERPMap{
+				Regions: map[int]*DERPRegion{
+					1: {
+						RegionID: 1,
+						Nodes: []*DERPNode{
+							{
+								RegionID: 1,
+								Name:     "1a",
+								STUNPort: -1,
+							},
+						},
+					},
+					2: {
+						RegionID: 2,
+						Nodes: []*DERPNode{
+							{
+								RegionID: 2,
+								Name:     "2a",
+								STUNPort: -1,
+							},
+							{
+								RegionID: 2,
+								Name:     "2b",
+								STUNPort: 0, // default
+							},
+						},
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "Some",
+			derpMap: &DERPMap{
+				Regions: map[int]*DERPRegion{
+					1: {
+						RegionID: 1,
+						Nodes: []*DERPNode{
+							{
+								RegionID: 1,
+								Name:     "1a",
+								STUNPort: -1,
+							},
+							{
+								RegionID: 1,
+								Name:     "1b",
+								STUNPort: 1234,
+							},
+						},
+					},
+					2: {
+						RegionID: 2,
+						Nodes: []*DERPNode{
+							{
+								RegionID: 2,
+								Name:     "2a",
+								STUNPort: -1,
+							},
+							{
+								RegionID: 2,
+								Name:     "2b",
+								STUNPort: 4321,
+							},
+						},
+					},
+				},
+			},
+			want: true,
+		},
+	}
+
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			got := c.derpMap.HasSTUN()
+			if got != c.want {
+				t.Errorf("got %v; want %v", got, c.want)
+			}
+		})
+	}
+}
