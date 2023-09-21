@@ -1587,6 +1587,12 @@ func (c *Client) addReportHistoryAndSetPreferredDERP(r *Report, dm tailcfg.DERPM
 		oldRegionCurLatency time.Duration // latency of old PreferredDERP
 	)
 	for regionID, d := range r.RegionLatency {
+		// Coder: if the region only has STUNOnly nodes then it must not be
+		// selected as the preferred DERP region.
+		if dm.Regions().Has(regionID) && !regionHasDERPNode(dm.Regions().Get(regionID).AsStruct()) {
+			continue
+		}
+
 		// Scale this report's latency by any scores provided by the
 		// server; we did this for the bestRecent map above, but we
 		// don't mutate the actual reports in-place (in case scores

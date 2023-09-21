@@ -38,6 +38,22 @@ func (m *DERPMap) RegionIDs() []int {
 	return ret
 }
 
+// RegionIDsNoSTUNOnly returns the sorted region IDs that have at least one
+// non-STUN-only node.
+func (m *DERPMap) RegionIDsNoSTUNOnly() []int {
+	ret := make([]int, 0, len(m.Regions))
+	for rid, r := range m.Regions {
+		for _, n := range r.Nodes {
+			if !n.STUNOnly {
+				ret = append(ret, rid)
+				break
+			}
+		}
+	}
+	sort.Ints(ret)
+	return ret
+}
+
 // DERPHomeParams contains parameters from the server related to selecting a
 // DERP home region (sometimes referred to as the "preferred DERP").
 type DERPHomeParams struct {

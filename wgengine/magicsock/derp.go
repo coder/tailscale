@@ -101,7 +101,7 @@ func (c *Conn) pickDERPFallback() int {
 	if !c.wantDerpLocked() {
 		return 0
 	}
-	ids := c.derpMap.RegionIDs()
+	ids := c.derpMap.RegionIDsNoSTUNOnly()
 	if len(ids) == 0 {
 		// No DERP regions in non-nil map.
 		return 0
