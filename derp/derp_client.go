@@ -478,6 +478,14 @@ func (c *Client) recvTimeout(timeout time.Duration) (m ReceivedMessage, err erro
 			return nil, err
 		}
 		if n > 1<<20 {
+			// This could be due to some middleware returning non-DERP data.  Read a little more of
+			// the stream and log for debugging before throwing an error.
+			raw := make([]byte, 256)
+			raw[0] = byte(t)
+			bin.PutUint32(raw[1:5], n)
+			k, _ := c.br.Read(raw[5:])
+			raw = raw[:5+k]
+			c.logf("[unexpected] large or corrupt frame; up to 256 bytes as follows: %q", raw)
 			return nil, fmt.Errorf("unexpectedly large frame (type 0x%x) of %d bytes returned", t, n)
 		}
 
