@@ -416,8 +416,11 @@ func makeProbePlan(dm *tailcfg.DERPMap, ifState *interfaces.State, last *Report)
 	had4 := len(last.RegionV4Latency) > 0
 	had6 := len(last.RegionV6Latency) > 0
 	hadBoth := have6if && had4 && had6
+	// Coder: Some regions don't have STUN, so we need to make sure we have probed
+	// enough STUN regions
+	numSTUN := 0
 	for ri, reg := range sortRegions(dm, last) {
-		if ri == numIncrementalRegions {
+		if numSTUN == numIncrementalRegions {
 			break
 		}
 		var p4, p6 []probe
@@ -459,6 +462,10 @@ func makeProbePlan(dm *tailcfg.DERPMap, ifState *interfaces.State, last *Report)
 				do6 = false
 			}
 			n := reg.Nodes[try%len(reg.Nodes)]
+			// Coder: The probe won't be valid if the node doesn't have a STUNPort.
+			if n.STUNPort < 0 {
+				continue
+			}
 			prevLatency := cmpx.Or(
 				last.RegionLatency[reg.RegionID]*120/100,
 				defaultActiveRetransmitTime)
@@ -478,6 +485,9 @@ func makeProbePlan(dm *tailcfg.DERPMap, ifState *interfaces.State, last *Report)
 		}
 		if len(p6) > 0 {
 			plan[fmt.Sprintf("region-%d-v6", reg.RegionID)] = p6
+		}
+		if len(p4) > 0 || len(p6) > 0 {
+			numSTUN++
 		}
 	}
 	return plan
