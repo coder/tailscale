@@ -518,8 +518,9 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		// https://blog.gypsyengineer.com/en/security/how-does-tls-1-3-protect-against-downgrade-attacks.html
 		cs := tlsConn.ConnectionState()
 		tlsState = &cs
+		c.logf("%s: TLS version 0x%x", caller, cs.Version)
 		if cs.Version >= tls.VersionTLS13 {
-			serverPub, serverProtoVersion = parseMetaCert(cs.PeerCertificates)
+			serverPub, serverProtoVersion = parseMetaCert(c.logf, cs.PeerCertificates)
 		}
 	} else {
 		httpConn = tcpConn
@@ -556,6 +557,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		// just to get routed into the server's HTTP Handler so it
 		// can Hijack the request, but we signal with a special header
 		// that we don't want to deal with its HTTP response.
+		c.logf("%s: using fast start", caller)
 		req.Header.Set(fastStartHeader, "1") // suppresses the server's HTTP response
 		if err := req.Write(brw); err != nil {
 			return nil, 0, err
@@ -563,6 +565,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		// No need to flush the HTTP request. the derp.Client's initial
 		// client auth frame will flush it.
 	} else {
+		c.logf("%s: not using fast start", caller)
 		if err := req.Write(brw); err != nil {
 			return nil, 0, err
 		}
@@ -574,6 +577,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		if err != nil {
 			return nil, 0, err
 		}
+		c.logf("%s: DERP server returned status %d", caller, resp.StatusCode)
 		if resp.StatusCode != http.StatusSwitchingProtocols {
 			b, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
@@ -1206,8 +1210,9 @@ func (c *Client) closeForReconnect(brokenClient *derp.Client) {
 
 var ErrClientClosed = errors.New("derphttp.Client closed")
 
-func parseMetaCert(certs []*x509.Certificate) (serverPub key.NodePublic, serverProtoVersion int) {
+func parseMetaCert(logf logger.Logf, certs []*x509.Certificate) (serverPub key.NodePublic, serverProtoVersion int) {
 	for _, cert := range certs {
+		logf("derpclient: got cert %s", cert.Subject.CommonName)
 		// Look for derpkey prefix added by initMetacert() on the server side.
 		if pubHex, ok := strings.CutPrefix(cert.Subject.CommonName, "derpkey"); ok {
 			var err error
