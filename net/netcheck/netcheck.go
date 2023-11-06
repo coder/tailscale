@@ -419,7 +419,7 @@ func makeProbePlan(dm *tailcfg.DERPMap, ifState *interfaces.State, last *Report)
 	// Coder: Some regions don't have STUN, so we need to make sure we have probed
 	// enough STUN regions
 	numSTUN := 0
-	for ri, reg := range sortRegions(dm, last) {
+	for _, reg := range sortRegions(dm, last) {
 		if numSTUN == numIncrementalRegions {
 			break
 		}
@@ -430,14 +430,14 @@ func makeProbePlan(dm *tailcfg.DERPMap, ifState *interfaces.State, last *Report)
 		// By default, each node only gets one STUN packet sent,
 		// except the fastest two from the previous round.
 		tries := 1
-		isFastestTwo := ri < 2
+		isFastestTwo := numSTUN < 2
 
 		if isFastestTwo {
 			tries = 2
 		} else if hadBoth {
 			// For dual stack machines, make the 3rd & slower nodes alternate
 			// between.
-			if ri%2 == 0 {
+			if numSTUN%2 == 0 {
 				do4, do6 = true, false
 			} else {
 				do4, do6 = false, true
@@ -979,6 +979,9 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap) (_ *Report,
 	}
 
 	plan := makeProbePlan(dm, ifState, last)
+	if len(plan) == 0 {
+		c.logf("empty probe plan; do we have STUN regions?")
+	}
 
 	// If we're doing a full probe, also check for a captive portal. We
 	// delay by a bit to wait for UDP STUN to finish, to avoid the probe if

@@ -1202,3 +1202,117 @@ func TestNeverPickSTUNOnlyRegionAsPreferredDERP(t *testing.T) {
 		t.Errorf("got PreferredDERP=%d; want 1", r.PreferredDERP)
 	}
 }
+
+func Test_makeProbePlan_incremental(t *testing.T) {
+	type testcase struct {
+		name      string
+		haveV4    bool
+		haveV6    bool
+		stunPorts []int
+		expected  []string
+	}
+	testcases := []testcase{
+		{
+			name:      "slowSTUN",
+			haveV4:    true,
+			stunPorts: []int{-1, -1, -1, 4, 5, 6},
+			expected:  []string{"region-4-v4", "region-5-v4", "region-6-v4"},
+		},
+		{
+			name:      "fastSTUN",
+			haveV4:    true,
+			stunPorts: []int{1, 2, 3, -1, -1, -1},
+			expected:  []string{"region-1-v4", "region-2-v4", "region-2-v4"},
+		},
+		{
+			name:      "dualStackFast",
+			haveV4:    true,
+			haveV6:    true,
+			stunPorts: []int{1, 2, 3, -1, -1, -1},
+			expected: []string{
+				"region-1-v4", "region-2-v4", "region-2-v4",
+				"region-1-v6", "region-2-v6", // only fastest 2 have v6
+			},
+		},
+		{
+			name:      "dualStackSlow",
+			haveV4:    true,
+			haveV6:    true,
+			stunPorts: []int{-1, -1, -1, 4, 5, 6},
+			expected: []string{
+				"region-4-v4", "region-5-v4", "region-6-v4",
+				"region-4-v6", "region-5-v6", // only fastest 2 have v6
+			},
+		},
+		{
+			// pathological case: STUN regions are not in top 3 and even
+			// indexes re: latency
+			name:      "dualStackInterspersed",
+			haveV4:    true,
+			haveV6:    true,
+			stunPorts: []int{-1, -1, -1, 4, -1, 6, -1, 8},
+			expected: []string{
+				"region-4-v4", "region-6-v4", "region-8-v4",
+				"region-4-v6", "region-6-v6", // only fastest 2 have v6
+			},
+		},
+	}
+	for _, tc := range testcases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			state := &interfaces.State{
+				HaveV4: tc.haveV4,
+				HaveV6: tc.haveV6,
+			}
+			plan := makeProbePlan(
+				derpMapBySTUNPort(tc.stunPorts),
+				state,
+				reportLatencyAscending(len(tc.stunPorts), tc.haveV4, tc.haveV6),
+			)
+			for _, e := range tc.expected {
+				if _, ok := plan[e]; !ok {
+					t.Errorf("expected %s in the plan", e)
+				}
+			}
+		})
+	}
+
+}
+
+func derpMapBySTUNPort(ports []int) *tailcfg.DERPMap {
+	derpMap := &tailcfg.DERPMap{Regions: make(map[int]*tailcfg.DERPRegion)}
+	for i, p := range ports {
+		j := i + 1
+		var name string
+		if p < 0 {
+			name = fmt.Sprintf("noSTUN%d", j)
+		} else {
+			name = fmt.Sprintf("STUN%d", j)
+		}
+		derpMap.Regions[j] = &tailcfg.DERPRegion{
+			RegionID:   j,
+			RegionCode: name,
+			Nodes: []*tailcfg.DERPNode{
+				{Name: name, STUNPort: p},
+			}}
+	}
+	return derpMap
+}
+
+func reportLatencyAscending(n int, haveV4, haveV6 bool) *Report {
+	r := &Report{
+		RegionLatency:   make(map[int]time.Duration),
+		RegionV4Latency: make(map[int]time.Duration),
+		RegionV6Latency: make(map[int]time.Duration),
+	}
+	for i := 1; i <= n; i++ {
+		r.RegionLatency[i] = time.Duration(i) * time.Millisecond
+		if haveV4 {
+			r.RegionV4Latency[i] = time.Duration(i) * time.Millisecond
+		}
+		if haveV6 {
+			r.RegionV6Latency[i] = time.Duration(i) * time.Millisecond
+		}
+	}
+	return r
+}
