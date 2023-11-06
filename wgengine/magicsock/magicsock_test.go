@@ -443,14 +443,14 @@ func TestPickDERPFallback(t *testing.T) {
 	c := newConn()
 	dm := &tailcfg.DERPMap{
 		Regions: map[int]*tailcfg.DERPRegion{
-			1: {},
-			2: {},
-			3: {},
-			4: {},
-			5: {},
-			6: {},
-			7: {},
-			8: {},
+			1: {Nodes: []*tailcfg.DERPNode{{}}},
+			2: {Nodes: []*tailcfg.DERPNode{{}}},
+			3: {Nodes: []*tailcfg.DERPNode{{}}},
+			4: {Nodes: []*tailcfg.DERPNode{{}}},
+			5: {Nodes: []*tailcfg.DERPNode{{}}},
+			6: {Nodes: []*tailcfg.DERPNode{{}}},
+			7: {Nodes: []*tailcfg.DERPNode{{}}},
+			8: {Nodes: []*tailcfg.DERPNode{{}}},
 		},
 	}
 	c.derpMap = dm
