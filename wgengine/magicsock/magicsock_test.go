@@ -3013,7 +3013,7 @@ func TestBlockEndpoints(t *testing.T) {
 	defer ms.Close()
 
 	// Check that some endpoints exist. This should be the case as we should use
-	// interface addressess as endpoints instantly on startup, and we already
+	// interface addresses as endpoints instantly on startup, and we already
 	// have a DERP connection due to newMagicStackFunc.
 	ms.conn.mu.Lock()
 	haveEndpoint := false
