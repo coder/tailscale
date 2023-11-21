@@ -214,6 +214,10 @@ type Conn struct {
 	// that will call Conn.doPeriodicSTUN.
 	periodicReSTUNTimer *time.Timer
 
+	// blockEndpoints is whether to avoid capturing, storing and sending
+	// endpoints gathered from local interfaces or STUN. Only DERP endpoints
+	// will be sent.
+	blockEndpoints bool
 	// endpointsUpdateActive indicates that updateEndpoints is
 	// currently running. It's used to deduplicate concurrent endpoint
 	// update requests.
@@ -329,6 +333,13 @@ type Options struct {
 	// EndpointsFunc optionally provides a func to be called when
 	// endpoints change. The called func does not own the slice.
 	EndpointsFunc func([]tailcfg.Endpoint)
+
+	// BlockEndpoints is whether to avoid capturing, storing and sending
+	// endpoints gathered from local interfaces or STUN. Only DERP endpoints
+	// will be sent.
+	// This does not disable the UDP socket or portmapping attempts as this
+	// setting can be toggled at runtime.
+	BlockEndpoints bool
 
 	// DERPActiveFunc optionally provides a func to be called when
 	// a connection is made to a DERP server.
@@ -580,6 +591,11 @@ func (c *Conn) setEndpoints(endpoints []tailcfg.Endpoint) (changed bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.blockEndpoints {
+		anySTUN = false
+		endpoints = []tailcfg.Endpoint{}
+	}
+
 	if !anySTUN && c.derpMap == nil && !inTest() {
 		// Don't bother storing or reporting this yet. We
 		// don't have a DERP map or any STUN entries, so we're
@@ -824,6 +840,21 @@ func (c *Conn) GetEndpointChanges(peer *tailcfg.Node) ([]EndpointChange, error) 
 // DiscoPublicKey returns the discovery public key.
 func (c *Conn) DiscoPublicKey() key.DiscoPublic {
 	return c.discoPublic
+}
+
+// SetBlockEndpoints sets the blockEndpoints field. If changed, endpoints will
+// be updated to apply the new settings. Existing connections may continue to
+// use the old setting until they are reestablished. Disabling endpoints does
+// not affect the UDP socket or portmapper.
+func (c *Conn) SetBlockEndpoints(block bool) {
+	c.mu.Lock()
+	didChange := c.blockEndpoints != block
+	c.blockEndpoints = block
+	c.mu.Unlock()
+
+	if didChange {
+		go c.updateEndpoints("SetBlockEndpoints")
+	}
 }
 
 // determineEndpoints returns the machine's endpoint addresses. It
@@ -1648,6 +1679,9 @@ func (c *Conn) enqueueCallMeMaybe(derpAddr netip.AddrPort, de *endpoint) {
 	for _, ep := range c.lastEndpoints {
 		eps = append(eps, ep.Addr)
 	}
+	// NOTE: sending an empty call-me-maybe (e.g. when BlockEndpoints is true)
+	// is still valid and results in the other side forgetting all the endpoints
+	// it knows of ours.
 	go de.c.sendDiscoMessage(derpAddr, de.publicKey, epDisco.key, &disco.CallMeMaybe{MyNumber: eps}, discoLog)
 	if debugSendCallMeUnknownPeer() {
 		// Send a callMeMaybe packet to a non-existent peer

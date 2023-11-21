@@ -3000,3 +3000,54 @@ func TestDERPForceWebsockets(t *testing.T) {
 		t.Errorf("no websocket upgrade requests seen")
 	}
 }
+
+func TestBlockEndpoints(t *testing.T) {
+	logf, closeLogf := logger.LogfCloser(t.Logf)
+	defer closeLogf()
+
+	derpMap, cleanup := runDERPAndStun(t, t.Logf, localhostListener{}, netaddr.IPv4(127, 0, 0, 1))
+	defer cleanup()
+
+	m := &natlab.Machine{Name: "m1"}
+	ms := newMagicStackFunc(t, logger.WithPrefix(logf, "conn1: "), m, derpMap, nil)
+	defer ms.Close()
+
+	// Check that some endpoints exist. This should be the case as we should use
+	// interface addressess as endpoints instantly on startup, and we already
+	// have a DERP connection due to newMagicStackFunc.
+	ms.conn.mu.Lock()
+	haveEndpoint := false
+	for _, ep := range ms.conn.lastEndpoints {
+		if ep.Addr.Addr() == tailcfg.DerpMagicIPAddr {
+			t.Fatal("DERP IP in endpoints list?", ep.Addr)
+		}
+		haveEndpoint = true
+		break
+	}
+	ms.conn.mu.Unlock()
+	if !haveEndpoint {
+		t.Fatal("no endpoints found")
+	}
+
+	// Block endpoints, should result in an update.
+	ms.conn.SetBlockEndpoints(true)
+
+	// Wait for endpoints to finish updating.
+	ok := false
+parentLoop:
+	for i := 0; i < 50; i++ {
+		time.Sleep(100 * time.Millisecond)
+		ms.conn.mu.Lock()
+		for _, ep := range ms.conn.lastEndpoints {
+			t.Errorf("endpoint %v was not blocked", ep.Addr)
+			ms.conn.mu.Unlock()
+			continue parentLoop
+		}
+		ms.conn.mu.Unlock()
+		ok = true
+		break
+	}
+	if !ok {
+		t.Fatal("endpoints were not blocked after 50 attempts")
+	}
+}
