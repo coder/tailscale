@@ -3033,17 +3033,95 @@ func TestBlockEndpoints(t *testing.T) {
 	ms.conn.SetBlockEndpoints(true)
 
 	// Wait for endpoints to finish updating.
+	waitForNoEndpoints(t, ms.conn)
+}
+
+func TestBlockEndpointsDERPOK(t *testing.T) {
+	// This test is similar to TestBlockEndpoints, but it tests that we don't
+	// mess up DERP somehow.
+
+	mstun := &natlab.Machine{Name: "stun"}
+	m1 := &natlab.Machine{Name: "m1"}
+	m2 := &natlab.Machine{Name: "m2"}
+	inet := natlab.NewInternet()
+	sif := mstun.Attach("eth0", inet)
+	m1if := m1.Attach("eth0", inet)
+	m2if := m2.Attach("eth0", inet)
+
+	d := &devices{
+		m1:     m1,
+		m1IP:   m1if.V4(),
+		m2:     m2,
+		m2IP:   m2if.V4(),
+		stun:   mstun,
+		stunIP: sif.V4(),
+	}
+
+	logf, closeLogf := logger.LogfCloser(t.Logf)
+	defer closeLogf()
+
+	derpMap, cleanup := runDERPAndStun(t, t.Logf, localhostListener{}, netaddr.IPv4(127, 0, 0, 1))
+	defer cleanup()
+
+	ms1 := newMagicStack(t, logger.WithPrefix(logf, "conn1: "), d.m1, derpMap)
+	defer ms1.Close()
+	ms2 := newMagicStack(t, logger.WithPrefix(logf, "conn2: "), d.m2, derpMap)
+	defer ms2.Close()
+
+	cleanup = meshStacks(logf, nil, ms1, ms2)
+	defer cleanup()
+
+	m1IP := ms1.IP()
+	m2IP := ms2.IP()
+	logf("IPs: %s %s", m1IP, m2IP)
+
+	// SetBlockEndpoints is called later since it's incompatible with the test
+	// meshStacks implementations.
+	ms1.conn.SetBlockEndpoints(true)
+	ms2.conn.SetBlockEndpoints(true)
+	waitForNoEndpoints(t, ms1.conn)
+	waitForNoEndpoints(t, ms2.conn)
+
+	cleanup = newPinger(t, logf, ms1, ms2)
+	defer cleanup()
+
+	// Wait for both peers to know about each other.
+	for {
+		if s1 := ms1.Status(); len(s1.Peer) != 1 {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		if s2 := ms2.Status(); len(s2.Peer) != 1 {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		break
+	}
+
+	cleanup = newPinger(t, t.Logf, ms1, ms2)
+	defer cleanup()
+
+	if len(ms1.conn.activeDerp) == 0 {
+		t.Errorf("unexpected DERP empty got: %v want: >0", len(ms1.conn.activeDerp))
+	}
+	if len(ms2.conn.activeDerp) == 0 {
+		t.Errorf("unexpected DERP empty got: %v want: >0", len(ms2.conn.activeDerp))
+	}
+}
+
+func waitForNoEndpoints(t *testing.T, ms *Conn) {
+	t.Helper()
 	ok := false
 parentLoop:
 	for i := 0; i < 50; i++ {
 		time.Sleep(100 * time.Millisecond)
-		ms.conn.mu.Lock()
-		for _, ep := range ms.conn.lastEndpoints {
+		ms.mu.Lock()
+		for _, ep := range ms.lastEndpoints {
 			t.Errorf("endpoint %v was not blocked", ep.Addr)
-			ms.conn.mu.Unlock()
+			ms.mu.Unlock()
 			continue parentLoop
 		}
-		ms.conn.mu.Unlock()
+		ms.mu.Unlock()
 		ok = true
 		break
 	}

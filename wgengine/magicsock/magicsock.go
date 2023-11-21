@@ -848,12 +848,22 @@ func (c *Conn) DiscoPublicKey() key.DiscoPublic {
 // not affect the UDP socket or portmapper.
 func (c *Conn) SetBlockEndpoints(block bool) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	didChange := c.blockEndpoints != block
 	c.blockEndpoints = block
-	c.mu.Unlock()
+	if !didChange {
+		return
+	}
 
-	if didChange {
-		go c.updateEndpoints("SetBlockEndpoints")
+	const why = "SetBlockEndpoints"
+	if c.endpointsUpdateActive {
+		if c.wantEndpointsUpdate != why {
+			c.dlogf("[v1] magicsock: SetBlockEndpoints: endpoint update active, need another later")
+			c.wantEndpointsUpdate = why
+		}
+	} else {
+		c.endpointsUpdateActive = true
+		go c.updateEndpoints(why)
 	}
 }
 
