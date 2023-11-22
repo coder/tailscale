@@ -3112,14 +3112,13 @@ func TestBlockEndpointsDERPOK(t *testing.T) {
 func waitForNoEndpoints(t *testing.T, ms *Conn) {
 	t.Helper()
 	ok := false
-parentLoop:
 	for i := 0; i < 50; i++ {
 		time.Sleep(100 * time.Millisecond)
 		ms.mu.Lock()
-		for _, ep := range ms.lastEndpoints {
-			t.Errorf("endpoint %v was not blocked", ep.Addr)
+		if len(ms.lastEndpoints) != 0 {
+			t.Errorf("some endpoints were not blocked: %v", ms.lastEndpoints)
 			ms.mu.Unlock()
-			continue parentLoop
+			continue
 		}
 		ms.mu.Unlock()
 		ok = true

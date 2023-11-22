@@ -431,6 +431,7 @@ func NewConn(opts Options) (*Conn, error) {
 	c.logf = opts.logf()
 	c.epFunc = opts.endpointsFunc()
 	c.derpActiveFunc = opts.derpActiveFunc()
+	c.blockEndpoints = opts.BlockEndpoints
 	c.idleFunc = opts.IdleFunc
 	c.testOnlyPacketListener = opts.TestOnlyPacketListener
 	c.noteRecvActivity = opts.NoteRecvActivity
