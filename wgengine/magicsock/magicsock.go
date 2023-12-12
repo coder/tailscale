@@ -548,7 +548,7 @@ func (c *Conn) updateEndpoints(why string) {
 		c.muCond.Broadcast()
 	}()
 	c.dlogf("[v1] magicsock: starting endpoint update (%s)", why)
-	if c.noV4Send.Load() && c.derpMapHasSTUNNodes() && runtime.GOOS != "js" {
+	if c.noV4Send.Load() && c.shouldRebindOnFailedNetcheckV4Send() && runtime.GOOS != "js" {
 		c.mu.Lock()
 		closed := c.closed
 		c.mu.Unlock()
@@ -573,10 +573,10 @@ func (c *Conn) updateEndpoints(why string) {
 }
 
 // c.mu must NOT be held.
-func (c *Conn) derpMapHasSTUNNodes() bool {
+func (c *Conn) shouldRebindOnFailedNetcheckV4Send() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.derpMap != nil && c.derpMap.HasSTUN()
+	return c.derpMap != nil && c.derpMap.HasSTUN() && !c.blockEndpoints
 }
 
 // setEndpoints records the new endpoints, reporting whether they're changed.

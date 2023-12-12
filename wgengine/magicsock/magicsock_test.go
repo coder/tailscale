@@ -3127,4 +3127,5 @@ func waitForNoEndpoints(t *testing.T, ms *Conn) {
 	if !ok {
 		t.Fatal("endpoints were not blocked after 50 attempts")
 	}
+	t.Log("endpoints are blocked")
 }
