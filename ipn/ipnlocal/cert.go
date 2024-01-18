@@ -27,12 +27,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/tailscale/golang-x-crypto/acme"
-	"golang.org/x/exp/slices"
 	"tailscale.com/atomicfile"
 	"tailscale.com/envknob"
 	"tailscale.com/hostinfo"
@@ -41,6 +41,7 @@ import (
 	"tailscale.com/ipn/store"
 	"tailscale.com/ipn/store/mem"
 	"tailscale.com/types/logger"
+	"tailscale.com/util/testenv"
 	"tailscale.com/version"
 	"tailscale.com/version/distro"
 )
@@ -84,11 +85,9 @@ var acmeDebug = envknob.RegisterBool("TS_DEBUG_ACME")
 // ACME process. ACME process is used for new domain certs, existing expired
 // certs or existing certs that should get renewed due to upcoming expiry.
 //
-// syncRenewal changes renewal behavior for existing certs that are still valid
-// but need renewal. When syncRenewal is set, the method blocks until a new
-// cert is issued. When syncRenewal is not set, existing cert is returned right
-// away and renewal is kicked off in a background goroutine.
-func (b *LocalBackend) GetCertPEM(ctx context.Context, domain string, syncRenewal bool) (*TLSCertKeyPair, error) {
+// If a cert is expired, it will be renewed synchronously otherwise it will be
+// renewed asynchronously.
+func (b *LocalBackend) GetCertPEM(ctx context.Context, domain string) (*TLSCertKeyPair, error) {
 	if !validLookingCertDomain(domain) {
 		return nil, errors.New("invalid domain")
 	}
@@ -108,18 +107,16 @@ func (b *LocalBackend) GetCertPEM(ctx context.Context, domain string, syncRenewa
 	}
 
 	if pair, err := getCertPEMCached(cs, domain, now); err == nil {
-		shouldRenew, err := b.shouldStartDomainRenewal(cs, domain, now, pair)
-		if err != nil {
+		// If we got here, we have a valid unexpired cert.
+		// Check whether we should start an async renewal.
+		if shouldRenew, err := b.shouldStartDomainRenewal(cs, domain, now, pair); err != nil {
 			logf("error checking for certificate renewal: %v", err)
-		} else if !shouldRenew {
-			return pair, nil
-		}
-		if !syncRenewal {
+		} else if shouldRenew {
 			logf("starting async renewal")
 			// Start renewal in the background.
 			go b.getCertPEM(context.Background(), cs, logf, traceACME, domain, now)
 		}
-		// Synchronous renewal happens below.
+		return pair, nil
 	}
 
 	pair, err := b.getCertPEM(ctx, cs, logf, traceACME, domain, now)
@@ -130,6 +127,8 @@ func (b *LocalBackend) GetCertPEM(ctx context.Context, domain string, syncRenewa
 	return pair, nil
 }
 
+// shouldStartDomainRenewal reports whether the domain's cert should be renewed
+// based on the current time, the cert's expiry, and the ARI check.
 func (b *LocalBackend) shouldStartDomainRenewal(cs certStore, domain string, now time.Time, pair *TLSCertKeyPair) (bool, error) {
 	renewMu.Lock()
 	defer renewMu.Unlock()
@@ -238,6 +237,8 @@ type certStore interface {
 
 var errCertExpired = errors.New("cert expired")
 
+var testX509Roots *x509.CertPool // set non-nil by tests
+
 func (b *LocalBackend) getCertStore() (certStore, error) {
 	switch b.store.(type) {
 	case *store.FileStore:
@@ -254,7 +255,10 @@ func (b *LocalBackend) getCertStore() (certStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return certFileStore{dir: dir}, nil
+	if testX509Roots != nil && !testenv.InTest() {
+		panic("use of test hook outside of tests")
+	}
+	return certFileStore{dir: dir, testRoots: testX509Roots}, nil
 }
 
 // certFileStore implements certStore by storing the cert & key files in the named directory.
@@ -339,11 +343,11 @@ func (s certStateStore) Read(domain string, now time.Time) (*TLSCertKeyPair, err
 }
 
 func (s certStateStore) WriteCert(domain string, cert []byte) error {
-	return s.WriteState(ipn.StateKey(domain+".crt"), cert)
+	return ipn.WriteState(s.StateStore, ipn.StateKey(domain+".crt"), cert)
 }
 
 func (s certStateStore) WriteKey(domain string, key []byte) error {
-	return s.WriteState(ipn.StateKey(domain+".key"), key)
+	return ipn.WriteState(s.StateStore, ipn.StateKey(domain+".key"), key)
 }
 
 func (s certStateStore) ACMEKey() ([]byte, error) {
@@ -351,7 +355,7 @@ func (s certStateStore) ACMEKey() ([]byte, error) {
 }
 
 func (s certStateStore) WriteACMEKey(key []byte) error {
-	return s.WriteState(ipn.StateKey(acmePEMName), key)
+	return ipn.WriteState(s.StateStore, ipn.StateKey(acmePEMName), key)
 }
 
 // TLSCertKeyPair is a TLS public and private key, and whether they were obtained
@@ -365,8 +369,9 @@ type TLSCertKeyPair struct {
 func keyFile(dir, domain string) string  { return filepath.Join(dir, domain+".key") }
 func certFile(dir, domain string) string { return filepath.Join(dir, domain+".crt") }
 
-// getCertPEMCached returns a non-nil keyPair and true if a cached keypair for
-// domain exists on disk in dir that is valid at the provided now time.
+// getCertPEMCached returns a non-nil keyPair if a cached keypair for domain
+// exists on disk in dir that is valid at the provided now time.
+//
 // If the keypair is expired, it returns errCertExpired.
 // If the keypair doesn't exist, it returns ipn.ErrStateNotExist.
 func getCertPEMCached(cs certStore, domain string, now time.Time) (p *TLSCertKeyPair, err error) {
@@ -589,7 +594,7 @@ func acmeKey(cs certStore) (crypto.Signer, error) {
 			return nil, errors.New("acme/autocert: invalid account key found in cache")
 		}
 		return parsePrivateKey(priv.Bytes)
-	} else if err != nil && !errors.Is(err, ipn.ErrStateNotExist) {
+	} else if !errors.Is(err, ipn.ErrStateNotExist) {
 		return nil, err
 	}
 

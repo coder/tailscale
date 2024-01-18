@@ -5,13 +5,12 @@ package main
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"tailscale.com/net/stun"
+	"tailscale.com/tstest/deptest"
 )
 
 func TestProdAutocertHostPolicy(t *testing.T) {
@@ -36,38 +35,6 @@ func TestProdAutocertHostPolicy(t *testing.T) {
 			t.Errorf("f(%q) = %v; want %v", tt.in, got, tt.wantOK)
 		}
 	}
-}
-
-func BenchmarkServerSTUN(b *testing.B) {
-	b.ReportAllocs()
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		b.Fatal(err)
-	}
-	defer pc.Close()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go serverSTUNListener(ctx, pc.(*net.UDPConn))
-	addr := pc.LocalAddr().(*net.UDPAddr)
-
-	var resBuf [1500]byte
-	cc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	tx := stun.NewTxID()
-	req := stun.Request(tx)
-	for i := 0; i < b.N; i++ {
-		if _, err := cc.WriteToUDP(req, addr); err != nil {
-			b.Fatal(err)
-		}
-		_, _, err := cc.ReadFromUDP(resBuf[:])
-		if err != nil {
-			b.Fatal(err)
-		}
-	}
-
 }
 
 func TestNoContent(t *testing.T) {
@@ -127,4 +94,15 @@ func TestNoContent(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDeps(t *testing.T) {
+	deptest.DepChecker{
+		BadDeps: map[string]string{
+			"gvisor.dev/gvisor/pkg/buffer":       "https://github.com/tailscale/tailscale/issues/9756",
+			"gvisor.dev/gvisor/pkg/cpuid":        "https://github.com/tailscale/tailscale/issues/9756",
+			"gvisor.dev/gvisor/pkg/tcpip":        "https://github.com/tailscale/tailscale/issues/9756",
+			"gvisor.dev/gvisor/pkg/tcpip/header": "https://github.com/tailscale/tailscale/issues/9756",
+		},
+	}.Check(t)
 }

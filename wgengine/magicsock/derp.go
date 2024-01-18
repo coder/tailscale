@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/tailscale/wireguard-go/conn"
-	"tailscale.com/control/controlclient"
 	"tailscale.com/derp"
 	"tailscale.com/derp/derphttp"
 	"tailscale.com/health"
@@ -35,15 +34,14 @@ import (
 
 // useDerpRoute reports whether magicsock should enable the DERP
 // return path optimization (Issue 150).
-func useDerpRoute() bool {
+//
+// By default it's enabled, unless an environment variable
+// or control says to disable it.
+func (c *Conn) useDerpRoute() bool {
 	if b, ok := debugUseDerpRoute().Get(); ok {
 		return b
 	}
-	ob := controlclient.DERPRouteFlag()
-	if v, ok := ob.Get(); ok {
-		return v
-	}
-	return true // as of 1.21.x
+	return c.controlKnobs == nil || !c.controlKnobs.DisableDRPO.Load()
 }
 
 // derpRoute is a route entry for a public key, saying that a certain
@@ -143,7 +141,12 @@ func (c *Conn) setNearestDERP(derpNum int) (wantDERP bool) {
 	defer c.mu.Unlock()
 	if !c.wantDerpLocked() {
 		c.myDerp = 0
-		health.SetMagicSockDERPHome(0)
+		health.SetMagicSockDERPHome(0, c.homeless)
+		return false
+	}
+	if c.homeless {
+		c.myDerp = 0
+		health.SetMagicSockDERPHome(0, c.homeless)
 		return false
 	}
 	if derpNum == c.myDerp {
@@ -154,7 +157,7 @@ func (c *Conn) setNearestDERP(derpNum int) (wantDERP bool) {
 		metricDERPHomeChange.Add(1)
 	}
 	c.myDerp = derpNum
-	health.SetMagicSockDERPHome(derpNum)
+	health.SetMagicSockDERPHome(derpNum, c.homeless)
 
 	if c.privateKey.IsZero() {
 		// No private key yet, so DERP connections won't come up anyway.
@@ -295,7 +298,7 @@ func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) cha
 	// perhaps peer's home is Frankfurt, but they dialed our home DERP
 	// node in SF to reach us, so we can reply to them using our
 	// SF connection rather than dialing Frankfurt. (Issue 150)
-	if !peer.IsZero() && useDerpRoute() {
+	if !peer.IsZero() && c.useDerpRoute() {
 		if r, ok := c.derpRoute[peer]; ok {
 			if ad, ok := c.activeDerp[r.derpID]; ok && ad.c == r.dc {
 				c.setPeerLastDerpLocked(peer, r.derpID, regionID)
@@ -437,8 +440,8 @@ func (c *Conn) setPeerLastDerpLocked(peer key.NodePublic, regionID, homeID int) 
 	}
 }
 
-// derpReadResult is the type sent by runDerpClient to ReceiveIPv4
-// when a DERP packet is available.
+// derpReadResult is the type sent by Conn.runDerpReader to connBind.receiveDERP
+// when a derp.ReceivedPacket is available.
 //
 // Notably, it doesn't include the derp.ReceivedPacket because we
 // don't want to give the receiver access to the aliased []byte.  To
@@ -555,6 +558,17 @@ func (c *Conn) runDerpReader(ctx context.Context, derpFakeAddr netip.AddrPort, d
 					c.addDerpPeerRoute(res.src, regionID, dc)
 				}
 			}
+			select {
+			case <-ctx.Done():
+				return
+			case c.derpRecvCh <- res:
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-didCopy:
+				continue
+			}
 		case derp.PingMessage:
 			// Best effort reply to the ping.
 			pingData := [8]byte(m)
@@ -566,6 +580,7 @@ func (c *Conn) runDerpReader(ctx context.Context, derpFakeAddr netip.AddrPort, d
 			continue
 		case derp.HealthMessage:
 			health.SetDERPRegionHealth(regionID, m.Problem)
+			continue
 		case derp.PeerGoneMessage:
 			switch m.Reason {
 			case derp.PeerGoneReasonDisconnected:
@@ -580,21 +595,9 @@ func (c *Conn) runDerpReader(ctx context.Context, derpFakeAddr netip.AddrPort, d
 					regionID, key.NodePublic(m.Peer).ShortString(), m.Reason)
 			}
 			c.removeDerpPeerRoute(key.NodePublic(m.Peer), regionID, dc)
+			continue
 		default:
 			// Ignore.
-			continue
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case c.derpRecvCh <- res:
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-didCopy:
 			continue
 		}
 	}
@@ -681,7 +684,7 @@ func (c *Conn) processDERPReadResult(dm derpReadResult, b []byte) (n int, ep *en
 		return 0, nil
 	}
 
-	ep.noteRecvActivity()
+	ep.noteRecvActivity(ipp)
 	if stats := c.stats.Load(); stats != nil {
 		stats.UpdateRxPhysical(ep.nodeAddr, ipp, dm.n)
 	}
@@ -760,6 +763,19 @@ func (c *Conn) closeAllDerpLocked(why string) {
 		c.closeDerpLocked(i, why)
 	}
 	c.logActiveDerpLocked()
+}
+
+// DebugBreakDERPConns breaks all DERP connections for debug/testing reasons.
+func (c *Conn) DebugBreakDERPConns() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.activeDerp) == 0 {
+		c.logf("magicsock: DebugBreakDERPConns: no active DERP connections")
+		return nil
+	}
+	c.closeAllDerpLocked("debug-break-derp")
+	c.startDerpHomeConnectLocked()
+	return nil
 }
 
 // maybeCloseDERPsOnRebind, in response to a rebind, closes all

@@ -29,6 +29,31 @@ const (
 	Masq
 )
 
+type FWModeNotSupportedError struct {
+	Mode FirewallMode
+	Err  error
+}
+
+func (e FWModeNotSupportedError) Error() string {
+	return fmt.Sprintf("firewall mode %q not supported: %v", e.Mode, e.Err)
+}
+
+func (e FWModeNotSupportedError) Is(target error) bool {
+	_, ok := target.(FWModeNotSupportedError)
+	return ok
+}
+
+func (e FWModeNotSupportedError) Unwrap() error {
+	return e.Err
+}
+
+type FirewallMode string
+
+const (
+	FirewallModeIPTables FirewallMode = "iptables"
+	FirewallModeNfTables FirewallMode = "nftables"
+)
+
 // The following bits are added to packet marks for Tailscale use.
 //
 // We tried to pick bits sufficiently out of the way that it's

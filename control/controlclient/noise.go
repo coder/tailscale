@@ -23,6 +23,7 @@ import (
 	"tailscale.com/net/netmon"
 	"tailscale.com/net/tsdial"
 	"tailscale.com/tailcfg"
+	"tailscale.com/tstime"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 	"tailscale.com/util/mak"
@@ -176,6 +177,7 @@ type NoiseClient struct {
 
 	// mu only protects the following variables.
 	mu       sync.Mutex
+	closed   bool
 	last     *noiseConn // or nil
 	nextID   int
 	connPool map[int]*noiseConn // active connections not yet closed; see noiseConn.Close
@@ -372,6 +374,7 @@ func (nc *NoiseClient) connClosed(id int) {
 // It is a no-op and returns nil if the connection is already closed.
 func (nc *NoiseClient) Close() error {
 	nc.mu.Lock()
+	nc.closed = true
 	conns := nc.connPool
 	nc.connPool = nil
 	nc.mu.Unlock()
@@ -450,6 +453,7 @@ func (nc *NoiseClient) dial(ctx context.Context) (*noiseConn, error) {
 		DialPlan:        dialPlan,
 		Logf:            nc.logf,
 		NetMon:          nc.netMon,
+		Clock:           tstime.StdClock{},
 	}).Dial(ctx)
 	if err != nil {
 		return nil, err
@@ -469,6 +473,11 @@ func (nc *NoiseClient) dial(ctx context.Context) (*noiseConn, error) {
 	ncc.h2cc = h2cc
 
 	nc.mu.Lock()
+	if nc.closed {
+		nc.mu.Unlock()
+		ncc.Close() // Needs to be called without holding the lock.
+		return nil, errors.New("noise client closed")
+	}
 	defer nc.mu.Unlock()
 	mak.Set(&nc.connPool, ncc.id, ncc)
 	nc.last = ncc

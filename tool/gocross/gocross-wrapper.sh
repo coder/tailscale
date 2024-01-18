@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-if [[ "${CI:-}" == "true" ]]; then
+if [[ "${CI:-}" == "true" && "${NOBASHDEBUG:-}" != "true" ]]; then
     set -x
 fi
 
@@ -32,7 +32,10 @@ if [[ -d "$toolchain" ]]; then
     # A toolchain exists, but is it recent enough to compile gocross? If not,
     # wipe it out so that the next if block fetches a usable one.
     want_go_minor=$(grep -E '^go ' "go.mod" | cut -f2 -d'.')
-    have_go_minor=$(head -1 "$toolchain/VERSION" | cut -f2 -d'.')
+    have_go_minor=""
+    if [[ -f "$toolchain/VERSION" ]]; then
+        have_go_minor=$(head -1 "$toolchain/VERSION" | cut -f2 -d'.')
+    fi
     # Shortly before stable releases, we run release candidate
     # toolchains, which have a non-numeric suffix on the version
     # number. Remove the rc qualifier, we just care about the minor

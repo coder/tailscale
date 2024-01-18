@@ -8,12 +8,16 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
+
+	"tailscale.com/version"
 )
 
 func init() {
@@ -46,6 +50,17 @@ func localTCPPortAndTokenMacsys() (port int, token string, err error) {
 	if auth == "" {
 		return 0, "", errors.New("empty auth token in sameuserproof file")
 	}
+
+	// The above files exist forever after the first run of
+	// /Applications/Tailscale.app, so check we can connect to avoid returning a
+	// port nothing is listening on. Connect to "127.0.0.1" rather than
+	// "localhost" due to #7851.
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:"+portStr, time.Second)
+	if err != nil {
+		return 0, "", err
+	}
+	conn.Close()
+
 	return port, auth, nil
 }
 
@@ -59,7 +74,7 @@ func localTCPPortAndTokenDarwin() (port int, token string, err error) {
 
 	if dir := os.Getenv("TS_MACOS_CLI_SHARED_DIR"); dir != "" {
 		// First see if we're running as the non-AppStore "macsys" variant.
-		if strings.Contains(os.Getenv("HOME"), "/Containers/io.tailscale.ipn.macsys/") {
+		if version.IsMacSysExt() {
 			if port, token, err := localTCPPortAndTokenMacsys(); err == nil {
 				return port, token, nil
 			}

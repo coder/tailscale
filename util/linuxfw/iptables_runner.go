@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/coreos/go-iptables/iptables"
@@ -45,11 +46,11 @@ func checkIP6TablesExists() error {
 	return nil
 }
 
-// NewIPTablesRunner constructs a NetfilterRunner that programs iptables rules.
+// newIPTablesRunner constructs a NetfilterRunner that programs iptables rules.
 // If the underlying iptables library fails to initialize, that error is
 // returned. The runner probes for IPv6 support once at initialization time and
 // if not found, no IPv6 rules will be modified for the lifetime of the runner.
-func NewIPTablesRunner(logf logger.Logf) (*iptablesRunner, error) {
+func newIPTablesRunner(logf logger.Logf) (*iptablesRunner, error) {
 	ipt4, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
 	if err != nil {
 		return nil, err
@@ -79,12 +80,12 @@ func NewIPTablesRunner(logf logger.Logf) (*iptablesRunner, error) {
 	return &iptablesRunner{ipt4, ipt6, supportsV6, supportsV6NAT}, nil
 }
 
-// HasIPV6 returns true if the system supports IPv6.
+// HasIPV6 reports true if the system supports IPv6.
 func (i *iptablesRunner) HasIPV6() bool {
 	return i.v6Available
 }
 
-// HasIPV6NAT returns true if the system supports IPv6 NAT.
+// HasIPV6NAT reports true if the system supports IPv6 NAT.
 func (i *iptablesRunner) HasIPV6NAT() bool {
 	return i.v6NATAvailable
 }
@@ -236,7 +237,7 @@ func (i *iptablesRunner) AddBase(tunname string) error {
 	return nil
 }
 
-// addBase4 adds some basic IPv6 processing rules to be
+// addBase4 adds some basic IPv4 processing rules to be
 // supplemented by later calls to other helpers.
 func (i *iptablesRunner) addBase4(tunname string) error {
 	// Only allow CGNAT range traffic to come from tailscale0. There
@@ -250,6 +251,12 @@ func (i *iptablesRunner) addBase4(tunname string) error {
 		return fmt.Errorf("adding %v in v4/filter/ts-input: %w", args, err)
 	}
 	args = []string{"!", "-i", tunname, "-s", tsaddr.CGNATRange().String(), "-j", "DROP"}
+	if err := i.ipt4.Append("filter", "ts-input", args...); err != nil {
+		return fmt.Errorf("adding %v in v4/filter/ts-input: %w", args, err)
+	}
+
+	// Explicitly allow all other inbound traffic to the tun interface
+	args = []string{"-i", tunname, "-j", "ACCEPT"}
 	if err := i.ipt4.Append("filter", "ts-input", args...); err != nil {
 		return fmt.Errorf("adding %v in v4/filter/ts-input: %w", args, err)
 	}
@@ -285,13 +292,39 @@ func (i *iptablesRunner) addBase4(tunname string) error {
 	return nil
 }
 
-// addBase6 adds some basic IPv4 processing rules to be
+func (i *iptablesRunner) AddDNATRule(origDst, dst netip.Addr) error {
+	table := i.getIPTByAddr(dst)
+	return table.Insert("nat", "PREROUTING", 1, "--destination", origDst.String(), "-j", "DNAT", "--to-destination", dst.String())
+}
+
+func (i *iptablesRunner) AddSNATRuleForDst(src, dst netip.Addr) error {
+	table := i.getIPTByAddr(dst)
+	return table.Insert("nat", "POSTROUTING", 1, "--destination", dst.String(), "-j", "SNAT", "--to-source", src.String())
+}
+
+func (i *iptablesRunner) DNATNonTailscaleTraffic(tun string, dst netip.Addr) error {
+	table := i.getIPTByAddr(dst)
+	return table.Insert("nat", "PREROUTING", 1, "!", "-i", tun, "-j", "DNAT", "--to-destination", dst.String())
+}
+
+func (i *iptablesRunner) ClampMSSToPMTU(tun string, addr netip.Addr) error {
+	table := i.getIPTByAddr(addr)
+	return table.Append("mangle", "FORWARD", "-o", tun, "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j", "TCPMSS", "--clamp-mss-to-pmtu")
+}
+
+// addBase6 adds some basic IPv6 processing rules to be
 // supplemented by later calls to other helpers.
 func (i *iptablesRunner) addBase6(tunname string) error {
 	// TODO: only allow traffic from Tailscale's ULA range to come
 	// from tailscale0.
 
-	args := []string{"-i", tunname, "-j", "MARK", "--set-mark", TailscaleSubnetRouteMark + "/" + TailscaleFwmarkMask}
+	// Explicitly allow all other inbound traffic to the tun interface
+	args := []string{"-i", tunname, "-j", "ACCEPT"}
+	if err := i.ipt6.Append("filter", "ts-input", args...); err != nil {
+		return fmt.Errorf("adding %v in v6/filter/ts-input: %w", args, err)
+	}
+
+	args = []string{"-i", tunname, "-j", "MARK", "--set-mark", TailscaleSubnetRouteMark + "/" + TailscaleFwmarkMask}
 	if err := i.ipt6.Append("filter", "ts-forward", args...); err != nil {
 		return fmt.Errorf("adding %v in v6/filter/ts-forward: %w", args, err)
 	}
@@ -402,6 +435,63 @@ func (i *iptablesRunner) DelSNATRule() error {
 			return fmt.Errorf("deleting %v in nat/ts-postrouting: %w", args, err)
 		}
 	}
+	return nil
+}
+
+// buildMagicsockPortRule generates the string slice containing the arguments
+// to describe a rule accepting traffic on a particular port to iptables. It is
+// separated out here to avoid repetition in AddMagicsockPortRule and
+// RemoveMagicsockPortRule, since it is important that the same rule is passed
+// to Append() and Delete().
+func buildMagicsockPortRule(port uint16) []string {
+	return []string{"-p", "udp", "--dport", strconv.FormatUint(uint64(port), 10), "-j", "ACCEPT"}
+}
+
+// AddMagicsockPortRule adds a rule to iptables to allow incoming traffic on
+// the specified UDP port, so magicsock can accept incoming connections.
+// network must be either "udp4" or "udp6" - this determines whether the rule
+// is added for IPv4 or IPv6.
+func (i *iptablesRunner) AddMagicsockPortRule(port uint16, network string) error {
+	var ipt iptablesInterface
+	switch network {
+	case "udp4":
+		ipt = i.ipt4
+	case "udp6":
+		ipt = i.ipt6
+	default:
+		return fmt.Errorf("unsupported network %s", network)
+	}
+
+	args := buildMagicsockPortRule(port)
+
+	if err := ipt.Append("filter", "ts-input", args...); err != nil {
+		return fmt.Errorf("adding %v in filter/ts-input: %w", args, err)
+	}
+
+	return nil
+}
+
+// DelMagicsockPortRule removes a rule added by AddMagicsockPortRule to accept
+// incoming traffic on a particular UDP port.
+// network must be either "udp4" or "udp6" - this determines whether the rule
+// is removed for IPv4 or IPv6.
+func (i *iptablesRunner) DelMagicsockPortRule(port uint16, network string) error {
+	var ipt iptablesInterface
+	switch network {
+	case "udp4":
+		ipt = i.ipt4
+	case "udp6":
+		ipt = i.ipt6
+	default:
+		return fmt.Errorf("unsupported network %s", network)
+	}
+
+	args := buildMagicsockPortRule(port)
+
+	if err := ipt.Delete("filter", "ts-input", args...); err != nil {
+		return fmt.Errorf("removing %v in filter/ts-input: %w", args, err)
+	}
+
 	return nil
 }
 

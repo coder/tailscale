@@ -51,7 +51,7 @@ func (t *Table[T]) tableForAddr(addr netip.Addr) *strideTable[T] {
 
 // Get does a route lookup for addr and returns the associated value, or nil if
 // no route matched.
-func (t *Table[T]) Get(addr netip.Addr) *T {
+func (t *Table[T]) Get(addr netip.Addr) (ret T, ok bool) {
 	t.init()
 
 	// Ideally we would use addr.AsSlice here, but AsSlice is just
@@ -84,13 +84,13 @@ func (t *Table[T]) Get(addr netip.Addr) *T {
 	const maxDepth = 16
 	type prefixAndRoute struct {
 		prefix netip.Prefix
-		route  *T
+		route  T
 	}
 	strideMatch := make([]prefixAndRoute, 0, maxDepth)
 findLeaf:
 	for {
-		rt, child := st.getValAndChild(bs[i])
-		if rt != nil {
+		rt, rtOK, child := st.getValAndChild(bs[i])
+		if rtOK {
 			// This strideTable contains a route that may be relevant to our
 			// search, remember it.
 			strideMatch = append(strideMatch, prefixAndRoute{st.prefix, rt})
@@ -115,7 +115,7 @@ findLeaf:
 	// the correct most-specific route.
 	for i := len(strideMatch) - 1; i >= 0; i-- {
 		if m := strideMatch[i]; m.prefix.Contains(addr) {
-			return m.route
+			return m.route, true
 		}
 	}
 
@@ -123,16 +123,13 @@ findLeaf:
 	// immediately), or we went on a wild goose chase down a compressed path for
 	// the wrong prefix, and also found no usable routes on the way back up to
 	// the root. This is a miss.
-	return nil
+	return ret, false
 }
 
 // Insert adds pfx to the table, with value val.
 // If pfx is already present in the table, its value is set to val.
-func (t *Table[T]) Insert(pfx netip.Prefix, val *T) {
+func (t *Table[T]) Insert(pfx netip.Prefix, val T) {
 	t.init()
-	if val == nil {
-		panic("Table.Insert called with nil value")
-	}
 
 	// The standard library doesn't enforce normalized prefixes (where
 	// the non-prefix bits are all zero). These algorithms require
@@ -364,7 +361,7 @@ func (t *Table[T]) Delete(pfx netip.Prefix) {
 	// write to strideTables[N] and strideIndexes[N-1].
 	strideIdx := 0
 	strideTables := [16]*strideTable[T]{st}
-	strideIndexes := [15]int{}
+	strideIndexes := [15]uint8{}
 
 	// Similar to Insert, navigate down the tree of strideTables,
 	// looking for the one that houses this prefix. This part is
@@ -384,7 +381,7 @@ func (t *Table[T]) Delete(pfx netip.Prefix) {
 		if debugDelete {
 			fmt.Printf("delete: loop byteIdx=%d numBits=%d st.prefix=%s\n", byteIdx, numBits, st.prefix)
 		}
-		child, idx := st.getChild(bs[byteIdx])
+		child := st.getChild(bs[byteIdx])
 		if child == nil {
 			// Prefix can't exist in the table, because one of the
 			// necessary strideTables doesn't exist.
@@ -393,7 +390,7 @@ func (t *Table[T]) Delete(pfx netip.Prefix) {
 			}
 			return
 		}
-		strideIndexes[strideIdx] = idx
+		strideIndexes[strideIdx] = bs[byteIdx]
 		strideTables[strideIdx+1] = child
 		strideIdx++
 
@@ -423,7 +420,7 @@ func (t *Table[T]) Delete(pfx netip.Prefix) {
 	if debugDelete {
 		fmt.Printf("delete: delete from st.prefix=%s addr=%d/%d\n", st.prefix, bs[byteIdx], numBits)
 	}
-	if st.delete(bs[byteIdx], numBits) == nil {
+	if routeExisted := st.delete(bs[byteIdx], numBits); !routeExisted {
 		// We're in the right strideTable, but pfx wasn't in
 		// it. Refcounts haven't changed, so we can skip cleanup.
 		if debugDelete {
@@ -475,7 +472,7 @@ func (t *Table[T]) Delete(pfx netip.Prefix) {
 			if debugDelete {
 				fmt.Printf("delete: compact parent.prefix=%s st.prefix=%s child.prefix=%s\n", parent.prefix, cur.prefix, child.prefix)
 			}
-			strideTables[strideIdx-1].setChildByIndex(strideIndexes[strideIdx-1], child)
+			strideTables[strideIdx-1].setChild(strideIndexes[strideIdx-1], child)
 			return
 		default:
 			// This table has two or more children, so it's acting as a "fork in
@@ -505,12 +502,12 @@ func strideSummary[T any](w io.Writer, st *strideTable[T], indent int) {
 	fmt.Fprintf(w, "%s: %d routes, %d children\n", st.prefix, st.routeRefs, st.childRefs)
 	indent += 4
 	st.treeDebugStringRec(w, 1, indent)
-	for i := firstHostIndex; i <= lastHostIndex; i++ {
-		if child := st.entries[i].child; child != nil {
-			addr, len := inversePrefixIndex(i)
-			fmt.Fprintf(w, "%s%d/%d (%02x/%d): ", strings.Repeat(" ", indent), addr, len, addr, len)
-			strideSummary(w, child, indent)
+	for addr, child := range st.children {
+		if child == nil {
+			continue
 		}
+		fmt.Fprintf(w, "%s%d/8 (%02x/8): ", strings.Repeat(" ", indent), addr, addr)
+		strideSummary(w, child, indent)
 	}
 }
 
