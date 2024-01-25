@@ -166,6 +166,252 @@ const (
   <disabledForTestURLBase>http://10.0.0.1:2828</disabledForTestURLBase>
 </root>
 `
+
+	// Huawei, https://github.com/tailscale/tailscale/issues/10911
+	huaweiRootDescXML = `<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+  <specVersion>
+    <major>1</major>
+    <minor>0</minor>
+  </specVersion>
+  <device>
+    <deviceType>urn:dslforum-org:device:InternetGatewayDevice:1</deviceType>
+    <friendlyName>HG531 V1</friendlyName>
+    <manufacturer>Huawei Technologies Co., Ltd.</manufacturer>
+    <manufacturerURL>http://www.huawei.com</manufacturerURL>
+    <modelDescription>Huawei Home Gateway</modelDescription>
+    <modelName>HG531 V1</modelName>
+    <modelNumber>Huawei Model</modelNumber>
+    <modelURL>http://www.huawei.com</modelURL>
+    <serialNumber>G6J8W15326003974</serialNumber>
+    <UDN>uuid:00e0fc37-2626-2828-2600-587f668bdd9a</UDN>
+    <UPC>000000000001</UPC>
+    <serviceList>
+      <service>
+        <serviceType>urn:www-huawei-com:service:DeviceConfig:1</serviceType>
+        <serviceId>urn:www-huawei-com:serviceId:DeviceConfig1</serviceId>
+        <SCPDURL>/desc/DevCfg.xml</SCPDURL>
+        <controlURL>/ctrlt/DeviceConfig_1</controlURL>
+        <eventSubURL>/evt/DeviceConfig_1</eventSubURL>
+      </service>
+      <service>
+        <serviceType>urn:dslforum-org:service:LANConfigSecurity:1</serviceType>
+        <serviceId>urn:dslforum-org:serviceId:LANConfigSecurity1</serviceId>
+        <SCPDURL>/desc/LANSec.xml</SCPDURL>
+        <controlURL>/ctrlt/LANConfigSecurity_1</controlURL>
+        <eventSubURL>/evt/LANConfigSecurity_1</eventSubURL>
+      </service>
+      <service>
+        <serviceType>urn:dslforum-org:service:Layer3Forwarding:1</serviceType>
+        <serviceId>urn:dslforum-org:serviceId:Layer3Forwarding1</serviceId>
+        <SCPDURL>/desc/L3Fwd.xml</SCPDURL>
+        <controlURL>/ctrlt/Layer3Forwarding_1</controlURL>
+        <eventSubURL>/evt/Layer3Forwarding_1</eventSubURL>
+      </service>
+    </serviceList>
+    <deviceList>
+      <device>
+        <deviceType>urn:dslforum-org:device:WANDevice:1</deviceType>
+        <friendlyName>WANDevice</friendlyName>
+        <manufacturer>Huawei Technologies Co., Ltd.</manufacturer>
+        <manufacturerURL>http://www.huawei.com</manufacturerURL>
+        <modelDescription>Huawei Home Gateway</modelDescription>
+        <modelName>HG531 V1</modelName>
+        <modelNumber>Huawei Model</modelNumber>
+        <modelURL>http://www.huawei.com</modelURL>
+        <serialNumber>G6J8W15326003974</serialNumber>
+        <UDN>uuid:00e0fc37-2626-2828-2601-587f668bdd9a</UDN>
+        <UPC>000000000001</UPC>
+        <serviceList>
+          <service>
+            <serviceType>urn:dslforum-org:service:WANDSLInterfaceConfig:1</serviceType>
+            <serviceId>urn:dslforum-org:serviceId:WANDSLInterfaceConfig1</serviceId>
+            <SCPDURL>/desc/WanDslIfCfg.xml</SCPDURL>
+            <controlURL>/ctrlt/WANDSLInterfaceConfig_1</controlURL>
+            <eventSubURL>/evt/WANDSLInterfaceConfig_1</eventSubURL>
+          </service>
+          <service>
+            <serviceType>urn:dslforum-org:service:WANCommonInterfaceConfig:1</serviceType>
+            <serviceId>urn:dslforum-org:serviceId:WANCommonInterfaceConfig1</serviceId>
+            <SCPDURL>/desc/WanCommonIfc1.xml</SCPDURL>
+            <controlURL>/ctrlt/WANCommonInterfaceConfig_1</controlURL>
+            <eventSubURL>/evt/WANCommonInterfaceConfig_1</eventSubURL>
+          </service>
+        </serviceList>
+        <deviceList>
+          <device>
+            <deviceType>urn:dslforum-org:device:WANConnectionDevice:1</deviceType>
+            <friendlyName>WANConnectionDevice</friendlyName>
+            <manufacturer>Huawei Technologies Co., Ltd.</manufacturer>
+            <manufacturerURL>http://www.huawei.com</manufacturerURL>
+            <modelDescription>Huawei Home Gateway</modelDescription>
+            <modelName>HG531 V1</modelName>
+            <modelNumber>Huawei Model</modelNumber>
+            <modelURL>http://www.huawei.com</modelURL>
+            <serialNumber>G6J8W15326003974</serialNumber>
+            <UDN>uuid:00e0fc37-2626-2828-2603-587f668bdd9a</UDN>
+            <UPC>000000000001</UPC>
+            <serviceList>
+              <service>
+                <serviceType>urn:dslforum-org:service:WANPPPConnection:1</serviceType>
+                <serviceId>urn:dslforum-org:serviceId:WANPPPConnection1</serviceId>
+                <SCPDURL>/desc/WanPppConn.xml</SCPDURL>
+                <controlURL>/ctrlt/WANPPPConnection_1</controlURL>
+                <eventSubURL>/evt/WANPPPConnection_1</eventSubURL>
+              </service>
+              <service>
+                <serviceType>urn:dslforum-org:service:WANEthernetConnectionManagement:1</serviceType>
+                <serviceId>urn:dslforum-org:serviceId:WANEthernetConnectionManagement1</serviceId>
+                <SCPDURL>/desc/WanEthConnMgt.xml</SCPDURL>
+                <controlURL>/ctrlt/WANEthernetConnectionManagement_1</controlURL>
+                <eventSubURL>/evt/WANEthernetConnectionManagement_1</eventSubURL>
+              </service>
+              <service>
+                <serviceType>urn:dslforum-org:service:WANDSLLinkConfig:1</serviceType>
+                <serviceId>urn:dslforum-org:serviceId:WANDSLLinkConfig1</serviceId>
+                <SCPDURL>/desc/WanDslLink.xml</SCPDURL>
+                <controlURL>/ctrlt/WANDSLLinkConfig_1</controlURL>
+                <eventSubURL>/evt/WANDSLLinkConfig_1</eventSubURL>
+              </service>
+            </serviceList>
+          </device>
+        </deviceList>
+      </device>
+      <device>
+        <deviceType>urn:dslforum-org:device:LANDevice:1</deviceType>
+        <friendlyName>LANDevice</friendlyName>
+        <manufacturer>Huawei Technologies Co., Ltd.</manufacturer>
+        <manufacturerURL>http://www.huawei.com</manufacturerURL>
+        <modelDescription>Huawei Home Gateway</modelDescription>
+        <modelName>HG531 V1</modelName>
+        <modelNumber>Huawei Model</modelNumber>
+        <modelURL>http://www.huawei.com</modelURL>
+        <serialNumber>G6J8W15326003974</serialNumber>
+        <UDN>uuid:00e0fc37-2626-2828-2602-587f668bdd9a</UDN>
+        <UPC>000000000001</UPC>
+        <serviceList>
+          <service>
+            <serviceType>urn:dslforum-org:service:WLANConfiguration:1</serviceType>
+            <serviceId>urn:dslforum-org:serviceId:WLANConfiguration4</serviceId>
+            <SCPDURL>/desc/WLANCfg.xml</SCPDURL>
+            <controlURL>/ctrlt/WLANConfiguration_4</controlURL>
+            <eventSubURL>/evt/WLANConfiguration_4</eventSubURL>
+          </service>
+          <service>
+            <serviceType>urn:dslforum-org:service:WLANConfiguration:1</serviceType>
+            <serviceId>urn:dslforum-org:serviceId:WLANConfiguration3</serviceId>
+            <SCPDURL>/desc/WLANCfg.xml</SCPDURL>
+            <controlURL>/ctrlt/WLANConfiguration_3</controlURL>
+            <eventSubURL>/evt/WLANConfiguration_3</eventSubURL>
+          </service>
+          <service>
+            <serviceType>urn:dslforum-org:service:WLANConfiguration:1</serviceType>
+            <serviceId>urn:dslforum-org:serviceId:WLANConfiguration2</serviceId>
+            <SCPDURL>/desc/WLANCfg.xml</SCPDURL>
+            <controlURL>/ctrlt/WLANConfiguration_2</controlURL>
+            <eventSubURL>/evt/WLANConfiguration_2</eventSubURL>
+          </service>
+          <service>
+            <serviceType>urn:dslforum-org:service:WLANConfiguration:1</serviceType>
+            <serviceId>urn:dslforum-org:serviceId:WLANConfiguration1</serviceId>
+            <SCPDURL>/desc/WLANCfg.xml</SCPDURL>
+            <controlURL>/ctrlt/WLANConfiguration_1</controlURL>
+            <eventSubURL>/evt/WLANConfiguration_1</eventSubURL>
+          </service>
+          <service>
+            <serviceType>urn:dslforum-org:service:LANHostConfigManagement:1</serviceType>
+            <serviceId>urn:dslforum-org:serviceId:LANHostConfigManagement1</serviceId>
+            <SCPDURL>/desc/LanHostCfgMgmt.xml</SCPDURL>
+            <controlURL>/ctrlt/LANHostConfigManagement_1</controlURL>
+            <eventSubURL>/evt/LANHostConfigManagement_1</eventSubURL>
+          </service>
+        </serviceList>
+      </device>
+    </deviceList>
+    <presentationURL>http://127.0.0.1</presentationURL>
+  </device>
+</root>
+`
+
+	noSupportedServicesRootDesc = `<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+  <specVersion>
+    <major>1</major>
+    <minor>0</minor>
+  </specVersion>
+  <device>
+    <deviceType>urn:dslforum-org:device:InternetGatewayDevice:1</deviceType>
+    <friendlyName>Fake Router</friendlyName>
+    <manufacturer>Tailscale, Inc</manufacturer>
+    <manufacturerURL>http://www.tailscale.com</manufacturerURL>
+    <modelDescription>Fake Router</modelDescription>
+    <modelName>Test Model</modelName>
+    <modelNumber>v1</modelNumber>
+    <modelURL>http://www.tailscale.com</modelURL>
+    <serialNumber>123456789</serialNumber>
+    <UDN>uuid:11111111-2222-3333-4444-555555555555</UDN>
+    <UPC>000000000001</UPC>
+    <serviceList>
+      <service>
+        <serviceType>urn:schemas-microsoft-com:service:OSInfo:1</serviceType>
+        <serviceId>urn:microsoft-com:serviceId:OSInfo1</serviceId>
+        <SCPDURL>/osinfo.xml</SCPDURL>
+        <controlURL>/upnp/control/aaaaaaaaaa/osinfo</controlURL>
+        <eventSubURL>/upnp/event/aaaaaaaaaa/osinfo</eventSubURL>
+      </service>
+    </serviceList>
+    <deviceList>
+      <device>
+	<deviceType>urn:schemas-upnp-org:device:WANDevice:1</deviceType>
+        <friendlyName>WANDevice</friendlyName>
+        <manufacturer>Tailscale, Inc</manufacturer>
+	<manufacturerURL>http://www.tailscale.com</manufacturerURL>
+	<modelDescription>Tailscale Test Router</modelDescription>
+	<modelName>Test Model</modelName>
+	<modelNumber>v1</modelNumber>
+	<modelURL>http://www.tailscale.com</modelURL>
+	<serialNumber>123456789</serialNumber>
+	<UDN>uuid:11111111-2222-3333-4444-555555555555</UDN>
+        <UPC>000000000001</UPC>
+        <serviceList>
+          <service>
+            <serviceType>urn:schemas-upnp-org:service:WANCommonInterfaceConfig:1</serviceType>
+            <serviceId>urn:upnp-org:serviceId:WANCommonIFC1</serviceId>
+            <controlURL>/ctl/bbbbbbbb</controlURL>
+            <eventSubURL>/evt/bbbbbbbb</eventSubURL>
+            <SCPDURL>/WANCfg.xml</SCPDURL>
+          </service>
+        </serviceList>
+        <deviceList>
+          <device>
+	    <deviceType>urn:schemas-upnp-org:device:WANConnectionDevice:1</deviceType>
+            <friendlyName>WANConnectionDevice</friendlyName>
+	    <manufacturer>Tailscale, Inc</manufacturer>
+	    <manufacturerURL>http://www.tailscale.com</manufacturerURL>
+	    <modelDescription>Tailscale Test Router</modelDescription>
+	    <modelName>Test Model</modelName>
+	    <modelNumber>v1</modelNumber>
+	    <modelURL>http://www.tailscale.com</modelURL>
+	    <serialNumber>123456789</serialNumber>
+	    <UDN>uuid:11111111-2222-3333-4444-555555555555</UDN>
+            <UPC>000000000001</UPC>
+            <serviceList>
+              <service>
+		<serviceType>urn:tailscale:service:SomethingElse:1</serviceType>
+		<serviceId>urn:upnp-org:serviceId:TailscaleSomethingElse</serviceId>
+                <SCPDURL>/desc/SomethingElse.xml</SCPDURL>
+                <controlURL>/ctrlt/SomethingElse_1</controlURL>
+                <eventSubURL>/evt/SomethingElse_1</eventSubURL>
+              </service>
+            </serviceList>
+          </device>
+        </deviceList>
+      </device>
+    </deviceList>
+    <presentationURL>http://127.0.0.1</presentationURL>
+  </device>
+</root>
+`
 )
 
 func TestParseUPnPDiscoResponse(t *testing.T) {
@@ -233,6 +479,19 @@ func TestGetUPnPClient(t *testing.T) {
 			"*internetgateway2.WANIPConnection1",
 			"saw UPnP type WANIPConnection1 at http://127.0.0.1:NNN/rootDesc.xml; MikroTik Router (MikroTik), method=none\n",
 		},
+		{
+			"huawei",
+			huaweiRootDescXML,
+			"*portmapper.legacyWANPPPConnection1",
+			"saw UPnP type *portmapper.legacyWANPPPConnection1 at http://127.0.0.1:NNN/rootDesc.xml; HG531 V1 (Huawei Technologies Co., Ltd.), method=single\n",
+		},
+		{
+			"not_supported",
+			noSupportedServicesRootDesc,
+			"<nil>",
+			"",
+		},
+
 		// TODO(bradfitz): find a PPP one in the wild
 	}
 	for _, tt := range tests {
@@ -372,6 +631,99 @@ func TestGetUPnPPortMapping(t *testing.T) {
 			}
 			t.Logf("external IP: %v", ext)
 		}
+	}
+}
+
+// TestGetUPnPPortMapping_NoValidServices tests that getUPnPPortMapping doesn't
+// crash when a valid UPnP response with no supported services is discovered
+// and parsed.
+//
+// See https://github.com/tailscale/tailscale/issues/10911
+func TestGetUPnPPortMapping_NoValidServices(t *testing.T) {
+	igd, err := NewTestIGD(t.Logf, TestIGDOptions{UPnP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer igd.Close()
+
+	igd.SetUPnPHandler(&upnpServer{
+		t:    t,
+		Desc: noSupportedServicesRootDesc,
+	})
+
+	c := newTestClient(t, igd)
+	defer c.Close()
+	c.debug.VerboseLogs = true
+
+	ctx := context.Background()
+	res, err := c.Probe(ctx)
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if !res.UPnP {
+		t.Errorf("didn't detect UPnP")
+	}
+
+	gw, myIP, ok := c.gatewayAndSelfIP()
+	if !ok {
+		t.Fatalf("could not get gateway and self IP")
+	}
+
+	// This shouldn't panic
+	_, ok = c.getUPnPPortMapping(ctx, gw, netip.AddrPortFrom(myIP, 12345), 0)
+	if ok {
+		t.Fatal("did not expect to get UPnP port mapping")
+	}
+}
+
+// Tests the legacy behaviour with the pre-UPnP standard portmapping service.
+func TestGetUPnPPortMapping_Legacy(t *testing.T) {
+	igd, err := NewTestIGD(t.Logf, TestIGDOptions{UPnP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer igd.Close()
+
+	// This is a very basic fake UPnP server handler.
+	handlers := map[string]any{
+		"AddPortMapping":       testLegacyAddPortMappingResponse,
+		"GetExternalIPAddress": testLegacyGetExternalIPAddressResponse,
+		"GetStatusInfo":        testLegacyGetStatusInfoResponse,
+		"DeletePortMapping":    "", // Do nothing for test
+	}
+
+	igd.SetUPnPHandler(&upnpServer{
+		t:    t,
+		Desc: huaweiRootDescXML,
+		Control: map[string]map[string]any{
+			"/ctrlt/WANPPPConnection_1": handlers,
+		},
+	})
+
+	c := newTestClient(t, igd)
+	defer c.Close()
+	c.debug.VerboseLogs = true
+
+	ctx := context.Background()
+	res, err := c.Probe(ctx)
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if !res.UPnP {
+		t.Errorf("didn't detect UPnP")
+	}
+
+	gw, myIP, ok := c.gatewayAndSelfIP()
+	if !ok {
+		t.Fatalf("could not get gateway and self IP")
+	}
+
+	ext, ok := c.getUPnPPortMapping(ctx, gw, netip.AddrPortFrom(myIP, 12345), 0)
+	if !ok {
+		t.Fatal("could not get UPnP port mapping")
+	}
+	if got, want := ext.Addr(), netip.MustParseAddr("123.123.123.123"); got != want {
+		t.Errorf("bad external address; got %v want %v", got, want)
 	}
 }
 
@@ -672,6 +1024,36 @@ const testGetStatusInfoResponse = `<?xml version="1.0"?>
       <NewConnectionStatus>Connected</NewConnectionStatus>
       <NewLastConnectionError>ERROR_NONE</NewLastConnectionError>
       <NewUptime>9999</NewUptime>
+    </u:GetStatusInfoResponse>
+  </s:Body>
+</s:Envelope>
+`
+
+const testLegacyAddPortMappingResponse = `<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:AddPortMappingResponse xmlns:u="urn:dslforum-org:service:WANPPPConnection:1"/>
+  </s:Body>
+</s:Envelope>
+`
+
+const testLegacyGetExternalIPAddressResponse = `<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:GetExternalIPAddressResponse xmlns:u="urn:dslforum-org:service:WANPPPConnection:1">
+      <NewExternalIPAddress>123.123.123.123</NewExternalIPAddress>
+    </u:GetExternalIPAddressResponse>
+  </s:Body>
+</s:Envelope>
+`
+
+const testLegacyGetStatusInfoResponse = `<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:GetStatusInfoResponse xmlns:u="urn:dslforum-org:service:WANPPPConnection:1">
+      <NewConnectionStatus>Connected</NewConnectionStatus>
+      <NewLastConnectionError>ERROR_NONE</NewLastConnectionError>
+      <NewUpTime>9999</NewUpTime>
     </u:GetStatusInfoResponse>
   </s:Body>
 </s:Envelope>
