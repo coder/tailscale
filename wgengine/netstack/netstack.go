@@ -153,6 +153,27 @@ const nicID = 1
 // one day making the MTU more dynamic.
 const maxUDPPacketSize = 1500
 
+const (
+	megabytes = 1024 * 1024
+	// recvBufSize is the size in bytes for TCP receive buffers.  6MiB is the usual maximum in
+	// Linux, but here we set it as the default, because unlike Linux, gVisor does not dynamically
+	// resize the buffer based on utilization.  The channel that connects gVisor to Wireguard is 512
+	// packets and Wireguard encrypt and decrypt buffers are 1024 packets each, so we could queue
+	// 2.5k packets (over 2MiB), even before counting packets in flight on the network.  The TCP
+	// window is set to half the recv buffer, or 3 MiB in this case.  Since TCP will only send this
+	// much un-ACK'd data, this corresponds to max throughput of 3MiB per RTT (for example, 10 ms
+	// RTT is 300 MiB/s or 2.4 Gbit/s).
+	recvBufSize = 6 * megabytes
+	// sendBufSize is the size in bytes for the TCP send buffers.  4MiB is the usual maximum in
+	// Linux.  The send buffer is used for both unsent and un-ACK'd data, so it is important that
+	// it is greater than half of the recvBufSize so that there is still room for unsent data from
+	// the application.
+	sendBufSize = 4 * megabytes
+	// CUBIC congestion control is the default in Windows, Linux, and MacOS, and generally achieves
+	// better throughput on large, long networks.
+	congestionControlCubic = "cubic"
+)
+
 // Create creates and populates a new Impl.
 func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magicsock.Conn, dialer *tsdial.Dialer, dns *dns.Manager) (*Impl, error) {
 	if mc == nil {
@@ -174,13 +195,41 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
 	})
-	// Issue: https://github.com/coder/coder/issues/7388
-	//
-	/*sackEnabledOpt := tcpip.TCPSACKEnabled(true) // TCP SACK is disabled by default
+
+	sackEnabledOpt := tcpip.TCPSACKEnabled(true) // TCP SACK is disabled by default
 	tcpipErr := ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &sackEnabledOpt)
 	if tcpipErr != nil {
 		return nil, fmt.Errorf("could not enable TCP SACK: %v", tcpipErr)
-	}*/
+	}
+	soRecv := tcpip.TCPReceiveBufferSizeRangeOption{
+		Min:     recvBufSize,
+		Default: recvBufSize,
+		Max:     recvBufSize,
+	}
+	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &soRecv)
+	if tcpipErr != nil {
+		return nil, fmt.Errorf("could not set recv buf size: %v", tcpipErr)
+	}
+	soSend := tcpip.TCPSendBufferSizeRangeOption{
+		Min:     sendBufSize,
+		Default: sendBufSize,
+		Max:     sendBufSize,
+	}
+	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &soSend)
+	if tcpipErr != nil {
+		return nil, fmt.Errorf("could not set send buf size: %v", tcpipErr)
+	}
+	rack := tcpip.TCPRecovery(0) // Disable RACK
+	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &rack)
+	if tcpipErr != nil {
+		return nil, fmt.Errorf("could not disable RACK: %v", tcpipErr)
+	}
+	cc := tcpip.CongestionControlOption(congestionControlCubic)
+	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &cc)
+	if tcpipErr != nil {
+		return nil, fmt.Errorf("could not set congestion control: %v", tcpipErr)
+	}
+
 	linkEP := &protectedLinkEndpoint{Endpoint: channel.New(512, tstun.DefaultMTU(), "")}
 	if tcpipProblem := ipstack.CreateNIC(nicID, linkEP); tcpipProblem != nil {
 		return nil, fmt.Errorf("could not create netstack NIC: %v", tcpipProblem)
@@ -256,10 +305,8 @@ func (ns *Impl) Start(lb *ipnlocal.LocalBackend) error {
 		ns.lb = lb
 	}
 	ns.e.AddNetworkMapCallback(ns.updateIPs)
-	// size = 0 means use default buffer size
-	const tcpReceiveBufferSize = 0
 	const maxInFlightConnectionAttempts = 1024
-	tcpFwd := tcp.NewForwarder(ns.ipstack, tcpReceiveBufferSize, maxInFlightConnectionAttempts, ns.acceptTCP)
+	tcpFwd := tcp.NewForwarder(ns.ipstack, recvBufSize, maxInFlightConnectionAttempts, ns.acceptTCP)
 	udpFwd := udp.NewForwarder(ns.ipstack, ns.acceptUDP)
 	ns.ipstack.SetTransportProtocolHandler(tcp.ProtocolNumber, ns.wrapProtoHandler(tcpFwd.HandlePacket))
 	ns.ipstack.SetTransportProtocolHandler(udp.ProtocolNumber, ns.wrapProtoHandler(udpFwd.HandlePacket))
