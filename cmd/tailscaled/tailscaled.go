@@ -1,7 +1,7 @@
 // Copyright (c) Tailscale Inc & AUTHORS
 // SPDX-License-Identifier: BSD-3-Clause
 
-//go:build go1.19
+//go:build go1.21
 
 // The tailscaled program is the Tailscale client daemon. It's configured
 // and controlled via the tailscale CLI program.
@@ -13,6 +13,7 @@ package main // import "tailscale.com/cmd/tailscaled"
 import (
 	"context"
 	"errors"
+	"expvar"
 	"flag"
 	"fmt"
 	"log"
@@ -29,9 +30,11 @@ import (
 	"syscall"
 	"time"
 
+	"tailscale.com/client/tailscale"
 	"tailscale.com/cmd/tailscaled/childproc"
 	"tailscale.com/control/controlclient"
 	"tailscale.com/envknob"
+	"tailscale.com/ipn/conffile"
 	"tailscale.com/ipn/ipnlocal"
 	"tailscale.com/ipn/ipnserver"
 	"tailscale.com/ipn/store"
@@ -48,8 +51,8 @@ import (
 	"tailscale.com/net/tstun"
 	"tailscale.com/paths"
 	"tailscale.com/safesocket"
-	"tailscale.com/smallzstd"
 	"tailscale.com/syncs"
+	"tailscale.com/tailfs/tailfsimpl"
 	"tailscale.com/tsd"
 	"tailscale.com/tsweb/varz"
 	"tailscale.com/types/flagtype"
@@ -76,26 +79,14 @@ func defaultTunName() string {
 		// "utun" is recognized by wireguard-go/tun/tun_darwin.go
 		// as a magic value that uses/creates any free number.
 		return "utun"
+	case "plan9":
+		return "userspace-networking"
 	case "linux":
 		switch distro.Get() {
 		case distro.Synology:
 			// Try TUN, but fall back to userspace networking if needed.
 			// See https://github.com/tailscale/tailscale-synology/issues/35
 			return "tailscale0,userspace-networking"
-		case distro.Gokrazy:
-			// Gokrazy doesn't yet work in tun mode because the whole
-			// Gokrazy thing is no C code, and Tailscale currently
-			// depends on the iptables binary for Linux's
-			// wgengine/router.
-			// But on Gokrazy there's no legacy iptables, so we could use netlink
-			// to program nft-iptables directly. It just isn't done yet;
-			// see https://github.com/tailscale/tailscale/issues/391
-			//
-			// But Gokrazy does have the tun module built-in, so users
-			// can still run --tun=tailscale0 if they wish, if they
-			// arrange for iptables to be present or run in "tailscale
-			// up --netfilter-mode=off" mode, perhaps. Untested.
-			return "userspace-networking"
 		}
 
 	}
@@ -126,6 +117,7 @@ var args struct {
 	tunname string
 
 	cleanup        bool
+	confFile       string
 	debug          string
 	port           uint16
 	statepath      string
@@ -144,11 +136,16 @@ var (
 	createBIRDClient      func(string) (wgengine.BIRDClient, error) // non-nil on some platforms
 )
 
+// Note - we use function pointers for subcommands so that subcommands like
+// installSystemDaemon and uninstallSystemDaemon can be assigned platform-
+// specific variants.
+
 var subCommands = map[string]*func([]string) error{
 	"install-system-daemon":   &installSystemDaemon,
 	"uninstall-system-daemon": &uninstallSystemDaemon,
 	"debug":                   &debugModeFunc,
 	"be-child":                &beChildFunc,
+	"serve-tailfs":            &serveTailFSFunc,
 }
 
 var beCLI func() // non-nil if CLI is linked in
@@ -171,6 +168,7 @@ func main() {
 	flag.StringVar(&args.birdSocketPath, "bird-socket", "", "path of the bird unix socket")
 	flag.BoolVar(&printVersion, "version", false, "print version information and exit")
 	flag.BoolVar(&args.disableLogs, "no-logs-no-support", false, "disable log uploads; this also disables any technical support")
+	flag.StringVar(&args.confFile, "config", "", "path to config file")
 
 	if len(os.Args) > 0 && filepath.Base(os.Args[0]) == "tailscale" && beCLI != nil {
 		beCLI()
@@ -180,7 +178,7 @@ func main() {
 	if len(os.Args) > 1 {
 		sub := os.Args[1]
 		if fp, ok := subCommands[sub]; ok {
-			if *fp == nil {
+			if fp == nil {
 				log.SetFlags(0)
 				log.Fatalf("%s not available on %v", sub, runtime.GOOS)
 			}
@@ -198,6 +196,10 @@ func main() {
 		if runtime.GOOS != "windows" || (flag.Arg(0) != "/subproc" && flag.Arg(0) != "/firewall") {
 			log.Fatalf("tailscaled does not take non-flag arguments: %q", flag.Args())
 		}
+	}
+
+	if fd, ok := envknob.LookupInt("TS_PARENT_DEATH_FD"); ok && fd > 2 {
+		go dieOnPipeReadErrorOfFD(fd)
 	}
 
 	if printVersion {
@@ -329,18 +331,32 @@ func ipnServerOpts() (o serverOptions) {
 var logPol *logpolicy.Policy
 var debugMux *http.ServeMux
 
-func run() error {
+func run() (err error) {
 	var logf logger.Logf = log.Printf
 
 	sys := new(tsd.System)
 
-	netMon, err := netmon.New(func(format string, args ...any) {
-		logf(format, args...)
-	})
-	if err != nil {
-		return fmt.Errorf("netmon.New: %w", err)
+	// Parse config, if specified, to fail early if it's invalid.
+	var conf *conffile.Config
+	if args.confFile != "" {
+		conf, err = conffile.Load(args.confFile)
+		if err != nil {
+			return fmt.Errorf("error reading config file: %w", err)
+		}
+		sys.InitialConfig = conf
 	}
-	sys.Set(netMon)
+
+	var netMon *netmon.Monitor
+	isWinSvc := isWindowsService()
+	if !isWinSvc {
+		netMon, err = netmon.New(func(format string, args ...any) {
+			logf(format, args...)
+		})
+		if err != nil {
+			return fmt.Errorf("netmon.New: %w", err)
+		}
+		sys.Set(netMon)
+	}
 
 	pol := logpolicy.New(logtail.CollectionNode, netMon, nil /* use log.Printf */)
 	pol.SetVerbosityLevel(args.verbose)
@@ -356,7 +372,7 @@ func run() error {
 		log.Printf("Error reading environment config: %v", err)
 	}
 
-	if isWindowsService() {
+	if isWinSvc {
 		// Run the IPN server from the Windows service manager.
 		log.Printf("Running service...")
 		if err := runWindowsService(pol); err != nil {
@@ -391,8 +407,12 @@ func run() error {
 		debugMux = newDebugMux()
 	}
 
+	sys.Set(tailfsimpl.NewFileSystemForRemote(logf))
+
 	return startIPNServer(context.Background(), logf, pol.PublicID, sys)
 }
+
+var sigPipe os.Signal // set by sigpipe.go
 
 func startIPNServer(ctx context.Context, logf logger.Logf, logID logid.PublicID, sys *tsd.System) error {
 	ln, err := safesocket.Listen(args.socketpath)
@@ -409,14 +429,29 @@ func startIPNServer(ctx context.Context, logf logger.Logf, logID logid.PublicID,
 	// SIGPIPE sometimes gets generated when CLIs disconnect from
 	// tailscaled. The default action is to terminate the process, we
 	// want to keep running.
-	signal.Ignore(syscall.SIGPIPE)
+	if sigPipe != nil {
+		signal.Ignore(sigPipe)
+	}
+	wgEngineCreated := make(chan struct{})
 	go func() {
-		select {
-		case s := <-interrupt:
-			logf("tailscaled got signal %v; shutting down", s)
-			cancel()
-		case <-ctx.Done():
-			// continue
+		var wgEngineClosed <-chan struct{}
+		wgEngineCreated := wgEngineCreated // local shadow
+		for {
+			select {
+			case s := <-interrupt:
+				logf("tailscaled got signal %v; shutting down", s)
+				cancel()
+				return
+			case <-wgEngineClosed:
+				logf("wgengine has been closed; shutting down")
+				cancel()
+				return
+			case <-wgEngineCreated:
+				wgEngineClosed = sys.Engine.Get().Done()
+				wgEngineCreated = nil
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 
@@ -442,6 +477,7 @@ func startIPNServer(ctx context.Context, logf logger.Logf, logID logid.PublicID,
 		if err == nil {
 			logf("got LocalBackend in %v", time.Since(t0).Round(time.Millisecond))
 			srv.SetLocalBackend(lb)
+			close(wgEngineCreated)
 			return
 		}
 		lbErr.Store(err) // before the following cancel
@@ -487,6 +523,7 @@ func getLocalBackend(ctx context.Context, logf logger.Logf, logID logid.PublicID
 	if err != nil {
 		return nil, fmt.Errorf("newNetstack: %w", err)
 	}
+	sys.Set(ns)
 	ns.ProcessLocalIPs = onlyNetstack
 	ns.ProcessSubnets = onlyNetstack || handleSubnetsInNetstack()
 
@@ -497,7 +534,13 @@ func getLocalBackend(ctx context.Context, logf logger.Logf, logID logid.PublicID
 			return ok
 		}
 		dialer.NetstackDialTCP = func(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
-			return ns.DialContextTCP(ctx, dst)
+			// Note: don't just return ns.DialContextTCP or we'll
+			// return an interface containing a nil pointer.
+			tcpConn, err := ns.DialContextTCP(ctx, dst)
+			if err != nil {
+				return nil, err
+			}
+			return tcpConn, nil
 		}
 	}
 	if socksListener != nil || httpProxyListener != nil {
@@ -530,6 +573,10 @@ func getLocalBackend(ctx context.Context, logf logger.Logf, logID logid.PublicID
 	}
 	sys.Set(store)
 
+	if w, ok := sys.Tun.GetOK(); ok {
+		w.Start()
+	}
+
 	lb, err := ipnlocal.NewLocalBackend(logf, logID, sys, opts.LoginFlags)
 	if err != nil {
 		return nil, fmt.Errorf("ipnlocal.NewLocalBackend: %w", err)
@@ -541,8 +588,9 @@ func getLocalBackend(ctx context.Context, logf logger.Logf, logID logid.PublicID
 	if root := lb.TailscaleVarRoot(); root != "" {
 		dnsfallback.SetCachePath(filepath.Join(root, "derpmap.cached.json"), logf)
 	}
-	lb.SetDecompressor(func() (controlclient.Decompressor, error) {
-		return smallzstd.NewDecoder(nil)
+	lb.ConfigureWebClient(&tailscale.LocalClient{
+		Socket:        args.socketpath,
+		UseSocketOnly: args.socketpath != paths.DefaultTailscaledSocket(),
 	})
 	configureTaildrop(logf, lb)
 	if err := ns.Start(lb); err != nil {
@@ -597,10 +645,12 @@ var tstunNew = tstun.New
 
 func tryEngine(logf logger.Logf, sys *tsd.System, name string) (onlyNetstack bool, err error) {
 	conf := wgengine.Config{
-		ListenPort:   args.port,
-		NetMon:       sys.NetMon.Get(),
-		Dialer:       sys.Dialer.Get(),
-		SetSubsystem: sys.Set,
+		ListenPort:     args.port,
+		NetMon:         sys.NetMon.Get(),
+		Dialer:         sys.Dialer.Get(),
+		SetSubsystem:   sys.Set,
+		ControlKnobs:   sys.ControlKnobs(),
+		TailFSForLocal: tailfsimpl.NewFileSystemForLocal(logf),
 	}
 
 	onlyNetstack = name == "userspace-networking"
@@ -703,7 +753,24 @@ func runDebugServer(mux *http.ServeMux, addr string) {
 }
 
 func newNetstack(logf logger.Logf, sys *tsd.System) (*netstack.Impl, error) {
-	return netstack.Create(logf, sys.Tun.Get(), sys.Engine.Get(), sys.MagicSock.Get(), sys.Dialer.Get(), sys.DNSManager.Get())
+	tfs, _ := sys.TailFSForLocal.GetOK()
+	ret, err := netstack.Create(logf,
+		sys.Tun.Get(),
+		sys.Engine.Get(),
+		sys.MagicSock.Get(),
+		sys.Dialer.Get(),
+		sys.DNSManager.Get(),
+		sys.ProxyMapper(),
+		tfs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	// Only register debug info if we have a debug mux
+	if debugMux != nil {
+		expvar.Publish("netstack", ret.ExpVar())
+	}
+	return ret, nil
 }
 
 // mustStartProxyListeners creates listeners for local SOCKS and HTTP
@@ -762,4 +829,44 @@ func beChild(args []string) error {
 		return fmt.Errorf("unknown be-child mode %q", typ)
 	}
 	return f(args[1:])
+}
+
+var serveTailFSFunc = serveTailFS
+
+// serveTailFS serves one or more tailfs on localhost using the WebDAV
+// protocol. On UNIX and MacOS tailscaled environment, tailfs spawns child
+// tailscaled processes in serve-tailfs mode in order to access the fliesystem
+// as specific (usually unprivileged) users.
+//
+// serveTailFS prints the address on which it's listening to stdout so that the
+// parent process knows where to connect to.
+func serveTailFS(args []string) error {
+	if len(args) == 0 {
+		return errors.New("missing shares")
+	}
+	if len(args)%2 != 0 {
+		return errors.New("need <sharename> <path> pairs")
+	}
+	s, err := tailfsimpl.NewFileServer()
+	if err != nil {
+		return fmt.Errorf("unable to start tailfs FileServer: %v", err)
+	}
+	shares := make(map[string]string)
+	for i := 0; i < len(args); i += 2 {
+		shares[args[i]] = args[i+1]
+	}
+	s.SetShares(shares)
+	fmt.Printf("%v\n", s.Addr())
+	return s.Serve()
+}
+
+// dieOnPipeReadErrorOfFD reads from the pipe named by fd and exit the process
+// when the pipe becomes readable. We use this in tests as a somewhat more
+// portable mechanism for the Linux PR_SET_PDEATHSIG, which we wish existed on
+// macOS. This helps us clean up straggler tailscaled processes when the parent
+// test driver dies unexpectedly.
+func dieOnPipeReadErrorOfFD(fd int) {
+	f := os.NewFile(uintptr(fd), "TS_PARENT_DEATH_FD")
+	f.Read(make([]byte, 1))
+	os.Exit(1)
 }

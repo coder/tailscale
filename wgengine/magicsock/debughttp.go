@@ -101,11 +101,10 @@ func (c *Conn) ServeHTTPDebug(w http.ResponseWriter, r *http.Request) {
 		}
 		sort.Slice(ent, func(i, j int) bool { return ent[i].pub.Less(ent[j].pub) })
 
-		peers := map[key.NodePublic]*tailcfg.Node{}
-		if c.netMap != nil {
-			for _, p := range c.netMap.Peers {
-				peers[p.Key] = p
-			}
+		peers := map[key.NodePublic]tailcfg.NodeView{}
+		for i := range c.peers.Len() {
+			p := c.peers.At(i)
+			peers[p.Key()] = p
 		}
 
 		for _, e := range ent {
@@ -124,11 +123,11 @@ func (c *Conn) ServeHTTPDebug(w http.ResponseWriter, r *http.Request) {
 }
 
 func printEndpointHTML(w io.Writer, ep *endpoint) {
-	lastRecv := ep.lastRecv.LoadAtomic()
+	lastRecv := ep.lastRecvWG.LoadAtomic()
 
 	ep.mu.Lock()
 	defer ep.mu.Unlock()
-	if ep.lastSend == 0 && lastRecv == 0 {
+	if ep.lastSendExt == 0 && lastRecv == 0 {
 		return // no activity ever
 	}
 
@@ -143,7 +142,7 @@ func printEndpointHTML(w io.Writer, ep *endpoint) {
 
 	fmt.Fprintf(w, "<p>Best: <b>%+v</b>, %v ago (for %v)</p>\n", ep.bestAddr, fmtMono(ep.bestAddrAt), ep.trustBestAddrUntil.Sub(mnow).Round(time.Millisecond))
 	fmt.Fprintf(w, "<p>heartbeating: %v</p>\n", ep.heartBeatTimer != nil)
-	fmt.Fprintf(w, "<p>lastSend: %v ago</p>\n", fmtMono(ep.lastSend))
+	fmt.Fprintf(w, "<p>lastSend: %v ago</p>\n", fmtMono(ep.lastSendExt))
 	fmt.Fprintf(w, "<p>lastFullPing: %v ago</p>\n", fmtMono(ep.lastFullPing))
 
 	eps := make([]netip.AddrPort, 0, len(ep.endpointState))
@@ -187,15 +186,15 @@ func printEndpointHTML(w io.Writer, ep *endpoint) {
 
 }
 
-func peerDebugName(p *tailcfg.Node) string {
-	if p == nil {
+func peerDebugName(p tailcfg.NodeView) string {
+	if !p.Valid() {
 		return ""
 	}
-	n := p.Name
+	n := p.Name()
 	if base, _, ok := strings.Cut(n, "."); ok {
 		return base
 	}
-	return p.Hostinfo.Hostname()
+	return p.Hostinfo().Hostname()
 }
 
 func ipPortLess(a, b netip.AddrPort) bool {

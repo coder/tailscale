@@ -5,6 +5,7 @@
 package main // import "tailscale.com/cmd/derper"
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -17,23 +18,24 @@ import (
 	"math"
 	"net"
 	"net/http"
-	"net/netip"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
-	"go4.org/mem"
 	"golang.org/x/time/rate"
 	"tailscale.com/atomicfile"
 	"tailscale.com/derp"
 	"tailscale.com/derp/derphttp"
 	"tailscale.com/metrics"
-	"tailscale.com/net/stun"
+	"tailscale.com/net/ktimeout"
+	"tailscale.com/net/stunserver"
 	"tailscale.com/tsweb"
 	"tailscale.com/types/key"
-	"tailscale.com/util/cmpx"
+	"tailscale.com/types/logger"
 )
 
 var (
@@ -48,36 +50,29 @@ var (
 	runSTUN    = flag.Bool("stun", true, "whether to run a STUN server. It will bind to the same IP (if any) as the --addr flag value.")
 	runDERP    = flag.Bool("derp", true, "whether to run a DERP server. The only reason to set this false is if you're decommissioning a server but want to keep its bootstrap DNS functionality still running.")
 
-	meshPSKFile    = flag.String("mesh-psk-file", defaultMeshPSKFile(), "if non-empty, path to file containing the mesh pre-shared key file. It should contain some hex string; whitespace is trimmed.")
-	meshWith       = flag.String("mesh-with", "", "optional comma-separated list of hostnames to mesh with; the server's own hostname can be in the list")
-	bootstrapDNS   = flag.String("bootstrap-dns-names", "", "optional comma-separated list of hostnames to make available at /bootstrap-dns")
-	unpublishedDNS = flag.String("unpublished-bootstrap-dns-names", "", "optional comma-separated list of hostnames to make available at /bootstrap-dns and not publish in the list")
-	verifyClients  = flag.Bool("verify-clients", false, "verify clients to this DERP server through a local tailscaled instance.")
+	meshPSKFile     = flag.String("mesh-psk-file", defaultMeshPSKFile(), "if non-empty, path to file containing the mesh pre-shared key file. It should contain some hex string; whitespace is trimmed.")
+	meshWith        = flag.String("mesh-with", "", "optional comma-separated list of hostnames to mesh with; the server's own hostname can be in the list")
+	bootstrapDNS    = flag.String("bootstrap-dns-names", "", "optional comma-separated list of hostnames to make available at /bootstrap-dns")
+	unpublishedDNS  = flag.String("unpublished-bootstrap-dns-names", "", "optional comma-separated list of hostnames to make available at /bootstrap-dns and not publish in the list")
+	verifyClients   = flag.Bool("verify-clients", false, "verify clients to this DERP server through a local tailscaled instance.")
+	verifyClientURL = flag.String("verify-client-url", "", "if non-empty, an admission controller URL for permitting client connections; see tailcfg.DERPAdmitClientRequest")
+	verifyFailOpen  = flag.Bool("verify-client-url-fail-open", true, "whether we fail open if --verify-client-url is unreachable")
 
 	acceptConnLimit = flag.Float64("accept-connection-limit", math.Inf(+1), "rate limit for accepting new connection")
 	acceptConnBurst = flag.Int("accept-connection-burst", math.MaxInt, "burst limit for accepting new connection")
+
+	// tcpKeepAlive is intentionally long, to reduce battery cost. There is an L7 keepalive on a higher frequency schedule.
+	tcpKeepAlive = flag.Duration("tcp-keepalive-time", 10*time.Minute, "TCP keepalive time")
+	// tcpUserTimeout is intentionally short, so that hung connections are cleaned up promptly. DERPs should be nearby users.
+	tcpUserTimeout = flag.Duration("tcp-user-timeout", 15*time.Second, "TCP user timeout")
 )
 
 var (
-	stats             = new(metrics.Set)
-	stunDisposition   = &metrics.LabelMap{Label: "disposition"}
-	stunAddrFamily    = &metrics.LabelMap{Label: "family"}
 	tlsRequestVersion = &metrics.LabelMap{Label: "version"}
 	tlsActiveVersion  = &metrics.LabelMap{Label: "version"}
-
-	stunReadError  = stunDisposition.Get("read_error")
-	stunNotSTUN    = stunDisposition.Get("not_stun")
-	stunWriteError = stunDisposition.Get("write_error")
-	stunSuccess    = stunDisposition.Get("success")
-
-	stunIPv4 = stunAddrFamily.Get("ipv4")
-	stunIPv6 = stunAddrFamily.Get("ipv6")
 )
 
 func init() {
-	stats.Set("counter_requests", stunDisposition)
-	stats.Set("counter_addrfamily", stunAddrFamily)
-	expvar.Publish("stun", stats)
 	expvar.Publish("derper_tls_request_version", tlsRequestVersion)
 	expvar.Publish("gauge_derper_tls_active_version", tlsActiveVersion)
 }
@@ -135,6 +130,9 @@ func writeNewConfig() config {
 func main() {
 	flag.Parse()
 
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
 	if *dev {
 		*addr = ":3340" // above the keys DERP
 		log.Printf("Running in dev mode.")
@@ -146,12 +144,19 @@ func main() {
 		log.Fatalf("invalid server address: %v", err)
 	}
 
+	if *runSTUN {
+		ss := stunserver.New(ctx)
+		go ss.ListenAndServe(net.JoinHostPort(listenHost, fmt.Sprint(*stunPort)))
+	}
+
 	cfg := loadConfig()
 
 	serveTLS := tsweb.IsProd443(*addr) || *certMode == "manual"
 
 	s := derp.NewServer(cfg.PrivateKey, log.Printf)
 	s.SetVerifyClient(*verifyClients)
+	s.SetVerifyClientURL(*verifyClientURL)
+	s.SetVerifyClientURLFailOpen(*verifyFailOpen)
 
 	if *meshPSKFile != "" {
 		b, err := os.ReadFile(*meshPSKFile)
@@ -221,11 +226,16 @@ func main() {
 	}))
 	debug.Handle("traffic", "Traffic check", http.HandlerFunc(s.ServeDebugTraffic))
 
-	if *runSTUN {
-		go serveSTUN(listenHost, *stunPort)
+	// Longer lived DERP connections send an application layer keepalive. Note
+	// if the keepalive is hit, the user timeout will take precedence over the
+	// keepalive counter, so the probe if unanswered will take effect promptly,
+	// this is less tolerant of high loss, but high loss is unexpected.
+	lc := net.ListenConfig{
+		Control:   ktimeout.UserTimeout(*tcpUserTimeout),
+		KeepAlive: *tcpKeepAlive,
 	}
 
-	quietLogger := log.New(logFilter{}, "", 0)
+	quietLogger := log.New(logger.HTTPServerLogFilter{Inner: log.Printf}, "", 0)
 	httpsrv := &http.Server{
 		Addr:     *addr,
 		Handler:  mux,
@@ -241,6 +251,10 @@ func main() {
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
+	go func() {
+		<-ctx.Done()
+		httpsrv.Shutdown(ctx)
+	}()
 
 	if serveTLS {
 		log.Printf("derper: serving on %s with TLS", *addr)
@@ -297,7 +311,12 @@ func main() {
 					// duration exceeds server's WriteTimeout".
 					WriteTimeout: 5 * time.Minute,
 				}
-				err := port80srv.ListenAndServe()
+				ln, err := lc.Listen(context.Background(), "tcp", port80srv.Addr)
+				if err != nil {
+					log.Fatal(err)
+				}
+				defer ln.Close()
+				err = port80srv.Serve(ln)
 				if err != nil {
 					if err != http.ErrServerClosed {
 						log.Fatal(err)
@@ -305,10 +324,15 @@ func main() {
 				}
 			}()
 		}
-		err = rateLimitedListenAndServeTLS(httpsrv)
+		err = rateLimitedListenAndServeTLS(httpsrv, &lc)
 	} else {
 		log.Printf("derper: serving on %s", *addr)
-		err = httpsrv.ListenAndServe()
+		var ln net.Listener
+		ln, err = lc.Listen(context.Background(), "tcp", httpsrv.Addr)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = httpsrv.Serve(ln)
 	}
 	if err != nil && err != http.ErrServerClosed {
 		log.Fatalf("derper: %v", err)
@@ -351,59 +375,6 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func serveSTUN(host string, port int) {
-	pc, err := net.ListenPacket("udp", net.JoinHostPort(host, fmt.Sprint(port)))
-	if err != nil {
-		log.Fatalf("failed to open STUN listener: %v", err)
-	}
-	log.Printf("running STUN server on %v", pc.LocalAddr())
-	serverSTUNListener(context.Background(), pc.(*net.UDPConn))
-}
-
-func serverSTUNListener(ctx context.Context, pc *net.UDPConn) {
-	var buf [64 << 10]byte
-	var (
-		n   int
-		ua  *net.UDPAddr
-		err error
-	)
-	for {
-		n, ua, err = pc.ReadFromUDP(buf[:])
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			log.Printf("STUN ReadFrom: %v", err)
-			time.Sleep(time.Second)
-			stunReadError.Add(1)
-			continue
-		}
-		pkt := buf[:n]
-		if !stun.Is(pkt) {
-			stunNotSTUN.Add(1)
-			continue
-		}
-		txid, err := stun.ParseBindingRequest(pkt)
-		if err != nil {
-			stunNotSTUN.Add(1)
-			continue
-		}
-		if ua.IP.To4() != nil {
-			stunIPv4.Add(1)
-		} else {
-			stunIPv6.Add(1)
-		}
-		addr, _ := netip.AddrFromSlice(ua.IP)
-		res := stun.Response(txid, netip.AddrPortFrom(addr, uint16(ua.Port)))
-		_, err = pc.WriteTo(res, ua)
-		if err != nil {
-			stunWriteError.Add(1)
-		} else {
-			stunSuccess.Add(1)
-		}
-	}
-}
-
 var validProdHostname = regexp.MustCompile(`^derp([^.]*)\.tailscale\.com\.?$`)
 
 func prodAutocertHostPolicy(_ context.Context, host string) error {
@@ -426,8 +397,8 @@ func defaultMeshPSKFile() string {
 	return ""
 }
 
-func rateLimitedListenAndServeTLS(srv *http.Server) error {
-	ln, err := net.Listen("tcp", cmpx.Or(srv.Addr, ":https"))
+func rateLimitedListenAndServeTLS(srv *http.Server, lc *net.ListenConfig) error {
+	ln, err := lc.Listen(context.Background(), "tcp", cmp.Or(srv.Addr, ":https"))
 	if err != nil {
 		return err
 	}
@@ -480,23 +451,4 @@ func (l *rateLimitedListener) Accept() (net.Conn, error) {
 	}
 	l.numAccepts.Add(1)
 	return cn, nil
-}
-
-// logFilter is used to filter out useless error logs that are logged to
-// the net/http.Server.ErrorLog logger.
-type logFilter struct{}
-
-func (logFilter) Write(p []byte) (int, error) {
-	b := mem.B(p)
-	if mem.HasSuffix(b, mem.S(": EOF\n")) ||
-		mem.HasSuffix(b, mem.S(": i/o timeout\n")) ||
-		mem.HasSuffix(b, mem.S(": read: connection reset by peer\n")) ||
-		mem.HasSuffix(b, mem.S(": remote error: tls: bad certificate\n")) ||
-		mem.HasSuffix(b, mem.S(": tls: first record does not look like a TLS handshake\n")) {
-		// Skip this log message, but say that we processed it
-		return len(p), nil
-	}
-
-	log.Printf("%s", p)
-	return len(p), nil
 }

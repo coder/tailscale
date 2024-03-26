@@ -22,15 +22,37 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"unicode"
 )
 
-// Compare returns an integer comparing two strings as version
-// numbers. The result will be 0 if v1==v2, -1 if v1 < v2, and +1 if
-// v1 > v2.
-func Compare(v1, v2 string) int {
-	notNumber := func(r rune) bool { return !unicode.IsNumber(r) }
+// Less reports whether v1 is less than v2.
+//
+// Note that "12" is less than "12.0".
+func Less(v1, v2 string) bool {
+	return Compare(v1, v2) < 0
+}
 
+// LessEq reports whether v1 is less than or equal to v2.
+//
+// Note that "12" is less than "12.0".
+func LessEq(v1, v2 string) bool {
+	return Compare(v1, v2) <= 0
+}
+
+func isnum(r rune) bool {
+	return r >= '0' && r <= '9'
+}
+
+func notnum(r rune) bool {
+	return !isnum(r)
+}
+
+// Compare returns an integer comparing two strings as version numbers.
+// The result will be -1, 0, or 1 representing the sign of v1 - v2:
+//
+//	Compare(v1, v2)  < 0  if v1  < v2
+//	                == 0  if v1 == v2
+//	                 > 0  if v1  > v2
+func Compare(v1, v2 string) int {
 	var (
 		f1, f2 string
 		n1, n2 uint64
@@ -38,16 +60,16 @@ func Compare(v1, v2 string) int {
 	)
 	for v1 != "" || v2 != "" {
 		// Compare the non-numeric character run lexicographically.
-		f1, v1 = splitPrefixFunc(v1, notNumber)
-		f2, v2 = splitPrefixFunc(v2, notNumber)
+		f1, v1 = splitPrefixFunc(v1, notnum)
+		f2, v2 = splitPrefixFunc(v2, notnum)
 
 		if res := strings.Compare(f1, f2); res != 0 {
 			return res
 		}
 
 		// Compare the numeric character run numerically.
-		f1, v1 = splitPrefixFunc(v1, unicode.IsNumber)
-		f2, v2 = splitPrefixFunc(v2, unicode.IsNumber)
+		f1, v1 = splitPrefixFunc(v1, isnum)
+		f2, v2 = splitPrefixFunc(v2, isnum)
 
 		// ParseUint refuses to parse empty strings, which would only
 		// happen if we reached end-of-string. We follow the Debian

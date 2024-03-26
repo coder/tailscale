@@ -43,12 +43,16 @@ import (
 	"tailscale.com/types/logger"
 	"tailscale.com/types/netmap"
 	"tailscale.com/util/clientmetric"
+	"tailscale.com/util/httpm"
 	"tailscale.com/util/mak"
 	"tailscale.com/util/multierr"
 )
 
 var (
-	sshVerboseLogging = envknob.RegisterBool("TS_DEBUG_SSH_VLOG")
+	sshVerboseLogging    = envknob.RegisterBool("TS_DEBUG_SSH_VLOG")
+	sshDisableSFTP       = envknob.RegisterBool("TS_SSH_DISABLE_SFTP")
+	sshDisableForwarding = envknob.RegisterBool("TS_SSH_DISABLE_FORWARDING")
+	sshDisablePTY        = envknob.RegisterBool("TS_SSH_DISABLE_PTY")
 )
 
 const (
@@ -64,7 +68,7 @@ type ipnLocalBackend interface {
 	GetSSH_HostKeys() ([]gossh.Signer, error)
 	ShouldRunSSH() bool
 	NetMap() *netmap.NetworkMap
-	WhoIs(ipp netip.AddrPort) (n *tailcfg.Node, u tailcfg.UserProfile, ok bool)
+	WhoIs(ipp netip.AddrPort) (n tailcfg.NodeView, u tailcfg.UserProfile, ok bool)
 	DoNoiseRequest(req *http.Request) (*http.Response, error)
 	Dialer() *tsdial.Dialer
 	TailscaleVarRoot() string
@@ -105,6 +109,9 @@ func init() {
 			lb:             lb,
 			logf:           logf,
 			tailscaledPath: tsd,
+			timeNow: func() time.Time {
+				return lb.ControlNow(time.Now())
+			},
 		}
 
 		return srv, nil
@@ -247,7 +254,7 @@ func (c *conn) vlogf(format string, args ...any) {
 
 // isAuthorized walks through the action chain and returns nil if the connection
 // is authorized. If the connection is not authorized, it returns
-// gossh.ErrDenied. If the action chain resolution fails, it returns the
+// errDenied. If the action chain resolution fails, it returns the
 // resolution error.
 func (c *conn) isAuthorized(ctx ssh.Context) error {
 	action := c.currentAction
@@ -259,7 +266,7 @@ func (c *conn) isAuthorized(ctx ssh.Context) error {
 			return nil
 		}
 		if action.Reject || action.HoldAndDelegate == "" {
-			return gossh.ErrDenied
+			return errDenied
 		}
 		var err error
 		action, err = c.resolveNextAction(ctx)
@@ -274,6 +281,10 @@ func (c *conn) isAuthorized(ctx ssh.Context) error {
 	}
 }
 
+// errDenied is returned by auth callbacks when a connection is denied by the
+// policy.
+var errDenied = errors.New("ssh: access denied")
+
 // errPubKeyRequired is returned by NoClientAuthCallback to make the client
 // resort to public-key auth; not user visible.
 var errPubKeyRequired = errors.New("ssh publickey required")
@@ -286,7 +297,7 @@ var errPubKeyRequired = errors.New("ssh publickey required")
 // starting it afresh). It returns an error if the policy evaluation fails, or
 // if the decision is "reject"
 //
-// It either returns nil (accept) or errPubKeyRequired or gossh.ErrDenied
+// It either returns nil (accept) or errPubKeyRequired or errDenied
 // (reject). The errors may be wrapped.
 func (c *conn) NoClientAuthCallback(ctx ssh.Context) error {
 	if c.insecureSkipTailscaleAuth {
@@ -353,18 +364,18 @@ func (c *conn) PublicKeyHandler(ctx ssh.Context, pubKey ssh.PublicKey) error {
 // pubKey. It returns nil if the matching policy action is Accept or
 // HoldAndDelegate. If pubKey is nil, there was no policy match but there is a
 // policy that might match a public key it returns errPubKeyRequired. Otherwise,
-// it returns gossh.ErrDenied.
+// it returns errDenied.
 func (c *conn) doPolicyAuth(ctx ssh.Context, pubKey ssh.PublicKey) error {
 	if err := c.setInfo(ctx); err != nil {
 		c.logf("failed to get conninfo: %v", err)
-		return gossh.ErrDenied
+		return errDenied
 	}
 	a, localUser, err := c.evaluatePolicy(pubKey)
 	if err != nil {
 		if pubKey == nil && c.havePubKeyPolicy() {
 			return errPubKeyRequired
 		}
-		return fmt.Errorf("%w: %v", gossh.ErrDenied, err)
+		return fmt.Errorf("%w: %v", errDenied, err)
 	}
 	c.action0 = a
 	c.currentAction = a
@@ -395,10 +406,10 @@ func (c *conn) doPolicyAuth(ctx ssh.Context, pubKey ssh.PublicKey) error {
 	}
 	if a.Reject {
 		c.finalAction = a
-		return gossh.ErrDenied
+		return errDenied
 	}
 	// Shouldn't get here, but:
-	return gossh.ErrDenied
+	return errDenied
 }
 
 // ServerConfig implements ssh.ServerConfigCallback.
@@ -416,7 +427,7 @@ func (srv *server) newConn() (*conn, error) {
 		// Stop accepting new connections.
 		// Connections in the auth phase are handled in handleConnPostSSHAuth.
 		// Existing sessions are terminated by Shutdown.
-		return nil, gossh.ErrDenied
+		return nil, errDenied
 	}
 	srv.mu.Unlock()
 	c := &conn{srv: srv}
@@ -472,6 +483,9 @@ func (srv *server) newConn() (*conn, error) {
 // to the specified host and port.
 // TODO(bradfitz/maisem): should we have more checks on host/port?
 func (c *conn) mayReversePortForwardTo(ctx ssh.Context, destinationHost string, destinationPort uint32) bool {
+	if sshDisableForwarding() {
+		return false
+	}
 	if c.finalAction != nil && c.finalAction.AllowRemotePortForwarding {
 		metricRemotePortForward.Add(1)
 		return true
@@ -483,6 +497,9 @@ func (c *conn) mayReversePortForwardTo(ctx ssh.Context, destinationHost string, 
 // to the specified host and port.
 // TODO(bradfitz/maisem): should we have more checks on host/port?
 func (c *conn) mayForwardLocalPortTo(ctx ssh.Context, destinationHost string, destinationPort uint32) bool {
+	if sshDisableForwarding() {
+		return false
+	}
 	if c.finalAction != nil && c.finalAction.AllowLocalPortForwarding {
 		metricLocalPortForward.Add(1)
 		return true
@@ -711,8 +728,15 @@ func (srv *server) fetchPublicKeysURL(url string) ([]string, error) {
 func (c *conn) handleSessionPostSSHAuth(s ssh.Session) {
 	// Do this check after auth, but before starting the session.
 	switch s.Subsystem() {
-	case "sftp", "":
+	case "sftp":
+		if sshDisableSFTP() {
+			fmt.Fprintf(s.Stderr(), "sftp disabled\r\n")
+			s.Exit(1)
+			return
+		}
 		metricSFTP.Add(1)
+	case "":
+		// Regular SSH session.
 	default:
 		fmt.Fprintf(s.Stderr(), "Unsupported subsystem %q\r\n", s.Subsystem())
 		s.Exit(1)
@@ -787,11 +811,11 @@ func (c *conn) expandDelegateURLLocked(actionURL string) string {
 	lu := c.localUser
 	var dstNodeID string
 	if nm != nil {
-		dstNodeID = fmt.Sprint(int64(nm.SelfNode.ID))
+		dstNodeID = fmt.Sprint(int64(nm.SelfNode.ID()))
 	}
 	return strings.NewReplacer(
 		"$SRC_NODE_IP", url.QueryEscape(ci.src.Addr().String()),
-		"$SRC_NODE_ID", fmt.Sprint(int64(ci.node.ID)),
+		"$SRC_NODE_ID", fmt.Sprint(int64(ci.node.ID())),
 		"$DST_NODE_IP", url.QueryEscape(ci.dst.Addr().String()),
 		"$DST_NODE_ID", dstNodeID,
 		"$SSH_USER", url.QueryEscape(ci.sshUser),
@@ -985,6 +1009,12 @@ func (ss *sshSession) handleSSHAgentForwarding(s ssh.Session, lu *userMeta) erro
 	if !ssh.AgentRequested(ss) || !ss.conn.finalAction.AllowAgentForwarding {
 		return nil
 	}
+	if sshDisableForwarding() {
+		// TODO(bradfitz): or do we want to return an error here instead so the user
+		// gets an error if they ran with ssh -A? But for now we just silently
+		// don't work, like the condition above.
+		return nil
+	}
 	ss.logf("ssh: agent forwarding requested")
 	ln, err := ssh.NewAgentListener()
 	if err != nil {
@@ -1088,6 +1118,7 @@ func (ss *sshSession) run() {
 				ss.Exit(1)
 				return
 			}
+			ss.logf("startNewRecording: <nil>")
 			if rec != nil {
 				defer rec.Close()
 			}
@@ -1220,7 +1251,7 @@ type sshConnInfo struct {
 	dst netip.AddrPort
 
 	// node is srcIP's node.
-	node *tailcfg.Node
+	node tailcfg.NodeView
 
 	// uprof is node's UserProfile.
 	uprof tailcfg.UserProfile
@@ -1334,7 +1365,7 @@ func (c *conn) principalMatchesTailscaleIdentity(p *tailcfg.SSHPrincipal) bool {
 	if p.Any {
 		return true
 	}
-	if !p.Node.IsZero() && ci.node != nil && p.Node == ci.node.StableID {
+	if !p.Node.IsZero() && ci.node.Valid() && p.Node == ci.node.StableID() {
 		return true
 	}
 	if p.NodeIP != "" {
@@ -1658,6 +1689,7 @@ func (ss *sshSession) startNewRecording() (_ *recording, err error) {
 			err := <-errChan
 			if err == nil {
 				// Success.
+				ss.logf("recording: finished uploading recording")
 				return
 			}
 			if onFailure != nil && onFailure.NotifyURL != "" && len(attempts) > 0 {
@@ -1702,15 +1734,15 @@ func (ss *sshSession) startNewRecording() (_ *recording, err error) {
 		},
 		SSHUser:      ss.conn.info.sshUser,
 		LocalUser:    ss.conn.localUser.Username,
-		SrcNode:      strings.TrimSuffix(ss.conn.info.node.Name, "."),
-		SrcNodeID:    ss.conn.info.node.StableID,
+		SrcNode:      strings.TrimSuffix(ss.conn.info.node.Name(), "."),
+		SrcNodeID:    ss.conn.info.node.StableID(),
 		ConnectionID: ss.conn.connID,
 	}
 	if !ss.conn.info.node.IsTagged() {
 		ch.SrcNodeUser = ss.conn.info.uprof.LoginName
-		ch.SrcNodeUserID = ss.conn.info.node.User
+		ch.SrcNodeUserID = ss.conn.info.node.User()
 	} else {
-		ch.SrcNodeTags = ss.conn.info.node.Tags
+		ch.SrcNodeTags = ss.conn.info.node.Tags().AsSlice()
 	}
 	j, err := json.Marshal(ch)
 	if err != nil {
@@ -1738,7 +1770,7 @@ func (ss *sshSession) notifyControl(ctx context.Context, nodeKey key.NodePublic,
 		ConnectionID:      ss.conn.connID,
 		CapVersion:        tailcfg.CurrentCapabilityVersion,
 		NodeKey:           nodeKey,
-		SrcNode:           ss.conn.info.node.ID,
+		SrcNode:           ss.conn.info.node.ID(),
 		SSHUser:           ss.conn.info.sshUser,
 		LocalUser:         ss.conn.localUser.Username,
 		RecordingAttempts: attempts,
@@ -1750,7 +1782,7 @@ func (ss *sshSession) notifyControl(ctx context.Context, nodeKey key.NodePublic,
 		return
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, httpm.POST, url, bytes.NewReader(body))
 	if err != nil {
 		ss.logf("notifyControl: unable to create request:", err)
 		return
@@ -1877,20 +1909,18 @@ func envEq(a, b string) bool {
 }
 
 var (
-	metricActiveSessions       = clientmetric.NewGauge("ssh_active_sessions")
-	metricIncomingConnections  = clientmetric.NewCounter("ssh_incoming_connections")
-	metricPublicKeyConnections = clientmetric.NewCounter("ssh_publickey_connections") // total
-	metricPublicKeyAccepts     = clientmetric.NewCounter("ssh_publickey_accepts")     // accepted subset of ssh_publickey_connections
-	metricTerminalAccept       = clientmetric.NewCounter("ssh_terminalaction_accept")
-	metricTerminalReject       = clientmetric.NewCounter("ssh_terminalaction_reject")
-	metricTerminalInterrupt    = clientmetric.NewCounter("ssh_terminalaction_interrupt")
-	metricTerminalMalformed    = clientmetric.NewCounter("ssh_terminalaction_malformed")
-	metricTerminalFetchError   = clientmetric.NewCounter("ssh_terminalaction_fetch_error")
-	metricHolds                = clientmetric.NewCounter("ssh_holds")
-	metricPolicyChangeKick     = clientmetric.NewCounter("ssh_policy_change_kick")
-	metricSFTP                 = clientmetric.NewCounter("ssh_sftp_requests")
-	metricLocalPortForward     = clientmetric.NewCounter("ssh_local_port_forward_requests")
-	metricRemotePortForward    = clientmetric.NewCounter("ssh_remote_port_forward_requests")
+	metricActiveSessions      = clientmetric.NewGauge("ssh_active_sessions")
+	metricIncomingConnections = clientmetric.NewCounter("ssh_incoming_connections")
+	metricPublicKeyAccepts    = clientmetric.NewCounter("ssh_publickey_accepts") // accepted subset of ssh_publickey_connections
+	metricTerminalAccept      = clientmetric.NewCounter("ssh_terminalaction_accept")
+	metricTerminalReject      = clientmetric.NewCounter("ssh_terminalaction_reject")
+	metricTerminalMalformed   = clientmetric.NewCounter("ssh_terminalaction_malformed")
+	metricTerminalFetchError  = clientmetric.NewCounter("ssh_terminalaction_fetch_error")
+	metricHolds               = clientmetric.NewCounter("ssh_holds")
+	metricPolicyChangeKick    = clientmetric.NewCounter("ssh_policy_change_kick")
+	metricSFTP                = clientmetric.NewCounter("ssh_sftp_sessions")
+	metricLocalPortForward    = clientmetric.NewCounter("ssh_local_port_forward_requests")
+	metricRemotePortForward   = clientmetric.NewCounter("ssh_remote_port_forward_requests")
 )
 
 // userVisibleError is a wrapper around an error that implements

@@ -13,6 +13,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"golang.org/x/crypto/blake2s"
 	"tailscale.com/types/tkatype"
+	"tailscale.com/util/set"
 )
 
 // AUMHash represents the BLAKE2s digest of an Authority Update Message (AUM).
@@ -37,11 +38,14 @@ func (h *AUMHash) UnmarshalText(text []byte) error {
 	return nil
 }
 
+// AppendText implements encoding.TextAppender.
+func (h AUMHash) AppendText(b []byte) ([]byte, error) {
+	return base32StdNoPad.AppendEncode(b, h[:]), nil
+}
+
 // MarshalText implements encoding.TextMarshaler.
 func (h AUMHash) MarshalText() ([]byte, error) {
-	b := make([]byte, base32StdNoPad.EncodedLen(len(h)))
-	base32StdNoPad.Encode(b, h[:])
-	return b, nil
+	return h.AppendText(nil)
 }
 
 // IsZero returns true if the hash is the empty value.
@@ -314,7 +318,7 @@ func (a *AUM) Weight(state State) uint {
 	// Despite the wire encoding being []byte, all KeyIDs are
 	// 32 bytes. As such, we use that as the key for the map,
 	// because map keys cannot be slices.
-	seenKeys := make(map[[32]byte]struct{}, 6)
+	seenKeys := make(set.Set[[32]byte], 6)
 	for _, sig := range a.Signatures {
 		if len(sig.KeyID) != 32 {
 			panic("unexpected: keyIDs are 32 bytes")
@@ -332,12 +336,12 @@ func (a *AUM) Weight(state State) uint {
 			}
 			panic(err)
 		}
-		if _, seen := seenKeys[keyID]; seen {
+		if seenKeys.Contains(keyID) {
 			continue
 		}
 
 		weight += key.Votes
-		seenKeys[keyID] = struct{}{}
+		seenKeys.Add(keyID)
 	}
 
 	return weight

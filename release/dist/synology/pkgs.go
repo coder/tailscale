@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"embed"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -25,6 +26,7 @@ type target struct {
 	dsmMajorVersion int
 	goenv           map[string]string
 	packageCenter   bool
+	signer          dist.Signer
 }
 
 func (t *target) String() string {
@@ -37,18 +39,26 @@ func (t *target) Build(b *dist.Build) ([]string, error) {
 		return nil, err
 	}
 
-	out, err := t.buildSPK(b, inner)
-	if err != nil {
-		return nil, err
-	}
-
-	return []string{out}, nil
+	return t.buildSPK(b, inner)
 }
 
-func (t *target) buildSPK(b *dist.Build, inner *innerPkg) (string, error) {
-	filename := fmt.Sprintf("tailscale-%s-%s-%d-dsm%d.spk", t.filenameArch, b.Version.Short, b.Version.Synology[t.dsmMajorVersion], t.dsmMajorVersion)
+func (t *target) buildSPK(b *dist.Build, inner *innerPkg) ([]string, error) {
+	synoVersion := b.Version.Synology[t.dsmMajorVersion]
+	filename := fmt.Sprintf("tailscale-%s-%s-%d-dsm%d.spk", t.filenameArch, b.Version.Short, synoVersion, t.dsmMajorVersion)
 	out := filepath.Join(b.Out, filename)
-	log.Printf("Building %s", filename)
+	if t.packageCenter {
+		log.Printf("Building %s (for package center)", filename)
+	} else {
+		log.Printf("Building %s (for sideloading)", filename)
+	}
+
+	if synoVersion > 2147483647 {
+		// Synology requires that version number is within int32 range.
+		// Erroring here if we create a build with a higher version.
+		// In this case, we'll want to adjust the VersionInfo.Synology logic in
+		// the mkversion package.
+		return nil, errors.New("syno version exceeds int32 range")
+	}
 
 	privFile := fmt.Sprintf("privilege-dsm%d", t.dsmMajorVersion)
 	if t.packageCenter && t.dsmMajorVersion == 7 {
@@ -57,7 +67,7 @@ func (t *target) buildSPK(b *dist.Build, inner *innerPkg) (string, error) {
 
 	f, err := os.Create(out)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer f.Close()
 	tw := tar.NewWriter(f)
@@ -78,17 +88,27 @@ func (t *target) buildSPK(b *dist.Build, inner *innerPkg) (string, error) {
 		static("scripts/preupgrade", "scripts/preupgrade", 0644),
 	)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if err := tw.Close(); err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := f.Close(); err != nil {
-		return "", err
+		return nil, err
 	}
 
-	return out, nil
+	files := []string{out}
+
+	if t.signer != nil {
+		outSig := out + ".sig"
+		if err := t.signer.SignFile(out, outSig); err != nil {
+			return nil, err
+		}
+		files = append(files, outSig)
+	}
+
+	return files, nil
 }
 
 func (t *target) mkInfo(b *dist.Build, uncompressedSz int64) []byte {
@@ -144,6 +164,9 @@ func getSynologyBuilds(b *dist.Build) *synologyBuilds {
 func (m *synologyBuilds) buildInnerPackage(b *dist.Build, dsmVersion int, goenv map[string]string) (*innerPkg, error) {
 	key := []any{dsmVersion, goenv}
 	return m.innerPkgs.Do(key, func() (*innerPkg, error) {
+		if err := b.BuildWebClientAssets(); err != nil {
+			return nil, err
+		}
 		ts, err := b.BuildGoBinary("tailscale.com/cmd/tailscale", goenv)
 		if err != nil {
 			return nil, err

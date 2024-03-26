@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,7 +32,6 @@ import (
 	"github.com/pkg/sftp"
 	"github.com/u-root/u-root/pkg/termios"
 	gossh "golang.org/x/crypto/ssh"
-	"golang.org/x/exp/slices"
 	"golang.org/x/sys/unix"
 	"tailscale.com/cmd/tailscaled/childproc"
 	"tailscale.com/hostinfo"
@@ -99,7 +99,7 @@ func (ss *sshSession) newIncubatorCommand() (cmd *exec.Cmd) {
 	gids := strings.Join(ss.conn.userGroupIDs, ",")
 	remoteUser := ci.uprof.LoginName
 	if ci.node.IsTagged() {
-		remoteUser = strings.Join(ci.node.Tags, ",")
+		remoteUser = strings.Join(ci.node.Tags().AsSlice(), ",")
 	}
 
 	incubatorArgs := []string{
@@ -465,6 +465,12 @@ func (ss *sshSession) launchProcess() error {
 		ss.logf("starting non-pty command: %+v", cmd.Args)
 		return ss.startWithStdPipes()
 	}
+
+	if sshDisablePTY() {
+		ss.logf("pty support disabled by envknob")
+		return errors.New("pty support disabled by envknob")
+	}
+
 	ss.ptyReq = &ptyReq
 	pty, tty, err := ss.startWithPTY()
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 
 	"go4.org/mem"
 )
@@ -49,11 +50,11 @@ func clamp25519Private(b []byte) {
 	b[31] = (b[31] & 127) | 64
 }
 
-func toHex(k []byte, prefix string) []byte {
-	ret := make([]byte, len(prefix)+len(k)*2)
-	copy(ret, prefix)
-	hex.Encode(ret[len(prefix):], k)
-	return ret
+func appendHexKey(dst []byte, prefix string, key []byte) []byte {
+	dst = slices.Grow(dst, len(prefix)+hex.EncodedLen(len(key)))
+	dst = append(dst, prefix...)
+	dst = hex.AppendEncode(dst, key)
+	return dst
 }
 
 // parseHex decodes a key string of the form "<prefix><hex string>"

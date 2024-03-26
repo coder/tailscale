@@ -7,14 +7,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"go4.org/netipx"
-	"golang.org/x/exp/maps"
-	"golang.org/x/exp/slices"
+	xmaps "golang.org/x/exp/maps"
 	"tailscale.com/net/packet"
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/tailcfg"
@@ -873,7 +873,7 @@ func TestMatchesMatchProtoAndIPsOnlyIfAllPorts(t *testing.T) {
 	}
 }
 
-func TestCaps(t *testing.T) {
+func TestPeerCaps(t *testing.T) {
 	mm, err := MatchesFromFilterRules([]tailcfg.FilterRule{
 		{
 			SrcIPs: []string{"*"},
@@ -945,7 +945,7 @@ func TestCaps(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := maps.Keys(filt.CapsWithValues(netip.MustParseAddr(tt.src), netip.MustParseAddr(tt.dst)))
+			got := xmaps.Keys(filt.CapsWithValues(netip.MustParseAddr(tt.src), netip.MustParseAddr(tt.dst)))
 			slices.Sort(got)
 			slices.Sort(tt.want)
 			if !slices.Equal(got, tt.want) {

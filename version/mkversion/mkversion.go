@@ -199,6 +199,13 @@ func tailscaleModuleRef(modBs []byte) (string, error) {
 }
 
 func mkOutput(v verInfo) (VersionInfo, error) {
+	if override := os.Getenv("TS_VERSION_OVERRIDE"); override != "" {
+		var err error
+		v.major, v.minor, v.patch, err = parseVersion(override)
+		if err != nil {
+			return VersionInfo{}, fmt.Errorf("failed to parse TS_VERSION_OVERRIDE: %w", err)
+		}
+	}
 	var changeSuffix string
 	if v.minor%2 == 1 {
 		// Odd minor numbers are unstable builds.
@@ -244,8 +251,13 @@ func mkOutput(v verInfo) (VersionInfo, error) {
 		GitDate: fmt.Sprintf("%s", v.date),
 		Track:   track,
 		Synology: map[int]int64{
-			6: 6*1_000_000_000 + int64(v.major-1)*1_000_000 + int64(v.minor)*1_000 + int64(v.patch),
-			7: 7*1_000_000_000 + int64(v.major-1)*1_000_000 + int64(v.minor)*1_000 + int64(v.patch),
+			// Synology requires that version numbers be in a specific format.
+			// Builds with version numbers that don't start with "60" or "70" will fail,
+			// and the full version number must be within int32 range.
+			// So, we do the following mapping from our Tailscale version to Synology version,
+			// giving major version three decimal places, minor version three, and patch two.
+			6: 6*100_000_000 + int64(v.major-1)*1_000_000 + int64(v.minor)*1_000 + int64(v.patch),
+			7: 7*100_000_000 + int64(v.major-1)*1_000_000 + int64(v.minor)*1_000 + int64(v.patch),
 		},
 	}
 

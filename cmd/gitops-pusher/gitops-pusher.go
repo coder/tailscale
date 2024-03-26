@@ -158,11 +158,13 @@ func main() {
 	if !ok && (!oiok || !osok) {
 		log.Fatal("set envvar TS_API_KEY to your Tailscale API key or TS_OAUTH_ID and TS_OAUTH_SECRET to your Tailscale OAuth ID and Secret")
 	}
-	if ok && (oiok || osok) {
+	if apiKey != "" && (oauthId != "" || oauthSecret != "") {
 		log.Fatal("set either the envvar TS_API_KEY or TS_OAUTH_ID and TS_OAUTH_SECRET")
 	}
 	var client *http.Client
-	if oiok {
+	if oiok && (oauthId != "" || oauthSecret != "") {
+		// Both should ideally be set, but if either are non-empty it means the user had an intent
+		// to set _something_, so they should receive the oauth error flow.
 		oauthConfig := &clientcredentials.Config{
 			ClientID:     oauthId,
 			ClientSecret: oauthSecret,

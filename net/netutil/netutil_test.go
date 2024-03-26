@@ -65,3 +65,12 @@ func TestIPForwardingEnabledLinux(t *testing.T) {
 		t.Errorf("got true; want false")
 	}
 }
+
+func TestCheckReversePathFiltering(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skipf("skipping on %s", runtime.GOOS)
+	}
+	warn, err := CheckReversePathFiltering(nil)
+	t.Logf("err: %v", err)
+	t.Logf("warnings: %v", warn)
+}

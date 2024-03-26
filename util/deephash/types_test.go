@@ -67,6 +67,7 @@ func TestTypeIsMemHashable(t *testing.T) {
 			false},
 		{[0]chan bool{}, true},
 		{struct{ f [0]func() }{}, true},
+		{&selfHasherPointerRecv{}, false},
 	}
 	for _, tt := range tests {
 		got := typeIsMemHashable(reflect.TypeOf(tt.val))
@@ -78,7 +79,7 @@ func TestTypeIsMemHashable(t *testing.T) {
 
 func TestTypeIsRecursive(t *testing.T) {
 	type RecursiveStruct struct {
-		v *RecursiveStruct
+		_ *RecursiveStruct
 	}
 	type RecursiveChan chan *RecursiveChan
 
@@ -102,6 +103,7 @@ func TestTypeIsRecursive(t *testing.T) {
 		{val: unsafe.Pointer(nil), want: false},
 		{val: make(RecursiveChan), want: true},
 		{val: make(chan int), want: false},
+		{val: (*selfHasherPointerRecv)(nil), want: false},
 	}
 	for _, tt := range tests {
 		got := typeIsRecursive(reflect.TypeOf(tt.val))

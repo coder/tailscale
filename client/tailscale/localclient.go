@@ -7,6 +7,7 @@ package tailscale
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -34,6 +35,7 @@ import (
 	"tailscale.com/paths"
 	"tailscale.com/safesocket"
 	"tailscale.com/tailcfg"
+	"tailscale.com/tailfs"
 	"tailscale.com/tka"
 	"tailscale.com/types/key"
 	"tailscale.com/types/tkatype"
@@ -101,8 +103,7 @@ func (lc *LocalClient) defaultDialer(ctx context.Context, network, addr string) 
 			return d.DialContext(ctx, "tcp", "127.0.0.1:"+strconv.Itoa(port))
 		}
 	}
-	s := safesocket.DefaultConnectionStrategy(lc.socket())
-	return safesocket.Connect(s)
+	return safesocket.Connect(lc.socket())
 }
 
 // DoLocalRequest makes an HTTP request to the local machine's Tailscale daemon.
@@ -139,6 +140,10 @@ func (lc *LocalClient) doLocalRequestNiceError(req *http.Request) (*http.Respons
 			all, _ := io.ReadAll(res.Body)
 			return nil, &AccessDeniedError{errors.New(errorMessageFromBody(all))}
 		}
+		if res.StatusCode == http.StatusPreconditionFailed {
+			all, _ := io.ReadAll(res.Body)
+			return nil, &PreconditionsFailedError{errors.New(errorMessageFromBody(all))}
+		}
 		return res, nil
 	}
 	if ue, ok := err.(*url.Error); ok {
@@ -166,6 +171,24 @@ func (e *AccessDeniedError) Unwrap() error { return e.err }
 // IsAccessDeniedError reports whether err is or wraps an AccessDeniedError.
 func IsAccessDeniedError(err error) bool {
 	var ae *AccessDeniedError
+	return errors.As(err, &ae)
+}
+
+// PreconditionsFailedError is returned when the server responds
+// with an HTTP 412 status code.
+type PreconditionsFailedError struct {
+	err error
+}
+
+func (e *PreconditionsFailedError) Error() string {
+	return fmt.Sprintf("Preconditions failed: %v", e.err)
+}
+
+func (e *PreconditionsFailedError) Unwrap() error { return e.err }
+
+// IsPreconditionsFailedError reports whether err is or wraps an PreconditionsFailedError.
+func IsPreconditionsFailedError(err error) bool {
+	var ae *PreconditionsFailedError
 	return errors.As(err, &ae)
 }
 
@@ -197,27 +220,42 @@ func SetVersionMismatchHandler(f func(clientVer, serverVer string)) {
 }
 
 func (lc *LocalClient) send(ctx context.Context, method, path string, wantStatus int, body io.Reader) ([]byte, error) {
+	slurp, _, err := lc.sendWithHeaders(ctx, method, path, wantStatus, body, nil)
+	return slurp, err
+}
+
+func (lc *LocalClient) sendWithHeaders(
+	ctx context.Context,
+	method,
+	path string,
+	wantStatus int,
+	body io.Reader,
+	h http.Header,
+) ([]byte, http.Header, error) {
 	if jr, ok := body.(jsonReader); ok && jr.err != nil {
-		return nil, jr.err // fail early if there was a JSON marshaling error
+		return nil, nil, jr.err // fail early if there was a JSON marshaling error
 	}
 	req, err := http.NewRequestWithContext(ctx, method, "http://"+apitype.LocalAPIHost+path, body)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	if h != nil {
+		req.Header = h
 	}
 	res, err := lc.doLocalRequestNiceError(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer res.Body.Close()
 	slurp, err := io.ReadAll(res.Body)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if res.StatusCode != wantStatus {
 		err = fmt.Errorf("%v: %s", res.Status, bytes.TrimSpace(slurp))
-		return nil, bestError(err, slurp)
+		return nil, nil, bestError(err, slurp)
 	}
-	return slurp, nil
+	return slurp, res.Header, nil
 }
 
 func (lc *LocalClient) get200(ctx context.Context, path string) ([]byte, error) {
@@ -257,6 +295,28 @@ func (lc *LocalClient) Goroutines(ctx context.Context) ([]byte, error) {
 // the Prometheus text exposition format.
 func (lc *LocalClient) DaemonMetrics(ctx context.Context) ([]byte, error) {
 	return lc.get200(ctx, "/localapi/v0/metrics")
+}
+
+// IncrementCounter increments the value of a Tailscale daemon's counter
+// metric by the given delta. If the metric has yet to exist, a new counter
+// metric is created and initialized to delta.
+//
+// IncrementCounter does not support gauge metrics or negative delta values.
+func (lc *LocalClient) IncrementCounter(ctx context.Context, name string, delta int) error {
+	type metricUpdate struct {
+		Name  string `json:"name"`
+		Type  string `json:"type"`
+		Value int    `json:"value"` // amount to increment by
+	}
+	if delta < 0 {
+		return errors.New("negative delta not allowed")
+	}
+	_, err := lc.send(ctx, "POST", "/localapi/v0/upload-client-metrics", 200, jsonBody([]metricUpdate{{
+		Name:  name,
+		Type:  "counter",
+		Value: delta,
+	}}))
+	return err
 }
 
 // TailDaemonLogs returns a stream the Tailscale daemon's logs as they arrive.
@@ -369,15 +429,65 @@ func (lc *LocalClient) DebugAction(ctx context.Context, action string) error {
 	return nil
 }
 
+// DebugResultJSON invokes a debug action and returns its result as something JSON-able.
+// These are development tools and subject to change or removal over time.
+func (lc *LocalClient) DebugResultJSON(ctx context.Context, action string) (any, error) {
+	body, err := lc.send(ctx, "POST", "/localapi/v0/debug?action="+url.QueryEscape(action), 200, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error %w: %s", err, body)
+	}
+	var x any
+	if err := json.Unmarshal(body, &x); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// DebugPortmapOpts contains options for the DebugPortmap command.
+type DebugPortmapOpts struct {
+	// Duration is how long the mapping should be created for. It defaults
+	// to 5 seconds if not set.
+	Duration time.Duration
+
+	// Type is the kind of portmap to debug. The empty string instructs the
+	// portmap client to perform all known types. Other valid options are
+	// "pmp", "pcp", and "upnp".
+	Type string
+
+	// GatewayAddr specifies the gateway address used during portmapping.
+	// If set, SelfAddr must also be set. If unset, it will be
+	// autodetected.
+	GatewayAddr netip.Addr
+
+	// SelfAddr specifies the gateway address used during portmapping. If
+	// set, GatewayAddr must also be set. If unset, it will be
+	// autodetected.
+	SelfAddr netip.Addr
+
+	// LogHTTP instructs the debug-portmap endpoint to print all HTTP
+	// requests and responses made to the logs.
+	LogHTTP bool
+}
+
 // DebugPortmap invokes the debug-portmap endpoint, and returns an
 // io.ReadCloser that can be used to read the logs that are printed during this
 // process.
-func (lc *LocalClient) DebugPortmap(ctx context.Context, duration time.Duration, ty, gwSelf string) (io.ReadCloser, error) {
+//
+// opts can be nil; if so, default values will be used.
+func (lc *LocalClient) DebugPortmap(ctx context.Context, opts *DebugPortmapOpts) (io.ReadCloser, error) {
 	vals := make(url.Values)
-	vals.Set("duration", duration.String())
-	vals.Set("type", ty)
-	if gwSelf != "" {
-		vals.Set("gateway_and_self", gwSelf)
+	if opts == nil {
+		opts = &DebugPortmapOpts{}
+	}
+
+	vals.Set("duration", cmp.Or(opts.Duration, 5*time.Second).String())
+	vals.Set("type", opts.Type)
+	vals.Set("log_http", strconv.FormatBool(opts.LogHTTP))
+
+	if opts.GatewayAddr.IsValid() != opts.SelfAddr.IsValid() {
+		return nil, fmt.Errorf("both GatewayAddr and SelfAddr must be provided if one is")
+	} else if opts.GatewayAddr.IsValid() {
+		vals.Set("gateway_and_self", fmt.Sprintf("%s/%s", opts.GatewayAddr, opts.SelfAddr))
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", "http://"+apitype.LocalAPIHost+"/localapi/v0/debug-portmap?"+vals.Encode(), nil)
@@ -562,6 +672,26 @@ func (lc *LocalClient) CheckIPForwarding(ctx context.Context) error {
 	}
 	if err := json.Unmarshal(body, &jres); err != nil {
 		return fmt.Errorf("invalid JSON from check-ip-forwarding: %w", err)
+	}
+	if jres.Warning != "" {
+		return errors.New(jres.Warning)
+	}
+	return nil
+}
+
+// CheckUDPGROForwarding asks the local Tailscale daemon whether it looks like
+// the machine is optimally configured to forward UDP packets as a subnet router
+// or exit node.
+func (lc *LocalClient) CheckUDPGROForwarding(ctx context.Context) error {
+	body, err := lc.get200(ctx, "/localapi/v0/check-udp-gro-forwarding")
+	if err != nil {
+		return err
+	}
+	var jres struct {
+		Warning string
+	}
+	if err := json.Unmarshal(body, &jres); err != nil {
+		return fmt.Errorf("invalid JSON from check-udp-gro-forwarding: %w", err)
 	}
 	if jres.Warning != "" {
 		return errors.New(jres.Warning)
@@ -807,17 +937,37 @@ func (lc *LocalClient) ExpandSNIName(ctx context.Context, name string) (fqdn str
 	return "", false
 }
 
+// PingOpts contains options for the ping request.
+//
+// The zero value is valid, which means to use defaults.
+type PingOpts struct {
+	// Size is the length of the ping message in bytes. It's ignored if it's
+	// smaller than the minimum message size.
+	//
+	// For disco pings, it specifies the length of the packet's payload. That
+	// is, it includes the disco headers and message, but not the IP and UDP
+	// headers.
+	Size int
+}
+
 // Ping sends a ping of the provided type to the provided IP and waits
-// for its response.
-func (lc *LocalClient) Ping(ctx context.Context, ip netip.Addr, pingtype tailcfg.PingType) (*ipnstate.PingResult, error) {
+// for its response. The opts type specifies additional options.
+func (lc *LocalClient) PingWithOpts(ctx context.Context, ip netip.Addr, pingtype tailcfg.PingType, opts PingOpts) (*ipnstate.PingResult, error) {
 	v := url.Values{}
 	v.Set("ip", ip.String())
+	v.Set("size", strconv.Itoa(opts.Size))
 	v.Set("type", string(pingtype))
 	body, err := lc.send(ctx, "POST", "/localapi/v0/ping?"+v.Encode(), 200, nil)
 	if err != nil {
 		return nil, fmt.Errorf("error %w: %s", err, body)
 	}
 	return decodeJSON[*ipnstate.PingResult](body)
+}
+
+// Ping sends a ping of the provided type to the provided IP and waits
+// for its response.
+func (lc *LocalClient) Ping(ctx context.Context, ip netip.Addr, pingtype tailcfg.PingType) (*ipnstate.PingResult, error) {
+	return lc.PingWithOpts(ctx, ip, pingtype, PingOpts{})
 }
 
 // NetworkLockStatus fetches information about the tailnet key authority, if one is configured.
@@ -1000,7 +1150,11 @@ func (lc *LocalClient) NetworkLockSubmitRecoveryAUM(ctx context.Context, aum tka
 // SetServeConfig sets or replaces the serving settings.
 // If config is nil, settings are cleared and serving is disabled.
 func (lc *LocalClient) SetServeConfig(ctx context.Context, config *ipn.ServeConfig) error {
-	_, err := lc.send(ctx, "POST", "/localapi/v0/serve-config", 200, jsonBody(config))
+	h := make(http.Header)
+	if config != nil {
+		h.Set("If-Match", config.ETag)
+	}
+	_, _, err := lc.sendWithHeaders(ctx, "POST", "/localapi/v0/serve-config", 200, jsonBody(config), h)
 	if err != nil {
 		return fmt.Errorf("sending serve config: %w", err)
 	}
@@ -1019,11 +1173,19 @@ func (lc *LocalClient) NetworkLockDisable(ctx context.Context, secret []byte) er
 //
 // If the serve config is empty, it returns (nil, nil).
 func (lc *LocalClient) GetServeConfig(ctx context.Context) (*ipn.ServeConfig, error) {
-	body, err := lc.send(ctx, "GET", "/localapi/v0/serve-config", 200, nil)
+	body, h, err := lc.sendWithHeaders(ctx, "GET", "/localapi/v0/serve-config", 200, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("getting serve config: %w", err)
 	}
-	return getServeConfigFromJSON(body)
+	sc, err := getServeConfigFromJSON(body)
+	if err != nil {
+		return nil, err
+	}
+	if sc == nil {
+		sc = new(ipn.ServeConfig)
+	}
+	sc.ETag = h.Get("Etag")
+	return sc, nil
 }
 
 func getServeConfigFromJSON(body []byte) (sc *ipn.ServeConfig, err error) {
@@ -1102,6 +1264,22 @@ func (lc *LocalClient) ProfileStatus(ctx context.Context) (current ipn.LoginProf
 	return current, all, err
 }
 
+// ReloadConfig reloads the config file, if possible.
+func (lc *LocalClient) ReloadConfig(ctx context.Context) (ok bool, err error) {
+	body, err := lc.send(ctx, "POST", "/localapi/v0/reload-config", 200, nil)
+	if err != nil {
+		return
+	}
+	res, err := decodeJSON[apitype.ReloadConfigResponse](body)
+	if err != nil {
+		return
+	}
+	if res.Err != "" {
+		return false, errors.New(res.Err)
+	}
+	return res.Reloaded, nil
+}
+
 // SwitchToEmptyProfile creates and switches to a new unnamed profile. The new
 // profile is not assigned an ID until it is persisted after a successful login.
 // In order to login to the new profile, the user must call LoginInteractive.
@@ -1124,18 +1302,18 @@ func (lc *LocalClient) DeleteProfile(ctx context.Context, profile ipn.ProfileID)
 	return err
 }
 
-// QueryFeature makes a request for instructions on how to enable a
-// feature, such as Funnel, for the node's tailnet.
+// QueryFeature makes a request for instructions on how to enable
+// a feature, such as Funnel, for the node's tailnet. If relevant,
+// this includes a control server URL the user can visit to enable
+// the feature.
 //
-// This request itself does not directly enable the feature on behalf
-// of the node, but rather returns information that can be presented
-// to the acting user about where/how to enable the feature.
+// If you are looking to use QueryFeature, you'll likely want to
+// use cli.enableFeatureInteractive instead, which handles the logic
+// of wraping QueryFeature and translating its response into an
+// interactive flow for the user, including using the IPN notify bus
+// to block until the feature has been enabled.
 //
-// If relevant, this includes a control URL the user can visit to
-// explicitly consent to using the feature. LocalClient.WatchIPNBus
-// can be used to block on the feature being enabled.
-//
-// 2023-08-02: Valid feature values are "serve" and "funnel".
+// 2023-08-09: Valid feature values are "serve" and "funnel".
 func (lc *LocalClient) QueryFeature(ctx context.Context, feature string) (*tailcfg.QueryFeatureResponse, error) {
 	v := url.Values{"feature": {feature}}
 	body, err := lc.send(ctx, "POST", "/localapi/v0/query-feature?"+v.Encode(), 200, nil)
@@ -1152,6 +1330,15 @@ func (lc *LocalClient) DebugDERPRegion(ctx context.Context, regionIDOrCode strin
 		return nil, fmt.Errorf("error %w: %s", err, body)
 	}
 	return decodeJSON[*ipnstate.DebugDERPRegionReport](body)
+}
+
+// DebugPacketFilterRules returns the packet filter rules for the current device.
+func (lc *LocalClient) DebugPacketFilterRules(ctx context.Context) ([]tailcfg.FilterRule, error) {
+	body, err := lc.send(ctx, "POST", "/localapi/v0/debug-packet-filter-rules", 200, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error %w: %s", err, body)
+	}
+	return decodeJSON[[]tailcfg.FilterRule](body)
 }
 
 // DebugSetExpireIn marks the current node key to expire in d.
@@ -1214,6 +1401,72 @@ func (lc *LocalClient) WatchIPNBus(ctx context.Context, mask ipn.NotifyWatchOpt)
 		httpRes: res,
 		dec:     dec,
 	}, nil
+}
+
+// CheckUpdate returns a tailcfg.ClientVersion indicating whether or not an update is available
+// to be installed via the LocalAPI. In case the LocalAPI can't install updates, it returns a
+// ClientVersion that says that we are up to date.
+func (lc *LocalClient) CheckUpdate(ctx context.Context) (*tailcfg.ClientVersion, error) {
+	body, err := lc.get200(ctx, "/localapi/v0/update/check")
+	if err != nil {
+		return nil, err
+	}
+	cv, err := decodeJSON[tailcfg.ClientVersion](body)
+	if err != nil {
+		return nil, err
+	}
+	return &cv, nil
+}
+
+// TailFSSetFileServerAddr instructs TailFS to use the server at addr to access
+// the filesystem. This is used on platforms like Windows and MacOS to let
+// TailFS know to use the file server running in the GUI app.
+func (lc *LocalClient) TailFSSetFileServerAddr(ctx context.Context, addr string) error {
+	_, err := lc.send(ctx, "PUT", "/localapi/v0/tailfs/fileserver-address", http.StatusCreated, strings.NewReader(addr))
+	return err
+}
+
+// TailFSShareSet adds or updates the given share in the list of shares that
+// TailFS will serve to remote nodes. If a share with the same name already
+// exists, the existing share is replaced/updated.
+func (lc *LocalClient) TailFSShareSet(ctx context.Context, share *tailfs.Share) error {
+	_, err := lc.send(ctx, "PUT", "/localapi/v0/tailfs/shares", http.StatusCreated, jsonBody(share))
+	return err
+}
+
+// TailFSShareRemove removes the share with the given name from the list of
+// shares that TailFS will serve to remote nodes.
+func (lc *LocalClient) TailFSShareRemove(ctx context.Context, name string) error {
+	_, err := lc.send(
+		ctx,
+		"DELETE",
+		"/localapi/v0/tailfs/shares",
+		http.StatusNoContent,
+		strings.NewReader(name))
+	return err
+}
+
+// TailFSShareRename renames the share from old to new name.
+func (lc *LocalClient) TailFSShareRename(ctx context.Context, oldName, newName string) error {
+	_, err := lc.send(
+		ctx,
+		"POST",
+		"/localapi/v0/tailfs/shares",
+		http.StatusNoContent,
+		jsonBody([2]string{oldName, newName}))
+	return err
+}
+
+// TailFSShareList returns the list of shares that TailFS is currently serving
+// to remote nodes.
+func (lc *LocalClient) TailFSShareList(ctx context.Context) ([]*tailfs.Share, error) {
+	result, err := lc.get200(ctx, "/localapi/v0/tailfs/shares")
+	if err != nil {
+		return nil, err
+	}
+	var shares []*tailfs.Share
+	err = json.Unmarshal(result, &shares)
+	return shares, err
 }
 
 // IPNBusWatcher is an active subscription (watch) of the local tailscaled IPN bus.

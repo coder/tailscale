@@ -9,9 +9,8 @@ import (
 	"expvar"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
-
-	"golang.org/x/exp/slices"
 )
 
 // Set is a string-to-Var map variable that satisfies the expvar.Var
@@ -139,8 +138,8 @@ func (h *Histogram) String() string {
 		}
 		first = false
 	})
-	fmt.Fprintf(&b, "\"sum\": %v,", &h.sum)
-	fmt.Fprintf(&b, "\"count\": %v", &h.count)
+	fmt.Fprintf(&b, ",\"sum\": %v", &h.sum)
+	fmt.Fprintf(&b, ",\"count\": %v", &h.count)
 	fmt.Fprintf(&b, "}")
 	return b.String()
 }

@@ -7,6 +7,7 @@ package linuxfw
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -99,6 +100,48 @@ func newTestConn(t *testing.T, want [][]byte) *nftables.Conn {
 		t.Fatal(err)
 	}
 	return conn
+}
+
+func TestInsertHookRule(t *testing.T) {
+	proto := nftables.TableFamilyIPv4
+	want := [][]byte{
+		// batch begin
+		[]byte("\x00\x00\x00\x0a"),
+		// nft add table ip ts-filter-test
+		[]byte("\x02\x00\x00\x00\x13\x00\x01\x00\x74\x73\x2d\x66\x69\x6c\x74\x65\x72\x2d\x74\x65\x73\x74\x00\x00\x08\x00\x02\x00\x00\x00\x00\x00"),
+		// nft add chain ip ts-filter-test ts-input-test { type filter hook input priority 0 \; }
+		[]byte("\x02\x00\x00\x00\x13\x00\x01\x00\x74\x73\x2d\x66\x69\x6c\x74\x65\x72\x2d\x74\x65\x73\x74\x00\x00\x12\x00\x03\x00\x74\x73\x2d\x69\x6e\x70\x75\x74\x2d\x74\x65\x73\x74\x00\x00\x00\x14\x00\x04\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x00\x0b\x00\x07\x00\x66\x69\x6c\x74\x65\x72\x00\x00"),
+		// nft add chain ip ts-filter-test ts-jumpto
+		[]byte("\x02\x00\x00\x00\x13\x00\x01\x00\x74\x73\x2d\x66\x69\x6c\x74\x65\x72\x2d\x74\x65\x73\x74\x00\x00\x0e\x00\x03\x00\x74\x73\x2d\x6a\x75\x6d\x70\x74\x6f\x00\x00\x00"),
+		// nft add rule ip ts-filter-test ts-input-test counter jump ts-jumptp
+		[]byte("\x02\x00\x00\x00\x13\x00\x01\x00\x74\x73\x2d\x66\x69\x6c\x74\x65\x72\x2d\x74\x65\x73\x74\x00\x00\x12\x00\x02\x00\x74\x73\x2d\x69\x6e\x70\x75\x74\x2d\x74\x65\x73\x74\x00\x00\x00\x70\x00\x04\x80\x2c\x00\x01\x80\x0c\x00\x01\x00\x63\x6f\x75\x6e\x74\x65\x72\x00\x1c\x00\x02\x80\x0c\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x0c\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x40\x00\x01\x80\x0e\x00\x01\x00\x69\x6d\x6d\x65\x64\x69\x61\x74\x65\x00\x00\x00\x2c\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x00\x20\x00\x02\x80\x1c\x00\x02\x80\x08\x00\x01\x00\xff\xff\xff\xfd\x0e\x00\x02\x00\x74\x73\x2d\x6a\x75\x6d\x70\x74\x6f\x00\x00\x00"),
+		// batch end
+		[]byte("\x00\x00\x00\x0a"),
+	}
+	testConn := newTestConn(t, want)
+	table := testConn.AddTable(&nftables.Table{
+		Family: proto,
+		Name:   "ts-filter-test",
+	})
+
+	fromchain := testConn.AddChain(&nftables.Chain{
+		Name:     "ts-input-test",
+		Table:    table,
+		Type:     nftables.ChainTypeFilter,
+		Hooknum:  nftables.ChainHookInput,
+		Priority: nftables.ChainPriorityFilter,
+	})
+
+	tochain := testConn.AddChain(&nftables.Chain{
+		Name:  "ts-jumpto",
+		Table: table,
+	})
+
+	err := addHookRule(testConn, table, fromchain, tochain.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 }
 
 func TestInsertLoopbackRule(t *testing.T) {
@@ -333,6 +376,38 @@ func TestAddAcceptOutgoingPacketRule(t *testing.T) {
 	}
 }
 
+func TestAddAcceptIncomingPacketRule(t *testing.T) {
+	proto := nftables.TableFamilyIPv4
+	want := [][]byte{
+		// batch begin
+		[]byte("\x00\x00\x00\x0a"),
+		// nft add table ip ts-filter-test
+		[]byte("\x02\x00\x00\x00\x13\x00\x01\x00\x74\x73\x2d\x66\x69\x6c\x74\x65\x72\x2d\x74\x65\x73\x74\x00\x00\x08\x00\x02\x00\x00\x00\x00\x00"),
+		// nft add chain ip ts-filter-test ts-input-test { type filter hook input priority 0\; }
+		[]byte("\x02\x00\x00\x00\x13\x00\x01\x00\x74\x73\x2d\x66\x69\x6c\x74\x65\x72\x2d\x74\x65\x73\x74\x00\x00\x12\x00\x03\x00\x74\x73\x2d\x69\x6e\x70\x75\x74\x2d\x74\x65\x73\x74\x00\x00\x00\x14\x00\x04\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x00\x0b\x00\x07\x00\x66\x69\x6c\x74\x65\x72\x00\x00"),
+		// nft add rule ip ts-filter-test ts-input-test iifname "testTunn" counter accept
+		[]byte("\x02\x00\x00\x00\x13\x00\x01\x00\x74\x73\x2d\x66\x69\x6c\x74\x65\x72\x2d\x74\x65\x73\x74\x00\x00\x12\x00\x02\x00\x74\x73\x2d\x69\x6e\x70\x75\x74\x2d\x74\x65\x73\x74\x00\x00\x00\xb4\x00\x04\x80\x24\x00\x01\x80\x09\x00\x01\x00\x6d\x65\x74\x61\x00\x00\x00\x00\x14\x00\x02\x80\x08\x00\x02\x00\x00\x00\x00\x06\x08\x00\x01\x00\x00\x00\x00\x01\x30\x00\x01\x80\x08\x00\x01\x00\x63\x6d\x70\x00\x24\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01\x08\x00\x02\x00\x00\x00\x00\x00\x10\x00\x03\x80\x0c\x00\x01\x00\x74\x65\x73\x74\x54\x75\x6e\x6e\x2c\x00\x01\x80\x0c\x00\x01\x00\x63\x6f\x75\x6e\x74\x65\x72\x00\x1c\x00\x02\x80\x0c\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x0c\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x30\x00\x01\x80\x0e\x00\x01\x00\x69\x6d\x6d\x65\x64\x69\x61\x74\x65\x00\x00\x00\x1c\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x00\x10\x00\x02\x80\x0c\x00\x02\x80\x08\x00\x01\x00\x00\x00\x00\x01"),
+		// batch end
+		[]byte("\x00\x00\x00\x0a"),
+	}
+	testConn := newTestConn(t, want)
+	table := testConn.AddTable(&nftables.Table{
+		Family: proto,
+		Name:   "ts-filter-test",
+	})
+	chain := testConn.AddChain(&nftables.Chain{
+		Name:     "ts-input-test",
+		Table:    table,
+		Type:     nftables.ChainTypeFilter,
+		Hooknum:  nftables.ChainHookInput,
+		Priority: nftables.ChainPriorityFilter,
+	})
+	err := addAcceptIncomingPacketRule(testConn, table, chain, "testTunn")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAddMatchSubnetRouteMarkRuleMasq(t *testing.T) {
 	proto := nftables.TableFamilyIPv4
 	want := [][]byte{
@@ -399,6 +474,10 @@ func TestAddMatchSubnetRouteMarkRuleAccept(t *testing.T) {
 
 func newSysConn(t *testing.T) *nftables.Conn {
 	t.Helper()
+	if os.Geteuid() != 0 {
+		t.Skip(t.Name(), " requires privileges to create a namespace in order to run")
+		return nil
+	}
 
 	runtime.LockOSThread()
 
@@ -437,15 +516,26 @@ func newFakeNftablesRunner(t *testing.T, conn *nftables.Conn) *nftablesRunner {
 	}
 }
 
-func TestAddAndDelNetfilterChains(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip(t.Name(), " requires privileges to create a namespace in order to run")
-		return
+func checkChains(t *testing.T, conn *nftables.Conn, fam nftables.TableFamily, wantCount int) {
+	t.Helper()
+	got, err := conn.ListChainsOfTableFamily(fam)
+	if err != nil {
+		t.Fatalf("conn.ListChainsOfTableFamily(%v) failed: %v", fam, err)
 	}
+	if len(got) != wantCount {
+		t.Fatalf("len(got) = %d, want %d", len(got), wantCount)
+	}
+}
+
+func TestAddAndDelNetfilterChains(t *testing.T) {
 	conn := newSysConn(t)
+	checkChains(t, conn, nftables.TableFamilyIPv4, 0)
+	checkChains(t, conn, nftables.TableFamilyIPv6, 0)
 
 	runner := newFakeNftablesRunner(t, conn)
-	runner.AddChains()
+	if err := runner.AddChains(); err != nil {
+		t.Fatalf("runner.AddChains() failed: %v", err)
+	}
 
 	tables, err := conn.ListTables()
 	if err != nil {
@@ -456,33 +546,22 @@ func TestAddAndDelNetfilterChains(t *testing.T) {
 		t.Fatalf("len(tables) = %d, want 4", len(tables))
 	}
 
-	chainsV4, err := conn.ListChainsOfTableFamily(nftables.TableFamilyIPv4)
-	if err != nil {
-		t.Fatalf("list chains failed: %v", err)
-	}
-
-	if len(chainsV4) != 3 {
-		t.Fatalf("len(chainsV4) = %d, want 3", len(chainsV4))
-	}
-
-	chainsV6, err := conn.ListChainsOfTableFamily(nftables.TableFamilyIPv6)
-	if err != nil {
-		t.Fatalf("list chains failed: %v", err)
-	}
-
-	if len(chainsV6) != 3 {
-		t.Fatalf("len(chainsV6) = %d, want 3", len(chainsV6))
-	}
+	checkChains(t, conn, nftables.TableFamilyIPv4, 6)
+	checkChains(t, conn, nftables.TableFamilyIPv6, 6)
 
 	runner.DelChains()
+
+	// The default chains should still be present.
+	checkChains(t, conn, nftables.TableFamilyIPv4, 3)
+	checkChains(t, conn, nftables.TableFamilyIPv6, 3)
 
 	tables, err = conn.ListTables()
 	if err != nil {
 		t.Fatalf("conn.ListTables() failed: %v", err)
 	}
 
-	if len(tables) != 0 {
-		t.Fatalf("len(tables) = %d, want 0", len(tables))
+	if len(tables) != 4 {
+		t.Fatalf("len(tables) = %d, want 4", len(tables))
 	}
 }
 
@@ -571,48 +650,38 @@ func findCommonBaseRules(
 	return get, nil
 }
 
-func TestNFTAddAndDelNetfilterBase(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip(t.Name(), " requires privileges to create a namespace in order to run")
-		return
+// checkChainRules verifies that the chain has the expected number of rules.
+func checkChainRules(t *testing.T, conn *nftables.Conn, chain *nftables.Chain, wantCount int) {
+	t.Helper()
+	got, err := conn.GetRules(chain.Table, chain)
+	if err != nil {
+		t.Fatalf("conn.GetRules() failed: %v", err)
 	}
+	if len(got) != wantCount {
+		t.Fatalf("got = %d, want %d", len(got), wantCount)
+	}
+}
 
+func TestNFTAddAndDelNetfilterBase(t *testing.T) {
 	conn := newSysConn(t)
 
 	runner := newFakeNftablesRunner(t, conn)
-	runner.AddChains()
+	if err := runner.AddChains(); err != nil {
+		t.Fatalf("AddChains() failed: %v", err)
+	}
 	defer runner.DelChains()
-	runner.AddBase("testTunn")
+	if err := runner.AddBase("testTunn"); err != nil {
+		t.Fatalf("AddBase() failed: %v", err)
+	}
 
 	// check number of rules in each IPv4 TS chain
 	inputV4, forwardV4, postroutingV4, err := getTsChains(conn, nftables.TableFamilyIPv4)
 	if err != nil {
 		t.Fatalf("getTsChains() failed: %v", err)
 	}
-
-	inputV4Rules, err := conn.GetRules(runner.nft4.Filter, inputV4)
-	if err != nil {
-		t.Fatalf("conn.GetRules() failed: %v", err)
-	}
-	if len(inputV4Rules) != 2 {
-		t.Fatalf("len(inputV4Rules) = %d, want 2", len(inputV4Rules))
-	}
-
-	forwardV4Rules, err := conn.GetRules(runner.nft4.Filter, forwardV4)
-	if err != nil {
-		t.Fatalf("conn.GetRules() failed: %v", err)
-	}
-	if len(forwardV4Rules) != 4 {
-		t.Fatalf("len(forwardV4Rules) = %d, want 4", len(forwardV4Rules))
-	}
-
-	postroutingV4Rules, err := conn.GetRules(runner.nft4.Nat, postroutingV4)
-	if err != nil {
-		t.Fatalf("conn.GetRules() failed: %v", err)
-	}
-	if len(postroutingV4Rules) != 0 {
-		t.Fatalf("len(postroutingV4Rules) = %d, want 0", len(postroutingV4Rules))
-	}
+	checkChainRules(t, conn, inputV4, 3)
+	checkChainRules(t, conn, forwardV4, 4)
+	checkChainRules(t, conn, postroutingV4, 0)
 
 	_, err = findV4BaseRules(conn, inputV4, forwardV4, "testTunn")
 	if err != nil {
@@ -628,30 +697,9 @@ func TestNFTAddAndDelNetfilterBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getTsChains() failed: %v", err)
 	}
-
-	inputV6Rules, err := conn.GetRules(runner.nft6.Filter, inputV6)
-	if err != nil {
-		t.Fatalf("conn.GetRules() failed: %v", err)
-	}
-	if len(inputV6Rules) != 0 {
-		t.Fatalf("len(inputV6Rules) = %d, want 0", len(inputV4Rules))
-	}
-
-	forwardV6Rules, err := conn.GetRules(runner.nft6.Filter, forwardV6)
-	if err != nil {
-		t.Fatalf("conn.GetRules() failed: %v", err)
-	}
-	if len(forwardV6Rules) != 3 {
-		t.Fatalf("len(forwardV6Rules) = %d, want 3", len(forwardV4Rules))
-	}
-
-	postroutingV6Rules, err := conn.GetRules(runner.nft6.Nat, postroutingV6)
-	if err != nil {
-		t.Fatalf("conn.GetRules() failed: %v", err)
-	}
-	if len(postroutingV6Rules) != 0 {
-		t.Fatalf("len(postroutingV6Rules) = %d, want 0", len(postroutingV4Rules))
-	}
+	checkChainRules(t, conn, inputV6, 3)
+	checkChainRules(t, conn, forwardV6, 4)
+	checkChainRules(t, conn, postroutingV6, 0)
 
 	_, err = findCommonBaseRules(conn, forwardV6, "testTunn")
 	if err != nil {
@@ -665,13 +713,7 @@ func TestNFTAddAndDelNetfilterBase(t *testing.T) {
 		t.Fatalf("conn.ListChains() failed: %v", err)
 	}
 	for _, chain := range chains {
-		chainRules, err := conn.GetRules(chain.Table, chain)
-		if err != nil {
-			t.Fatalf("conn.GetRules() failed: %v", err)
-		}
-		if len(chainRules) != 0 {
-			t.Fatalf("len(chainRules) = %d, want 0", len(chainRules))
-		}
+		checkChainRules(t, conn, chain, 0)
 	}
 }
 
@@ -715,36 +757,38 @@ func findLoopBackRule(conn *nftables.Conn, proto nftables.TableFamily, table *nf
 }
 
 func TestNFTAddAndDelLoopbackRule(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip(t.Name(), " requires privileges to create a namespace in order to run")
-		return
-	}
-
 	conn := newSysConn(t)
 
 	runner := newFakeNftablesRunner(t, conn)
-	runner.AddChains()
+	if err := runner.AddChains(); err != nil {
+		t.Fatalf("AddChains() failed: %v", err)
+	}
 	defer runner.DelChains()
-	runner.AddBase("testTunn")
-	defer runner.DelBase()
-
-	addr := netip.MustParseAddr("192.168.0.2")
-	addrV6 := netip.MustParseAddr("2001:db8::2")
-	runner.AddLoopbackRule(addr)
-	runner.AddLoopbackRule(addrV6)
 
 	inputV4, _, _, err := getTsChains(conn, nftables.TableFamilyIPv4)
 	if err != nil {
 		t.Fatalf("getTsChains() failed: %v", err)
 	}
 
-	inputV4Rules, err := conn.GetRules(runner.nft4.Filter, inputV4)
+	inputV6, _, _, err := getTsChains(conn, nftables.TableFamilyIPv6)
 	if err != nil {
-		t.Fatalf("conn.GetRules() failed: %v", err)
+		t.Fatalf("getTsChains() failed: %v", err)
 	}
-	if len(inputV4Rules) != 3 {
-		t.Fatalf("len(inputV4Rules) = %d, want 3", len(inputV4Rules))
-	}
+	checkChainRules(t, conn, inputV4, 0)
+	checkChainRules(t, conn, inputV6, 0)
+
+	runner.AddBase("testTunn")
+	defer runner.DelBase()
+	checkChainRules(t, conn, inputV4, 3)
+	checkChainRules(t, conn, inputV6, 3)
+
+	addr := netip.MustParseAddr("192.168.0.2")
+	addrV6 := netip.MustParseAddr("2001:db8::2")
+	runner.AddLoopbackRule(addr)
+	runner.AddLoopbackRule(addrV6)
+
+	checkChainRules(t, conn, inputV4, 4)
+	checkChainRules(t, conn, inputV6, 4)
 
 	existingLoopBackRule, err := findLoopBackRule(conn, nftables.TableFamilyIPv4, runner.nft4.Filter, inputV4, addr)
 	if err != nil {
@@ -753,19 +797,6 @@ func TestNFTAddAndDelLoopbackRule(t *testing.T) {
 
 	if existingLoopBackRule.Position != 0 {
 		t.Fatalf("existingLoopBackRule.Handle = %d, want 0", existingLoopBackRule.Handle)
-	}
-
-	inputV6, _, _, err := getTsChains(conn, nftables.TableFamilyIPv6)
-	if err != nil {
-		t.Fatalf("getTsChains() failed: %v", err)
-	}
-
-	inputV6Rules, err := conn.GetRules(runner.nft6.Filter, inputV4)
-	if err != nil {
-		t.Fatalf("conn.GetRules() failed: %v", err)
-	}
-	if len(inputV6Rules) != 1 {
-		t.Fatalf("len(inputV4Rules) = %d, want 1", len(inputV4Rules))
 	}
 
 	existingLoopBackRuleV6, err := findLoopBackRule(conn, nftables.TableFamilyIPv6, runner.nft6.Filter, inputV6, addrV6)
@@ -780,11 +811,121 @@ func TestNFTAddAndDelLoopbackRule(t *testing.T) {
 	runner.DelLoopbackRule(addr)
 	runner.DelLoopbackRule(addrV6)
 
-	inputV4Rules, err = conn.GetRules(runner.nft4.Filter, inputV4)
-	if err != nil {
-		t.Fatalf("conn.GetRules() failed: %v", err)
+	checkChainRules(t, conn, inputV4, 3)
+	checkChainRules(t, conn, inputV6, 3)
+}
+
+func TestNFTAddAndDelHookRule(t *testing.T) {
+	conn := newSysConn(t)
+	runner := newFakeNftablesRunner(t, conn)
+	if err := runner.AddChains(); err != nil {
+		t.Fatalf("AddChains() failed: %v", err)
 	}
-	if len(inputV4Rules) != 2 {
-		t.Fatalf("len(inputV4Rules) = %d, want 2", len(inputV4Rules))
+	defer runner.DelChains()
+	if err := runner.AddHooks(); err != nil {
+		t.Fatalf("AddHooks() failed: %v", err)
+	}
+
+	forwardChain, err := getChainFromTable(conn, runner.nft4.Filter, "FORWARD")
+	if err != nil {
+		t.Fatalf("failed to get forwardChain: %v", err)
+	}
+	inputChain, err := getChainFromTable(conn, runner.nft4.Filter, "INPUT")
+	if err != nil {
+		t.Fatalf("failed to get inputChain: %v", err)
+	}
+	postroutingChain, err := getChainFromTable(conn, runner.nft4.Nat, "POSTROUTING")
+	if err != nil {
+		t.Fatalf("failed to get postroutingChain: %v", err)
+	}
+
+	checkChainRules(t, conn, forwardChain, 1)
+	checkChainRules(t, conn, inputChain, 1)
+	checkChainRules(t, conn, postroutingChain, 1)
+
+	runner.DelHooks(t.Logf)
+
+	checkChainRules(t, conn, forwardChain, 0)
+	checkChainRules(t, conn, inputChain, 0)
+	checkChainRules(t, conn, postroutingChain, 0)
+}
+
+type testFWDetector struct {
+	iptRuleCount, nftRuleCount int
+	iptErr, nftErr             error
+}
+
+func (t *testFWDetector) iptDetect() (int, error) {
+	return t.iptRuleCount, t.iptErr
+}
+
+func (t *testFWDetector) nftDetect() (int, error) {
+	return t.nftRuleCount, t.nftErr
+}
+
+// TestCreateDummyPostroutingChains tests that on a system with nftables
+// available, the function does not return an error and that the dummy
+// postrouting chains are cleaned up.
+func TestCreateDummyPostroutingChains(t *testing.T) {
+	conn := newSysConn(t)
+	runner := newFakeNftablesRunner(t, conn)
+	if err := runner.createDummyPostroutingChains(); err != nil {
+		t.Fatalf("createDummyPostroutingChains() failed: %v", err)
+	}
+	for _, table := range runner.getNATTables() {
+		nt, err := getTableIfExists(conn, table.Proto, tsDummyTableName)
+		if err != nil {
+			t.Fatalf("getTableIfExists() failed: %v", err)
+		}
+		if nt != nil {
+			t.Fatalf("expected table to be nil, got %v", nt)
+		}
+	}
+}
+
+func TestPickFirewallModeFromInstalledRules(t *testing.T) {
+	tests := []struct {
+		name string
+		det  *testFWDetector
+		want FirewallMode
+	}{
+		{
+			name: "using iptables legacy",
+			det:  &testFWDetector{iptRuleCount: 1},
+			want: FirewallModeIPTables,
+		},
+		{
+			name: "using nftables",
+			det:  &testFWDetector{nftRuleCount: 1},
+			want: FirewallModeNfTables,
+		},
+		{
+			name: "using both iptables and nftables",
+			det:  &testFWDetector{iptRuleCount: 2, nftRuleCount: 2},
+			want: FirewallModeNfTables,
+		},
+		{
+			name: "not using any firewall, both available",
+			det:  &testFWDetector{},
+			want: FirewallModeNfTables,
+		},
+		{
+			name: "not using any firewall, iptables available only",
+			det:  &testFWDetector{iptRuleCount: 1, nftErr: errors.New("nft error")},
+			want: FirewallModeIPTables,
+		},
+		{
+			name: "not using any firewall, nftables available only",
+			det:  &testFWDetector{iptErr: errors.New("iptables error"), nftRuleCount: 1},
+			want: FirewallModeNfTables,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := pickFirewallModeFromInstalledRules(t.Logf, tt.det)
+			if got != tt.want {
+				t.Errorf("chooseFireWallMode() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

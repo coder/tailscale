@@ -34,9 +34,9 @@ const (
 )
 
 // Verify performs authenticode verification on the file at path, and also
-// ensures that expectedCertSubject was the entity who signed it. path may point
-// to either a PE binary or an MSI package. ErrSigNotFound is returned if no
-// signature is found.
+// ensures that expectedCertSubject matches the actual cert subject. path may
+// point to either a PE binary or an MSI package. ErrSigNotFound is returned if
+// no signature is found.
 func Verify(path string, expectedCertSubject string) error {
 	path16, err := windows.UTF16PtrFromString(path)
 	if err != nil {
@@ -104,9 +104,12 @@ func queryPE(utf16Path *uint16, verify bool) (string, SigProvenance, error) {
 	}
 }
 
+// CertSubjectError is returned if a cert subject was successfully resolved but
+// there was a problem encountered during its extraction. The Subject is
+// provided for informational purposes but is not presumed to be accurate.
 type CertSubjectError struct {
-	Err     error
-	Subject string
+	Err     error  // The error that occurred while extracting the cert subject.
+	Subject string // The (possibly invalid) cert subject that was extracted.
 }
 
 func (e *CertSubjectError) Error() string {

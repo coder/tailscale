@@ -27,7 +27,7 @@ var (
 
 	sysErr    = map[Subsystem]error{}                   // error key => err (or nil for no error)
 	watchers  = set.HandleSet[func(Subsystem, error)]{} // opt func to run if error state changes
-	warnables = map[*Warnable]struct{}{}                // set of warnables
+	warnables = set.Set[*Warnable]{}
 	timer     *time.Timer
 
 	debugHandler = map[string]http.Handler{}
@@ -37,6 +37,7 @@ var (
 	lastMapPollEndedAt      time.Time
 	lastStreamedMapResponse time.Time
 	derpHomeRegion          int
+	derpHomeless            bool
 	derpRegionConnected     = map[int]bool{}
 	derpRegionHealthProblem = map[int]string{}
 	derpRegionLastFrame     = map[int]time.Time{}
@@ -84,7 +85,7 @@ func NewWarnable(opts ...WarnableOpt) *Warnable {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	warnables[w] = struct{}{}
+	warnables.Add(w)
 	return w
 }
 
@@ -102,6 +103,16 @@ func WithMapDebugFlag(name string) WarnableOpt {
 	})
 }
 
+// WithConnectivityImpact returns an option which makes a Warnable annotated as
+// something that could be breaking external network connectivity on the
+// machine. This will make the warnable returned by OverallError alongside
+// network connectivity errors.
+func WithConnectivityImpact() WarnableOpt {
+	return warnOptFunc(func(w *Warnable) {
+		w.hasConnectivityImpact = true
+	})
+}
+
 type warnOptFunc func(*Warnable)
 
 func (f warnOptFunc) mod(w *Warnable) { f(w) }
@@ -110,6 +121,10 @@ func (f warnOptFunc) mod(w *Warnable) { f(w) }
 // The caller of NewWarnable is responsible for calling Set to update the state.
 type Warnable struct {
 	debugFlag string // optional MapRequest.DebugFlag to send when unhealthy
+
+	// If true, this warning is related to configuration of networking stack
+	// on the machine that impacts connectivity.
+	hasConnectivityImpact bool
 
 	isSet atomic.Bool
 	mu    sync.Mutex
@@ -279,27 +294,31 @@ func SetControlHealth(problems []string) {
 
 // GotStreamedMapResponse notes that we got a tailcfg.MapResponse
 // message in streaming mode, even if it's just a keep-alive message.
+//
+// This also notes that a map poll is in progress. To unset that, call
+// SetOutOfPollNetMap().
 func GotStreamedMapResponse() {
 	mu.Lock()
 	defer mu.Unlock()
 	lastStreamedMapResponse = time.Now()
+	if !inMapPoll {
+		inMapPoll = true
+		inMapPollSince = time.Now()
+	}
 	selfCheckLocked()
 }
 
-// SetInPollNetMap records whether the client has an open
-// HTTP long poll open to the control plane.
-func SetInPollNetMap(v bool) {
+// SetOutOfPollNetMap records that the client is no longer in
+// an HTTP map request long poll to the control plane.
+func SetOutOfPollNetMap() {
 	mu.Lock()
 	defer mu.Unlock()
-	if v == inMapPoll {
+	if !inMapPoll {
 		return
 	}
-	inMapPoll = v
-	if v {
-		inMapPollSince = time.Now()
-	} else {
-		lastMapPollEndedAt = time.Now()
-	}
+	inMapPoll = false
+	lastMapPollEndedAt = time.Now()
+	selfCheckLocked()
 }
 
 // GetInPollNetMap reports whether the client has an open
@@ -311,10 +330,14 @@ func GetInPollNetMap() bool {
 }
 
 // SetMagicSockDERPHome notes what magicsock's view of its home DERP is.
-func SetMagicSockDERPHome(region int) {
+//
+// The homeless parameter is whether magicsock is running in DERP-disconnected
+// mode, without discovering and maintaining a connection to its home DERP.
+func SetMagicSockDERPHome(region int, homeless bool) {
 	mu.Lock()
 	defer mu.Unlock()
 	derpHomeRegion = region
+	derpHomeless = homeless
 	selfCheckLocked()
 }
 
@@ -351,11 +374,22 @@ func SetDERPRegionHealth(region int, problem string) {
 	selfCheckLocked()
 }
 
+// NoteDERPRegionReceivedFrame is called to note that a frame was received from
+// the given DERP region at the current time.
 func NoteDERPRegionReceivedFrame(region int) {
 	mu.Lock()
 	defer mu.Unlock()
 	derpRegionLastFrame[region] = time.Now()
 	selfCheckLocked()
+}
+
+// GetDERPRegionReceivedTime returns the last time that a frame was received
+// from the given DERP region, or the zero time if no communication with that
+// region has occurred.
+func GetDERPRegionReceivedTime(region int) time.Time {
+	mu.Lock()
+	defer mu.Unlock()
+	return derpRegionLastFrame[region]
 }
 
 // state is an ipn.State.String() value: "Running", "Stopped", "NeedsLogin", etc.
@@ -422,9 +456,35 @@ func OverallError() error {
 
 var fakeErrForTesting = envknob.RegisterString("TS_DEBUG_FAKE_HEALTH_ERROR")
 
+// networkErrorf creates an error that indicates issues with outgoing network
+// connectivity. Any active warnings related to network connectivity will
+// automatically be appended to it.
+func networkErrorf(format string, a ...any) error {
+	errs := []error{
+		fmt.Errorf(format, a...),
+	}
+	for w := range warnables {
+		if !w.hasConnectivityImpact {
+			continue
+		}
+		if err := w.get(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) == 1 {
+		return errs[0]
+	}
+	return multierr.New(errs...)
+}
+
+var errNetworkDown = networkErrorf("network down")
+var errNotInMapPoll = networkErrorf("not in map poll")
+var errNoDERPHome = errors.New("no DERP home")
+var errNoUDP4Bind = networkErrorf("no udp4 bind")
+
 func overallErrorLocked() error {
 	if !anyInterfaceUp {
-		return errors.New("network down")
+		return errNetworkDown
 	}
 	if localLogConfigErr != nil {
 		return localLogConfigErr
@@ -437,24 +497,26 @@ func overallErrorLocked() error {
 	}
 	now := time.Now()
 	if !inMapPoll && (lastMapPollEndedAt.IsZero() || now.Sub(lastMapPollEndedAt) > 10*time.Second) {
-		return errors.New("not in map poll")
+		return errNotInMapPoll
 	}
 	const tooIdle = 2*time.Minute + 5*time.Second
 	if d := now.Sub(lastStreamedMapResponse).Round(time.Second); d > tooIdle {
-		return fmt.Errorf("no map response in %v", d)
+		return networkErrorf("no map response in %v", d)
 	}
-	rid := derpHomeRegion
-	if rid == 0 {
-		return errors.New("no DERP home")
-	}
-	if !derpRegionConnected[rid] {
-		return fmt.Errorf("not connected to home DERP region %v", rid)
-	}
-	if d := now.Sub(derpRegionLastFrame[rid]).Round(time.Second); d > tooIdle {
-		return fmt.Errorf("haven't heard from home DERP region %v in %v", rid, d)
+	if !derpHomeless {
+		rid := derpHomeRegion
+		if rid == 0 {
+			return errNoDERPHome
+		}
+		if !derpRegionConnected[rid] {
+			return networkErrorf("not connected to home DERP region %v", rid)
+		}
+		if d := now.Sub(derpRegionLastFrame[rid]).Round(time.Second); d > tooIdle {
+			return networkErrorf("haven't heard from home DERP region %v in %v", rid, d)
+		}
 	}
 	if udp4Unbound {
-		return errors.New("no udp4 bind")
+		return errNoUDP4Bind
 	}
 
 	// TODO: use

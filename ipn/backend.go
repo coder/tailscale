@@ -10,10 +10,12 @@ import (
 
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
+	"tailscale.com/tailfs"
 	"tailscale.com/types/empty"
 	"tailscale.com/types/key"
 	"tailscale.com/types/netmap"
 	"tailscale.com/types/structs"
+	"tailscale.com/types/views"
 )
 
 type State int
@@ -61,11 +63,12 @@ const (
 	// each one via RequestEngineStatus.
 	NotifyWatchEngineUpdates NotifyWatchOpt = 1 << iota
 
-	NotifyInitialState  // if set, the first Notify message (sent immediately) will contain the current State + BrowseToURL
+	NotifyInitialState  // if set, the first Notify message (sent immediately) will contain the current State + BrowseToURL + SessionID
 	NotifyInitialPrefs  // if set, the first Notify message (sent immediately) will contain the current Prefs
 	NotifyInitialNetMap // if set, the first Notify message (sent immediately) will contain the current NetMap
 
-	NotifyNoPrivateKeys // if set, private keys that would normally be sent in updates are zeroed out
+	NotifyNoPrivateKeys       // if set, private keys that would normally be sent in updates are zeroed out
+	NotifyInitialTailFSShares // if set, the first Notify message (sent immediately) will contain the current TailFS Shares
 )
 
 // Notify is a communication from a backend (e.g. tailscaled) to a frontend
@@ -76,6 +79,12 @@ const (
 type Notify struct {
 	_       structs.Incomparable
 	Version string // version number of IPN backend
+
+	// SessionID identifies the unique WatchIPNBus session.
+	// This field is only set in the first message when requesting
+	// NotifyInitialState. Clients must store it on their side as
+	// following notifications will not include this field.
+	SessionID string `json:",omitempty"`
 
 	// ErrMessage, if non-nil, contains a critical error message.
 	// For State InUseOtherUser, ErrMessage is not critical and just contains the details.
@@ -114,6 +123,14 @@ type Notify struct {
 	// ClientVersion, if non-nil, describes whether a client version update
 	// is available.
 	ClientVersion *tailcfg.ClientVersion `json:",omitempty"`
+
+	// TailFSShares tracks the full set of current TailFSShares that we're
+	// publishing. Some client applications, like the MacOS and Windows clients,
+	// will listen for updates to this and handle serving these shares under
+	// the identity of the unprivileged user that is running the application. A
+	// nil value here means that we're not broadcasting shares information, an
+	// empty value means that there are no shares.
+	TailFSShares views.SliceView[*tailfs.Share, tailfs.ShareView]
 
 	// type is mirrored in xcode/Shared/IPN.swift
 }
@@ -169,6 +186,7 @@ type PartialFile struct {
 	// in-progress '*.partial' file's path when the peerapi isn't
 	// being used; see LocalBackend.SetDirectFileRoot.
 	PartialPath string `json:",omitempty"`
+	FinalPath   string `json:",omitempty"`
 
 	// Done is set in "direct" mode when the partial file has been
 	// closed and is ready for the caller to rename away the
@@ -185,6 +203,13 @@ type PartialFile struct {
 //   - "_debug_magicsock_until" with value being a unix timestamp stringified
 //   - "_debug_<component>_until" with value being a unix timestamp stringified
 type StateKey string
+
+// DebuggableComponents is a list of components whose debugging can be turned on
+// and off individually using the tailscale debug command.
+var DebuggableComponents = []string{
+	"magicsock",
+	"sockstats",
+}
 
 type Options struct {
 	// FrontendLogID is the public logtail id used by the frontend.

@@ -8,7 +8,7 @@ package ipnauth
 import (
 	"net"
 
-	"inet.af/peercred"
+	"github.com/tailscale/peercred"
 	"tailscale.com/types/logger"
 )
 
@@ -20,4 +20,10 @@ func GetConnIdentity(_ logger.Logf, c net.Conn) (ci *ConnIdentity, err error) {
 	_, ci.isUnixSock = c.(*net.UnixConn)
 	ci.creds, _ = peercred.Get(c)
 	return ci, nil
+}
+
+// WindowsToken is unsupported when GOOS != windows and always returns
+// ErrNotImplemented.
+func (ci *ConnIdentity) WindowsToken() (WindowsToken, error) {
+	return nil, ErrNotImplemented
 }

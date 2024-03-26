@@ -7,11 +7,13 @@ package derp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	crand "crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"expvar"
@@ -39,10 +41,12 @@ import (
 	"tailscale.com/envknob"
 	"tailscale.com/metrics"
 	"tailscale.com/syncs"
+	"tailscale.com/tailcfg"
 	"tailscale.com/tstime"
 	"tailscale.com/tstime/rate"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
+	"tailscale.com/util/set"
 	"tailscale.com/version"
 )
 
@@ -142,15 +146,19 @@ type Server struct {
 	avgQueueDuration             *uint64          // In milliseconds; accessed atomically
 	tcpRtt                       metrics.LabelMap // histogram
 
-	// verifyClients only accepts client connections to the DERP server if the clientKey is a
-	// known peer in the network, as specified by a running tailscaled's client's LocalAPI.
-	verifyClients bool
+	// verifyClientsLocalTailscaled only accepts client connections to the DERP
+	// server if the clientKey is a known peer in the network, as specified by a
+	// running tailscaled's client's LocalAPI.
+	verifyClientsLocalTailscaled bool
+
+	verifyClientsURL         string
+	verifyClientsURLFailOpen bool
 
 	mu       sync.Mutex
 	closed   bool
 	netConns map[Conn]chan struct{} // chan is closed when conn closes
 	clients  map[key.NodePublic]clientSet
-	watchers map[*sclient]bool // mesh peer -> true
+	watchers set.Set[*sclient] // mesh peers
 	// clientsMesh tracks all clients in the cluster, both locally
 	// and to mesh peers.  If the value is nil, that means the
 	// peer is only local (and thus in the clients Map, but not
@@ -219,8 +227,7 @@ func (s singleClient) ForeachClient(f func(*sclient)) { f(s.c) }
 // All fields are guarded by Server.mu.
 type dupClientSet struct {
 	// set is the set of connected clients for sclient.key.
-	// The values are all true.
-	set map[*sclient]bool
+	set set.Set[*sclient]
 
 	// last is the most recent addition to set, or nil if the most
 	// recent one has since disconnected and nobody else has send
@@ -261,7 +268,7 @@ func (s *dupClientSet) removeClient(c *sclient) bool {
 
 	trim := s.sendHistory[:0]
 	for _, v := range s.sendHistory {
-		if s.set[v] && (len(trim) == 0 || trim[len(trim)-1] != v) {
+		if s.set.Contains(v) && (len(trim) == 0 || trim[len(trim)-1] != v) {
 			trim = append(trim, v)
 		}
 	}
@@ -316,7 +323,7 @@ func NewServer(privateKey key.NodePrivate, logf logger.Logf) *Server {
 		clientsMesh:          map[key.NodePublic]PacketForwarder{},
 		netConns:             map[Conn]chan struct{}{},
 		memSys0:              ms.Sys,
-		watchers:             map[*sclient]bool{},
+		watchers:             set.Set[*sclient]{},
 		sentTo:               map[key.NodePublic]map[key.NodePublic]int64{},
 		avgQueueDuration:     new(uint64),
 		tcpRtt:               metrics.LabelMap{Label: "le"},
@@ -352,7 +359,20 @@ func (s *Server) SetMeshKey(v string) {
 //
 // It must be called before serving begins.
 func (s *Server) SetVerifyClient(v bool) {
-	s.verifyClients = v
+	s.verifyClientsLocalTailscaled = v
+}
+
+// SetVerifyClientURL sets the admission controller URL to use for verifying clients.
+// If empty, all clients are accepted (unless restricted by SetVerifyClient checking
+// against tailscaled).
+func (s *Server) SetVerifyClientURL(v string) {
+	s.verifyClientsURL = v
+}
+
+// SetVerifyClientURLFailOpen sets whether to allow clients to connect if the
+// admission controller URL is unreachable.
+func (s *Server) SetVerifyClientURLFailOpen(v bool) {
+	s.verifyClientsURLFailOpen = v
 }
 
 // HasMeshKey reports whether the server is configured with a mesh key.
@@ -498,8 +518,8 @@ func (s *Server) registerClient(c *sclient) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	set := s.clients[c.key]
-	switch set := set.(type) {
+	curSet := s.clients[c.key]
+	switch curSet := curSet.(type) {
 	case nil:
 		s.clients[c.key] = singleClient{c}
 		c.debugLogf("register single client")
@@ -507,14 +527,14 @@ func (s *Server) registerClient(c *sclient) {
 		s.dupClientKeys.Add(1)
 		s.dupClientConns.Add(2) // both old and new count
 		s.dupClientConnTotal.Add(1)
-		old := set.ActiveClient()
+		old := curSet.ActiveClient()
 		old.isDup.Store(true)
 		c.isDup.Store(true)
 		s.clients[c.key] = &dupClientSet{
 			last: c,
-			set: map[*sclient]bool{
-				old: true,
-				c:   true,
+			set: set.Set[*sclient]{
+				old: struct{}{},
+				c:   struct{}{},
 			},
 			sendHistory: []*sclient{old},
 		}
@@ -523,9 +543,9 @@ func (s *Server) registerClient(c *sclient) {
 		s.dupClientConns.Add(1)     // the gauge
 		s.dupClientConnTotal.Add(1) // the counter
 		c.isDup.Store(true)
-		set.set[c] = true
-		set.last = c
-		set.sendHistory = append(set.sendHistory, c)
+		curSet.set.Add(c)
+		curSet.last = c
+		curSet.sendHistory = append(curSet.sendHistory, c)
 		c.debugLogf("register another duplicate client")
 	}
 
@@ -534,7 +554,7 @@ func (s *Server) registerClient(c *sclient) {
 	}
 	s.keyOfAddr[c.remoteIPPort] = c.key
 	s.curClients.Add(1)
-	s.broadcastPeerStateChangeLocked(c.key, true)
+	s.broadcastPeerStateChangeLocked(c.key, c.remoteIPPort, true)
 }
 
 // broadcastPeerStateChangeLocked enqueues a message to all watchers
@@ -542,9 +562,13 @@ func (s *Server) registerClient(c *sclient) {
 // presence changed.
 //
 // s.mu must be held.
-func (s *Server) broadcastPeerStateChangeLocked(peer key.NodePublic, present bool) {
+func (s *Server) broadcastPeerStateChangeLocked(peer key.NodePublic, ipPort netip.AddrPort, present bool) {
 	for w := range s.watchers {
-		w.peerStateChange = append(w.peerStateChange, peerConnState{peer: peer, present: present})
+		w.peerStateChange = append(w.peerStateChange, peerConnState{
+			peer:    peer,
+			present: present,
+			ipPort:  ipPort,
+		})
 		go w.requestMeshUpdate()
 	}
 }
@@ -565,7 +589,7 @@ func (s *Server) unregisterClient(c *sclient) {
 			delete(s.clientsMesh, c.key)
 			s.notePeerGoneFromRegionLocked(c.key)
 		}
-		s.broadcastPeerStateChangeLocked(c.key, false)
+		s.broadcastPeerStateChangeLocked(c.key, netip.AddrPort{}, false)
 	case *dupClientSet:
 		c.debugLogf("removed duplicate client")
 		if set.removeClient(c) {
@@ -655,13 +679,21 @@ func (s *Server) addWatcher(c *sclient) {
 	defer s.mu.Unlock()
 
 	// Queue messages for each already-connected client.
-	for peer := range s.clients {
-		c.peerStateChange = append(c.peerStateChange, peerConnState{peer: peer, present: true})
+	for peer, clientSet := range s.clients {
+		ac := clientSet.ActiveClient()
+		if ac == nil {
+			continue
+		}
+		c.peerStateChange = append(c.peerStateChange, peerConnState{
+			peer:    peer,
+			present: true,
+			ipPort:  ac.remoteIPPort,
+		})
 	}
 
 	// And enroll the watcher in future updates (of both
 	// connections & disconnections).
-	s.watchers[c] = true
+	s.watchers.Add(c)
 
 	go c.requestMeshUpdate()
 }
@@ -678,7 +710,9 @@ func (s *Server) accept(ctx context.Context, nc Conn, brw *bufio.ReadWriter, rem
 	if err != nil {
 		return fmt.Errorf("receive client key: %v", err)
 	}
-	if err := s.verifyClient(clientKey, clientInfo); err != nil {
+
+	clientAP, _ := netip.ParseAddrPort(remoteAddr)
+	if err := s.verifyClient(ctx, clientKey, clientInfo, clientAP.Addr()); err != nil {
 		return fmt.Errorf("client %x rejected: %v", clientKey, err)
 	}
 
@@ -699,7 +733,6 @@ func (s *Server) accept(ctx context.Context, nc Conn, brw *bufio.ReadWriter, rem
 		bw:             bw,
 		logf:           logger.WithPrefix(s.logf, fmt.Sprintf("derp client %v%s: ", remoteAddr, clientKey.ShortString())),
 		done:           ctx.Done(),
-		remoteAddr:     remoteAddr,
 		remoteIPPort:   remoteIPPort,
 		connectedAt:    s.clock.Now(),
 		sendQueue:      make(chan pkt, perClientSendQueueDepth),
@@ -739,12 +772,6 @@ func (s *Server) debugLogf(format string, v ...any) {
 		s.logf(format, v...)
 	}
 }
-
-// for testing
-var (
-	timeSleep = time.Sleep
-	timeNow   = time.Now
-)
 
 // run serves the client until there's an error.
 // If the client hangs up or the server is closed, run returns nil, otherwise run returns an error.
@@ -1110,21 +1137,60 @@ func (c *sclient) requestMeshUpdate() {
 	}
 }
 
-func (s *Server) verifyClient(clientKey key.NodePublic, info *clientInfo) error {
-	if !s.verifyClients {
-		return nil
+// verifyClient checks whether the client is allowed to connect to the derper,
+// depending on how & whether the server's been configured to verify.
+func (s *Server) verifyClient(ctx context.Context, clientKey key.NodePublic, info *clientInfo, clientIP netip.Addr) error {
+	// tailscaled-based verification:
+	if s.verifyClientsLocalTailscaled {
+		status, err := tailscale.Status(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to query local tailscaled status: %w", err)
+		}
+		if clientKey == status.Self.PublicKey {
+			return nil
+		}
+		if _, exists := status.Peer[clientKey]; !exists {
+			return fmt.Errorf("client %v not in set of peers", clientKey)
+		}
 	}
-	status, err := tailscale.Status(context.TODO())
-	if err != nil {
-		return fmt.Errorf("failed to query local tailscaled status: %w", err)
+
+	// admission controller-based verification:
+	if s.verifyClientsURL != "" {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		jreq, err := json.Marshal(&tailcfg.DERPAdmitClientRequest{
+			NodePublic: clientKey,
+			Source:     clientIP,
+		})
+		if err != nil {
+			return err
+		}
+		req, err := http.NewRequestWithContext(ctx, "POST", s.verifyClientsURL, bytes.NewReader(jreq))
+		if err != nil {
+			return err
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			if s.verifyClientsURLFailOpen {
+				s.logf("admission controller unreachable; allowing client %v", clientKey)
+				return nil
+			}
+			return err
+		}
+		defer res.Body.Close()
+		if res.StatusCode != 200 {
+			return fmt.Errorf("admission controller: %v", res.Status)
+		}
+		var jres tailcfg.DERPAdmitClientResponse
+		if err := json.NewDecoder(io.LimitReader(res.Body, 4<<10)).Decode(&jres); err != nil {
+			return err
+		}
+		if !jres.Allow {
+			return fmt.Errorf("admission controller: %v/%v not allowed", clientKey, clientIP)
+		}
+		// TODO(bradfitz): add policy for configurable bandwidth rate per client?
 	}
-	if clientKey == status.Self.PublicKey {
-		return nil
-	}
-	if _, exists := status.Peer[clientKey]; !exists {
-		return fmt.Errorf("client %v not in set of peers", clientKey)
-	}
-	// TODO(bradfitz): add policy for configurable bandwidth rate per client?
 	return nil
 }
 
@@ -1310,7 +1376,6 @@ type sclient struct {
 	info           clientInfo
 	logf           logger.Logf
 	done           <-chan struct{}  // closed when connection closes
-	remoteAddr     string           // usually ip:port from net.Conn.RemoteAddr().String()
 	remoteIPPort   netip.AddrPort   // zero if remoteAddr is not ip:port.
 	sendQueue      chan pkt         // packets queued to this client; never closed
 	discoSendQueue chan pkt         // important packets queued to this client; never closed
@@ -1347,15 +1412,13 @@ type sclient struct {
 // peerConnState represents whether a peer is connected to the server
 // or not.
 type peerConnState struct {
+	ipPort  netip.AddrPort // if present, the peer's IP:port
 	peer    key.NodePublic
 	present bool
 }
 
 // pkt is a request to write a data frame to an sclient.
 type pkt struct {
-	// src is the who's the sender of the packet.
-	src key.NodePublic
-
 	// enqueuedAt is when a packet was put onto a queue before it was sent,
 	// and is used for reporting metrics on the duration of packets in the queue.
 	enqueuedAt time.Time
@@ -1363,6 +1426,9 @@ type pkt struct {
 	// bs is the data packet bytes.
 	// The memory is owned by pkt.
 	bs []byte
+
+	// src is the who's the sender of the packet.
+	src key.NodePublic
 }
 
 // peerGoneMsg is a request to write a peerGone frame to an sclient
@@ -1542,12 +1608,18 @@ func (c *sclient) sendPeerGone(peer key.NodePublic, reason PeerGoneReasonType) e
 }
 
 // sendPeerPresent sends a peerPresent frame, without flushing.
-func (c *sclient) sendPeerPresent(peer key.NodePublic) error {
+func (c *sclient) sendPeerPresent(peer key.NodePublic, ipPort netip.AddrPort) error {
 	c.setWriteDeadline()
-	if err := writeFrameHeader(c.bw.bw(), framePeerPresent, keyLen); err != nil {
+	const frameLen = keyLen + 16 + 2
+	if err := writeFrameHeader(c.bw.bw(), framePeerPresent, frameLen); err != nil {
 		return err
 	}
-	_, err := c.bw.Write(peer.AppendTo(nil))
+	payload := make([]byte, frameLen)
+	_ = peer.AppendTo(payload[:0])
+	a16 := ipPort.Addr().As16()
+	copy(payload[keyLen:], a16[:])
+	binary.BigEndian.PutUint16(payload[keyLen+16:], ipPort.Port())
+	_, err := c.bw.Write(payload)
 	return err
 }
 
@@ -1559,6 +1631,17 @@ func (c *sclient) sendMeshUpdates() error {
 	c.s.mu.Lock()
 	defer c.s.mu.Unlock()
 
+	// allow all happened-before mesh update request goroutines to complete, if
+	// we don't finish the task we'll queue another below.
+drainUpdates:
+	for {
+		select {
+		case <-c.meshUpdate:
+		default:
+			break drainUpdates
+		}
+	}
+
 	writes := 0
 	for _, pcs := range c.peerStateChange {
 		if c.bw.Available() <= frameHeaderLen+keyLen {
@@ -1566,7 +1649,7 @@ func (c *sclient) sendMeshUpdates() error {
 		}
 		var err error
 		if pcs.present {
-			err = c.sendPeerPresent(pcs.peer)
+			err = c.sendPeerPresent(pcs.peer, pcs.ipPort)
 		} else {
 			err = c.sendPeerGone(pcs.peer, PeerGoneReasonDisconnected)
 		}

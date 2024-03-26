@@ -7,6 +7,7 @@ package tsweb
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"expvar"
@@ -15,8 +16,10 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,10 +27,10 @@ import (
 
 	"go4.org/mem"
 	"tailscale.com/envknob"
+	"tailscale.com/metrics"
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/tsweb/varz"
 	"tailscale.com/types/logger"
-	"tailscale.com/util/cmpx"
 	"tailscale.com/util/vizerror"
 )
 
@@ -51,6 +54,9 @@ func IsProd443(addr string) bool {
 // AllowDebugAccess reports whether r should be permitted to access
 // various debug endpoints.
 func AllowDebugAccess(r *http.Request) bool {
+	if allowDebugAccessWithKey(r) {
+		return true
+	}
 	if r.Header.Get("X-Forwarded-For") != "" {
 		// TODO if/when needed. For now, conservative:
 		return false
@@ -66,14 +72,19 @@ func AllowDebugAccess(r *http.Request) bool {
 	if tsaddr.IsTailscaleIP(ip) || ip.IsLoopback() || ipStr == envknob.String("TS_ALLOW_DEBUG_IP") {
 		return true
 	}
-	if r.Method == "GET" {
-		urlKey := r.FormValue("debugkey")
-		keyPath := envknob.String("TS_DEBUG_KEY_PATH")
-		if urlKey != "" && keyPath != "" {
-			slurp, err := os.ReadFile(keyPath)
-			if err == nil && string(bytes.TrimSpace(slurp)) == urlKey {
-				return true
-			}
+	return false
+}
+
+func allowDebugAccessWithKey(r *http.Request) bool {
+	if r.Method != "GET" {
+		return false
+	}
+	urlKey := r.FormValue("debugkey")
+	keyPath := envknob.String("TS_DEBUG_KEY_PATH")
+	if urlKey != "" && keyPath != "" {
+		slurp, err := os.ReadFile(keyPath)
+		if err == nil && string(bytes.TrimSpace(slurp)) == urlKey {
+			return true
 		}
 	}
 	return false
@@ -145,7 +156,7 @@ func (h Port80Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Redirect authorized user to the debug handler.
 		path = "/debug/"
 	}
-	host := cmpx.Or(h.FQDN, r.Host)
+	host := cmp.Or(h.FQDN, r.Host)
 	target := "https://" + host + path
 	http.Redirect(w, r, target, http.StatusFound)
 }
@@ -166,6 +177,60 @@ type ReturnHandler interface {
 	ServeHTTPReturn(http.ResponseWriter, *http.Request) error
 }
 
+// BucketedStatsOptions describes tsweb handler options surrounding
+// the generation of metrics, grouped into buckets.
+type BucketedStatsOptions struct {
+	// Bucket returns which bucket the given request is in.
+	// If nil, [NormalizedPath] is used to compute the bucket.
+	Bucket func(req *http.Request) string
+
+	// If non-nil, Started maintains a counter of all requests which
+	// have begun processing.
+	Started *metrics.LabelMap
+
+	// If non-nil, Finished maintains a counter of all requests which
+	// have finished processing (that is, the HTTP handler has returned).
+	Finished *metrics.LabelMap
+}
+
+// normalizePathRegex matches components in a HTTP request path
+// that should be replaced.
+//
+// See: https://regex101.com/r/WIfpaR/3 for the explainer and test cases.
+var normalizePathRegex = regexp.MustCompile("([a-fA-F0-9]{9,}|([^\\/])+\\.([^\\/]){2,}|((n|k|u|L|t|S)[a-zA-Z0-9]{5,}(CNTRL|Djz1H|LV5CY|mxgaY|jNy1b))|(([^\\/])+\\@passkey))")
+
+// NormalizedPath returns the given path with the following modifications:
+//
+//   - any query parameters are removed
+//   - any path component with a hex string of 9 or more characters is
+//     replaced by an ellipsis
+//   - any path component containing a period with at least two characters
+//     after the period (i.e. an email or domain)
+//   - any path component consisting of a common Tailscale Stable ID
+//   - any path segment *@passkey.
+func NormalizedPath(p string) string {
+	// Fastpath: No hex sequences in there we might have to trim.
+	// Avoids allocating.
+	if normalizePathRegex.FindStringIndex(p) == nil {
+		b, _, _ := strings.Cut(p, "?")
+		return b
+	}
+
+	// If we got here, there's at least one hex sequences we need to
+	// replace with an ellipsis.
+	replaced := normalizePathRegex.ReplaceAllString(p, "…")
+	b, _, _ := strings.Cut(replaced, "?")
+	return b
+}
+
+func (o *BucketedStatsOptions) bucketForRequest(r *http.Request) string {
+	if o.Bucket != nil {
+		return o.Bucket(r)
+	}
+
+	return NormalizedPath(r.URL.Path)
+}
+
 type HandlerOptions struct {
 	QuietLoggingIfSuccessful bool // if set, do not log successfully handled HTTP requests (200 and 304 status codes)
 	Logf                     logger.Logf
@@ -179,6 +244,10 @@ type HandlerOptions struct {
 	// codes for handled responses.
 	// The keys are HTTP numeric response codes e.g. 200, 404, ...
 	StatusCodeCountersFull *expvar.Map
+
+	// If non-nil, BucketedStats computes and exposes statistics
+	// for each bucket based on the contained parameters.
+	BucketedStats *BucketedStatsOptions
 
 	// OnError is called if the handler returned a HTTPError. This
 	// is intended to be used to present pretty error pages if
@@ -194,6 +263,13 @@ type ErrorHandlerFunc func(http.ResponseWriter, *http.Request, HTTPError)
 // appropriate signature, ReturnHandlerFunc(f) is a ReturnHandler that
 // calls f.
 type ReturnHandlerFunc func(http.ResponseWriter, *http.Request) error
+
+// A Middleware is a function that wraps an http.Handler to extend or modify
+// its behaviour.
+//
+// The implementation of the wrapper is responsible for delegating its input
+// request to the underlying handler, if appropriate.
+type Middleware func(h http.Handler) http.Handler
 
 // ServeHTTPReturn calls f(w, r).
 func (f ReturnHandlerFunc) ServeHTTPReturn(w http.ResponseWriter, r *http.Request) error {
@@ -231,6 +307,15 @@ func (h retHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		RequestURI: r.URL.RequestURI(),
 		UserAgent:  r.UserAgent(),
 		Referer:    r.Referer(),
+		RequestID:  RequestIDFromContext(r.Context()),
+	}
+
+	var bucket string
+	if bs := h.opts.BucketedStats; bs != nil {
+		bucket = bs.bucketForRequest(r)
+		if bs.Started != nil {
+			bs.Started.Add(bucket, 1)
+		}
 	}
 
 	lw := &loggingResponseWriter{ResponseWriter: w, logf: h.opts.Logf}
@@ -296,15 +381,27 @@ func (h retHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			lw.WriteHeader(msg.Code)
 			fmt.Fprintln(lw, hErr.Msg)
+			if msg.RequestID != "" {
+				fmt.Fprintln(lw, msg.RequestID)
+			}
 		}
 	case err != nil:
+		const internalServerError = "internal server error"
+		errorMessage := internalServerError
+		if msg.RequestID != "" {
+			errorMessage += "\n" + string(msg.RequestID)
+		}
 		// Handler returned a generic error. Serve an internal server
 		// error, if necessary.
 		msg.Err = err.Error()
 		if lw.code == 0 {
 			msg.Code = http.StatusInternalServerError
-			http.Error(lw, "internal server error", msg.Code)
+			http.Error(lw, errorMessage, msg.Code)
 		}
+	}
+
+	if bs := h.opts.BucketedStats; bs != nil && bs.Finished != nil {
+		bs.Finished.Add(bucket, 1)
 	}
 
 	if !h.opts.QuietLoggingIfSuccessful || (msg.Code != http.StatusOK && msg.Code != http.StatusNotModified) {
@@ -410,7 +507,6 @@ type HTTPError struct {
 
 // Error implements the error interface.
 func (e HTTPError) Error() string { return fmt.Sprintf("httperror{%d, %q, %v}", e.Code, e.Msg, e.Err) }
-
 func (e HTTPError) Unwrap() error { return e.Err }
 
 // Error returns an HTTPError containing the given information.
@@ -424,6 +520,77 @@ func VarzHandler(w http.ResponseWriter, r *http.Request) {
 	varz.Handler(w, r)
 }
 
+// CleanRedirectURL ensures that urlStr is a valid redirect URL to the
+// current server, or one of allowedHosts. Returns the cleaned URL or
+// a validation error.
+func CleanRedirectURL(urlStr string, allowedHosts []string) (*url.URL, error) {
+	if urlStr == "" {
+		return &url.URL{}, nil
+	}
+	// In some places, we unfortunately query-escape the redirect URL
+	// too many times, and end up needing to redirect to a URL that's
+	// still escaped by one level. Try to unescape the input.
+	unescaped, err := url.QueryUnescape(urlStr)
+	if err == nil && unescaped != urlStr {
+		urlStr = unescaped
+	}
+
+	// Go's URL parser and browser URL parsers disagree on the meaning
+	// of malformed HTTP URLs. Given the input https:/evil.com, Go
+	// parses it as hostname="", path="/evil.com". Browsers parse it
+	// as hostname="evil.com", path="". This means that, using
+	// malformed URLs, an attacker could trick us into approving of a
+	// "local" redirect that in fact sends people elsewhere.
+	//
+	// This very blunt check enforces that we'll only process
+	// redirects that are definitely well-formed URLs.
+	//
+	// Note that the check for just / also allows URLs of the form
+	// "//foo.com/bar", which are scheme-relative redirects. These
+	// must be handled with care below when determining whether a
+	// redirect is relative to the current host. Notably,
+	// url.URL.IsAbs reports // URLs as relative, whereas we want to
+	// treat them as absolute redirects and verify the target host.
+	if !hasSafeRedirectPrefix(urlStr) {
+		return nil, fmt.Errorf("invalid redirect URL %q", urlStr)
+	}
+
+	url, err := url.Parse(urlStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid redirect URL %q: %w", urlStr, err)
+	}
+	// Redirects to self are always allowed. A self redirect must
+	// start with url.Path, all prior URL sections must be empty.
+	isSelfRedirect := url.Scheme == "" && url.Opaque == "" && url.User == nil && url.Host == ""
+	if isSelfRedirect {
+		return url, nil
+	}
+	for _, allowed := range allowedHosts {
+		if strings.EqualFold(allowed, url.Hostname()) {
+			return url, nil
+		}
+	}
+
+	return nil, fmt.Errorf("disallowed target host %q in redirect URL %q", url.Hostname(), urlStr)
+}
+
+// hasSafeRedirectPrefix reports whether url starts with a slash, or
+// one of the case-insensitive strings "http://" or "https://".
+func hasSafeRedirectPrefix(url string) bool {
+	if len(url) >= 1 && url[0] == '/' {
+		return true
+	}
+	const http = "http://"
+	if len(url) >= len(http) && strings.EqualFold(url[:len(http)], http) {
+		return true
+	}
+	const https = "https://"
+	if len(url) >= len(https) && strings.EqualFold(url[:len(https)], https) {
+		return true
+	}
+	return false
+}
+
 // AddBrowserHeaders sets various HTTP security headers for browser-facing endpoints.
 //
 // The specific headers:
@@ -435,7 +602,7 @@ func VarzHandler(w http.ResponseWriter, r *http.Request) {
 // https://infosec.mozilla.org/guidelines/web_security
 func AddBrowserHeaders(w http.ResponseWriter) {
 	w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'self'; block-all-mixed-content; plugin-types 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'self'; block-all-mixed-content; object-src 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 }
@@ -452,8 +619,8 @@ func BrowserHeaderHandler(h http.Handler) http.Handler {
 // BrowserHeaderHandlerFunc wraps the provided http.HandlerFunc with a call to
 // AddBrowserHeaders.
 func BrowserHeaderHandlerFunc(h http.HandlerFunc) http.HandlerFunc {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		AddBrowserHeaders(w)
 		h.ServeHTTP(w, r)
-	})
+	}
 }

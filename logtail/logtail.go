@@ -15,16 +15,18 @@ import (
 	"log"
 	mrand "math/rand"
 	"net/http"
+	"net/netip"
 	"os"
+	"regexp"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"tailscale.com/envknob"
-	"tailscale.com/net/interfaces"
 	"tailscale.com/net/netmon"
 	"tailscale.com/net/sockstats"
+	"tailscale.com/net/tsaddr"
 	"tailscale.com/tstime"
 	tslogger "tailscale.com/types/logger"
 	"tailscale.com/types/logid"
@@ -427,8 +429,8 @@ func (l *Logger) internetUp() bool {
 
 func (l *Logger) awaitInternetUp(ctx context.Context) {
 	upc := make(chan bool, 1)
-	defer l.netMonitor.RegisterChangeCallback(func(changed bool, st *interfaces.State) {
-		if st.AnyInterfaceUp() {
+	defer l.netMonitor.RegisterChangeCallback(func(delta *netmon.ChangeDelta) {
+		if delta.New.AnyInterfaceUp() {
 			select {
 			case upc <- true:
 			default:
@@ -726,6 +728,8 @@ func (l *Logger) Logf(format string, args ...any) {
 	fmt.Fprintf(l, format, args...)
 }
 
+var obscureIPs = envknob.RegisterBool("TS_OBSCURE_LOGGED_IPS")
+
 // Write logs an encoded JSON blob.
 //
 // If the []byte passed to Write is not an encoded JSON blob,
@@ -736,6 +740,8 @@ func (l *Logger) Write(buf []byte) (int, error) {
 	if len(buf) == 0 {
 		return 0, nil
 	}
+	inLen := len(buf) // length as provided to us, before modifications to downstream writers
+
 	level, buf := parseAndRemoveLogLevel(buf)
 	if l.stderr != nil && l.stderr != io.Discard && int64(level) <= atomic.LoadInt64(&l.stderrLevel) {
 		if buf[len(buf)-1] == '\n' {
@@ -748,12 +754,50 @@ func (l *Logger) Write(buf []byte) (int, error) {
 		}
 	}
 
+	if obscureIPs() {
+		buf = redactIPs(buf)
+	}
+
 	l.writeLock.Lock()
 	defer l.writeLock.Unlock()
 
 	b := l.encodeLocked(buf, level)
 	_, err := l.sendLocked(b)
-	return len(buf), err
+	return inLen, err
+}
+
+var (
+	regexMatchesIPv6 = regexp.MustCompile(`([0-9a-fA-F]{1,4}):([0-9a-fA-F]{1,4}):([0-9a-fA-F:]{1,4})*`)
+	regexMatchesIPv4 = regexp.MustCompile(`(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}`)
+)
+
+// redactIPs is a helper function used in Write() to redact IPs (other than tailscale IPs).
+// This function takes a log line as a byte slice and
+// uses regex matching to parse and find IP addresses. Based on if the IP address is IPv4 or
+// IPv6, it parses and replaces the end of the addresses with an "x". This function returns the
+// log line with the IPs redacted.
+func redactIPs(buf []byte) []byte {
+	out := regexMatchesIPv6.ReplaceAllFunc(buf, func(b []byte) []byte {
+		ip, err := netip.ParseAddr(string(b))
+		if err != nil || tsaddr.IsTailscaleIP(ip) {
+			return b // don't change this one
+		}
+
+		prefix := bytes.Split(b, []byte(":"))
+		return bytes.Join(append(prefix[:2], []byte("x")), []byte(":"))
+	})
+
+	out = regexMatchesIPv4.ReplaceAllFunc(out, func(b []byte) []byte {
+		ip, err := netip.ParseAddr(string(b))
+		if err != nil || tsaddr.IsTailscaleIP(ip) {
+			return b // don't change this one
+		}
+
+		prefix := bytes.Split(b, []byte("."))
+		return bytes.Join(append(prefix[:2], []byte("x.x")), []byte("."))
+	})
+
+	return []byte(out)
 }
 
 var (

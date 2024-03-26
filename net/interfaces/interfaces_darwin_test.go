@@ -5,6 +5,7 @@ package interfaces
 
 import (
 	"errors"
+	"io"
 	"net/netip"
 	"os/exec"
 	"testing"
@@ -15,7 +16,7 @@ import (
 )
 
 func TestLikelyHomeRouterIPSyscallExec(t *testing.T) {
-	syscallIP, syscallOK := likelyHomeRouterIPBSDFetchRIB()
+	syscallIP, _, syscallOK := likelyHomeRouterIPBSDFetchRIB()
 	netstatIP, netstatIf, netstatOK := likelyHomeRouterIPDarwinExec()
 
 	if syscallOK != netstatOK || syscallIP != netstatIP {
@@ -69,6 +70,7 @@ func likelyHomeRouterIPDarwinExec() (ret netip.Addr, netif string, ok bool) {
 		return
 	}
 	defer cmd.Wait()
+	defer io.Copy(io.Discard, stdout) // clear the pipe to prevent hangs
 
 	var f []mem.RO
 	lineread.Reader(stdout, func(lineb []byte) error {
