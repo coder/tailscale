@@ -52,7 +52,7 @@ func New() *tailcfg.Hostinfo {
 		GoArchVar:       lazyGoArchVar.Get(),
 		GoVersion:       runtime.Version(),
 		Machine:         condCall(unameMachine),
-		DeviceModel:     deviceModel(),
+		DeviceModel:     deviceModelCached(),
 		PushDeviceToken: pushDeviceToken(),
 		Cloud:           string(cloudenv.Get()),
 		NoLogsNoSupport: envknob.NoLogsNoSupport(),
@@ -68,6 +68,7 @@ var (
 	distroVersion  func() string
 	distroCodeName func() string
 	unameMachine   func() string
+	deviceModel    func() string
 )
 
 func condCall[T any](fn func() T) T {
@@ -113,6 +114,20 @@ func GetOSVersion() string {
 		return osVersion()
 	}
 	return ""
+}
+
+func deviceModelCached() string {
+	if v, _ := deviceModelAtomic.Load().(string); v != "" {
+		return v
+	}
+	if deviceModel == nil {
+		return ""
+	}
+	v := deviceModel()
+	if v != "" {
+		deviceModelAtomic.Store(v)
+	}
+	return v
 }
 
 func appTypeCached() string {
@@ -175,9 +190,6 @@ var (
 // SetPushDeviceToken sets the device token for use in Hostinfo updates.
 func SetPushDeviceToken(token string) { pushDeviceTokenAtomic.Store(token) }
 
-// SetDeviceModel sets the device model for use in Hostinfo updates.
-func SetDeviceModel(model string) { deviceModelAtomic.Store(model) }
-
 // SetOSVersion sets the OS version.
 func SetOSVersion(v string) { osVersionAtomic.Store(v) }
 
@@ -191,11 +203,6 @@ func SetPackage(v string) { packagingType.Store(v) }
 // It is used by tsnet to specify what app is using it such as "golinks"
 // and "k8s-operator".
 func SetApp(v string) { appType.Store(v) }
-
-func deviceModel() string {
-	s, _ := deviceModelAtomic.Load().(string)
-	return s
-}
 
 func pushDeviceToken() string {
 	s, _ := pushDeviceTokenAtomic.Load().(string)
