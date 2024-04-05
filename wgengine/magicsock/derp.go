@@ -33,6 +33,12 @@ import (
 	"tailscale.com/util/sysresources"
 )
 
+// frameReceiveRecordRate is the minimum time between updates to last frame
+// received times.
+// Note: this is relevant to other parts of the system, such as netcheck
+// preferredDERPFrameTime, so update with care.
+const frameReceiveRecordRate = 5 * time.Second
+
 // useDerpRoute reports whether magicsock should enable the DERP
 // return path optimization (Issue 150).
 func useDerpRoute() bool {
@@ -531,7 +537,7 @@ func (c *Conn) runDerpReader(ctx context.Context, derpFakeAddr netip.AddrPort, d
 		bo.BackOff(ctx, nil) // reset
 
 		now := time.Now()
-		if lastPacketTime.IsZero() || now.Sub(lastPacketTime) > 5*time.Second {
+		if lastPacketTime.IsZero() || now.Sub(lastPacketTime) > frameReceiveRecordRate {
 			health.NoteDERPRegionReceivedFrame(regionID)
 			lastPacketTime = now
 		}
