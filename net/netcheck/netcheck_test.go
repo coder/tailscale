@@ -458,7 +458,7 @@ func TestAddReportHistoryAndSetPreferredDERP(t *testing.T) {
 			},
 			opts: &GetReportOpts{
 				GetLastDERPActivity: mkLDAFunc(map[int]time.Time{
-					1: startTime.Add(2*time.Second + preferredDERPFrameTime/2), // within active window of step (3)
+					1: startTime.Add(2*time.Second + PreferredDERPFrameTime/2), // within active window of step (3)
 				}),
 			},
 			wantPrevLen: 3,
@@ -473,7 +473,7 @@ func TestAddReportHistoryAndSetPreferredDERP(t *testing.T) {
 			},
 			opts: &GetReportOpts{
 				GetLastDERPActivity: mkLDAFunc(map[int]time.Time{
-					1: startTime.Add(4*time.Second - preferredDERPFrameTime - 1), // not within active window of (3)
+					1: startTime.Add(4*time.Second - PreferredDERPFrameTime - 1), // not within active window of (3)
 				}),
 			},
 			wantPrevLen: 3,
