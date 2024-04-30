@@ -1005,19 +1005,19 @@ func (ns *Impl) forwardTCP(getClient func(...tcpip.SettableSocketOption) *gonet.
 			ipv6DialAddr := netip.AddrPortFrom(netip.IPv6Loopback(), dialAddr.Port())
 			server, err = stdDialer.DialContext(ctx, "tcp", ipv6DialAddr.String())
 			if err == nil {
+				if debugNetstack() {
+					ns.logf("[coder] netstack: successful IPv4 loopback => IPv6 loopback redirect: original = %s, new = %s", dialAddrStr, ipv6DialAddr.String())
+				}
 				dialAddr = ipv6DialAddr
 				dialAddrStr = ipv6DialAddr.String()
-				if debugNetstack() {
-					ns.logf("[coder] netstack: successful IPv4 loopback => IPv6 loopback hit: original = %s, new = %s", dialAddrStr, ipv6DialAddr.String())
-				}
 			} else {
 				ns.logf("netstack: could not connect to local server at %s (or %s)", dialAddrStr, ipv6DialAddr.String(), err)
 				return
 			}
+		} else {
+			ns.logf("netstack: could not connect to local server at %s: %v", dialAddr.String(), err)
+			return
 		}
-
-		ns.logf("netstack: could not connect to local server at %s: %v", dialAddr.String(), err)
-		return
 	}
 	defer server.Close()
 
