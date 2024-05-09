@@ -17,12 +17,11 @@ import (
 	"os/exec"
 	"runtime"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"gvisor.dev/gvisor/pkg/bufferv2"
+	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/refs"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -118,7 +117,7 @@ type Impl struct {
 
 	ipstack   *stack.Stack
 	epMu      sync.RWMutex
-	linkEP    *protectedLinkEndpoint
+	linkEP    *channel.Endpoint
 	tundev    *tstun.Wrapper
 	e         wgengine.Engine
 	mc        *magicsock.Conn
@@ -230,7 +229,7 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 		return nil, fmt.Errorf("could not set congestion control: %v", tcpipErr)
 	}
 
-	linkEP := &protectedLinkEndpoint{Endpoint: channel.New(512, tstun.DefaultMTU(), "")}
+	linkEP := channel.New(512, tstun.DefaultMTU(), "")
 	if tcpipProblem := ipstack.CreateNIC(nicID, linkEP); tcpipProblem != nil {
 		return nil, fmt.Errorf("could not create netstack NIC: %v", tcpipProblem)
 	}
@@ -242,8 +241,8 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 	ipstack.SetPromiscuousMode(nicID, true)
 	// Add IPv4 and IPv6 default routes, so all incoming packets from the Tailscale side
 	// are handled by the one fake NIC we use.
-	ipv4Subnet, _ := tcpip.NewSubnet(tcpip.Address(strings.Repeat("\x00", 4)), tcpip.AddressMask(strings.Repeat("\x00", 4)))
-	ipv6Subnet, _ := tcpip.NewSubnet(tcpip.Address(strings.Repeat("\x00", 16)), tcpip.AddressMask(strings.Repeat("\x00", 16)))
+	ipv4Subnet, _ := tcpip.NewSubnet(tcpip.AddrFromSlice(make([]byte, 4)), tcpip.MaskFromBytes(make([]byte, 4)))
+	ipv6Subnet, _ := tcpip.NewSubnet(tcpip.AddrFromSlice(make([]byte, 16)), tcpip.MaskFromBytes(make([]byte, 16)))
 	ipstack.SetRouteTable([]tcpip.Route{
 		{
 			Destination: ipv4Subnet,
@@ -282,10 +281,10 @@ func (ns *Impl) Close() error {
 // wrapProtoHandler returns protocol handler h wrapped in a version
 // that dynamically reconfigures ns's subnet addresses as needed for
 // outbound traffic.
-func (ns *Impl) wrapProtoHandler(h func(stack.TransportEndpointID, stack.PacketBufferPtr) bool) func(stack.TransportEndpointID, stack.PacketBufferPtr) bool {
-	return func(tei stack.TransportEndpointID, pb stack.PacketBufferPtr) bool {
+func (ns *Impl) wrapProtoHandler(h func(stack.TransportEndpointID, *stack.PacketBuffer) bool) func(stack.TransportEndpointID, *stack.PacketBuffer) bool {
+	return func(tei stack.TransportEndpointID, pb *stack.PacketBuffer) bool {
 		addr := tei.LocalAddress
-		ip, ok := netip.AddrFromSlice(net.IP(addr))
+		ip, ok := netip.AddrFromSlice(addr.AsSlice())
 		if !ok {
 			ns.logf("netstack: could not parse local address for incoming connection")
 			return false
@@ -323,7 +322,7 @@ func (ns *Impl) addSubnetAddress(ip netip.Addr) {
 	if needAdd {
 		pa := tcpip.ProtocolAddress{
 			AddressWithPrefix: tcpip.AddressWithPrefix{
-				Address:   tcpip.Address(ip.AsSlice()),
+				Address:   tcpip.AddrFromSlice(ip.AsSlice()),
 				PrefixLen: int(ip.BitLen()),
 			},
 		}
@@ -345,14 +344,14 @@ func (ns *Impl) removeSubnetAddress(ip netip.Addr) {
 	ns.connsOpenBySubnetIP[ip]--
 	// Only unregister address from netstack after last concurrent connection.
 	if ns.connsOpenBySubnetIP[ip] == 0 {
-		ns.ipstack.RemoveAddress(nicID, tcpip.Address(ip.AsSlice()))
+		ns.ipstack.RemoveAddress(nicID, tcpip.AddrFromSlice(ip.AsSlice()))
 		delete(ns.connsOpenBySubnetIP, ip)
 	}
 }
 
 func ipPrefixToAddressWithPrefix(ipp netip.Prefix) tcpip.AddressWithPrefix {
 	return tcpip.AddressWithPrefix{
-		Address:   tcpip.Address(ipp.Addr().AsSlice()),
+		Address:   tcpip.AddrFromSlice(ipp.Addr().AsSlice()),
 		PrefixLen: int(ipp.Bits()),
 	}
 }
@@ -403,7 +402,7 @@ func (ns *Impl) updateIPs(nm *netmap.NetworkMap) {
 	}
 	ns.mu.Lock()
 	for ip := range ns.connsOpenBySubnetIP {
-		ipp := tcpip.Address(ip.AsSlice()).WithPrefix()
+		ipp := tcpip.AddrFromSlice(ip.AsSlice()).WithPrefix()
 		delete(ipsToBeRemoved, ipp)
 	}
 	ns.mu.Unlock()
@@ -420,7 +419,7 @@ func (ns *Impl) updateIPs(nm *netmap.NetworkMap) {
 		pa := tcpip.ProtocolAddress{
 			AddressWithPrefix: ipp,
 		}
-		if ipp.Address.To4() == "" {
+		if ipp.Address.Len() == 16 {
 			pa.Protocol = ipv6.ProtocolNumber
 		} else {
 			pa.Protocol = ipv4.ProtocolNumber
@@ -476,7 +475,7 @@ func (ns *Impl) handleLocalPackets(p *packet.Parsed, t *tstun.Wrapper) filter.Re
 	}
 
 	packetBuf := stack.NewPacketBuffer(stack.PacketBufferOptions{
-		Payload: bufferv2.MakeWithData(bytes.Clone(p.Buffer())),
+		Payload: buffer.MakeWithData(bytes.Clone(p.Buffer())),
 	})
 	ns.linkEP.InjectInbound(pn, packetBuf)
 	packetBuf.DecRef()
@@ -486,7 +485,7 @@ func (ns *Impl) handleLocalPackets(p *packet.Parsed, t *tstun.Wrapper) filter.Re
 func (ns *Impl) DialContextTCP(ctx context.Context, ipp netip.AddrPort) (*gonet.TCPConn, error) {
 	remoteAddress := tcpip.FullAddress{
 		NIC:  nicID,
-		Addr: tcpip.Address(ipp.Addr().AsSlice()),
+		Addr: tcpip.AddrFromSlice(ipp.Addr().AsSlice()),
 		Port: ipp.Port(),
 	}
 	var ipType tcpip.NetworkProtocolNumber
@@ -502,7 +501,7 @@ func (ns *Impl) DialContextTCP(ctx context.Context, ipp netip.AddrPort) (*gonet.
 func (ns *Impl) DialContextUDP(ctx context.Context, ipp netip.AddrPort) (*gonet.UDPConn, error) {
 	remoteAddress := &tcpip.FullAddress{
 		NIC:  nicID,
-		Addr: tcpip.Address(ipp.Addr().AsSlice()),
+		Addr: tcpip.AddrFromSlice(ipp.Addr().AsSlice()),
 		Port: ipp.Port(),
 	}
 	var ipType tcpip.NetworkProtocolNumber
@@ -520,7 +519,7 @@ func (ns *Impl) DialContextUDP(ctx context.Context, ipp netip.AddrPort) (*gonet.
 func (ns *Impl) inject() {
 	for {
 		pkt := ns.linkEP.ReadContext(ns.ctx)
-		if pkt.IsNil() {
+		if pkt == nil {
 			if ns.ctx.Err() != nil {
 				// Return without logging.
 				return
@@ -768,7 +767,7 @@ func (ns *Impl) injectInbound(p *packet.Parsed, t *tstun.Wrapper) filter.Respons
 		ns.logf("[v2] packet in (from %v): % x", p.Src, p.Buffer())
 	}
 	packetBuf := stack.NewPacketBuffer(stack.PacketBufferOptions{
-		Payload: bufferv2.MakeWithData(bytes.Clone(p.Buffer())),
+		Payload: buffer.MakeWithData(bytes.Clone(p.Buffer())),
 	})
 	ns.linkEP.InjectInbound(pn, packetBuf)
 	packetBuf.DecRef()
@@ -836,13 +835,13 @@ func (ns *Impl) shouldHandlePing(p *packet.Parsed) (_ netip.Addr, ok bool) {
 }
 
 func netaddrIPFromNetstackIP(s tcpip.Address) netip.Addr {
-	switch len(s) {
+	switch s.Len() {
 	case 4:
+		s := s.As4()
 		return netaddr.IPv4(s[0], s[1], s[2], s[3])
 	case 16:
-		var a [16]byte
-		copy(a[:], s)
-		return netip.AddrFrom16(a).Unmap()
+		s := s.As16()
+		return netip.AddrFrom16(s).Unmap()
 	}
 	return netip.Addr{}
 }
@@ -1068,7 +1067,7 @@ func (ns *Impl) acceptUDP(r *udp.ForwarderRequest) {
 			return // Only MagicDNS traffic runs on the service IPs for now.
 		}
 
-		c := gonet.NewUDPConn(ns.ipstack, &wq, ep)
+		c := gonet.NewUDPConn(&wq, ep)
 		go ns.handleMagicDNSUDP(srcAddr, c)
 		return
 	}
@@ -1080,12 +1079,12 @@ func (ns *Impl) acceptUDP(r *udp.ForwarderRequest) {
 				ep.Close()
 				return
 			}
-			go h(gonet.NewUDPConn(ns.ipstack, &wq, ep))
+			go h(gonet.NewUDPConn(&wq, ep))
 			return
 		}
 	}
 
-	c := gonet.NewUDPConn(ns.ipstack, &wq, ep)
+	c := gonet.NewUDPConn(&wq, ep)
 	go ns.forwardUDP(c, srcAddr, dstAddr)
 }
 
@@ -1258,54 +1257,8 @@ func stringifyTEI(tei stack.TransportEndpointID) string {
 }
 
 func ipPortOfNetstackAddr(a tcpip.Address, port uint16) (ipp netip.AddrPort, ok bool) {
-	var a16 [16]byte
-	copy(a16[:], a)
-	switch len(a) {
-	case 4:
-		return netip.AddrPortFrom(
-			netip.AddrFrom4(*(*[4]byte)(a16[:4])).Unmap(),
-			port,
-		), true
-	case 16:
-		return netip.AddrPortFrom(netip.AddrFrom16(a16).Unmap(), port), true
-	default:
-		return ipp, false
+	if addr, ok := netip.AddrFromSlice(a.AsSlice()); ok {
+		return netip.AddrPortFrom(addr, port), true
 	}
+	return netip.AddrPort{}, false
 }
-
-// protectedLinkEndpoint guards use of the dispatcher via mutex and forwards
-// everything except Attach/InjectInbound to the underlying *channel.Endpoint.
-type protectedLinkEndpoint struct {
-	mu         sync.RWMutex
-	dispatcher stack.NetworkDispatcher
-	*channel.Endpoint
-}
-
-// InjectInbound injects an inbound packet.
-func (e *protectedLinkEndpoint) InjectInbound(protocol tcpip.NetworkProtocolNumber, pkt stack.PacketBufferPtr) {
-	e.mu.RLock()
-	dispatcher := e.dispatcher
-	e.mu.RUnlock()
-	if dispatcher != nil {
-		dispatcher.DeliverNetworkPacket(protocol, pkt)
-	}
-}
-
-// Attach saves the stack network-layer dispatcher for use later when packets
-// are injected.
-func (e *protectedLinkEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	// No need to attach the underlying channel.Endpoint, since we hijack
-	// InjectInbound.
-	e.dispatcher = dispatcher
-}
-
-// IsAttached implements stack.LinkEndpoint.IsAttached.
-func (e *protectedLinkEndpoint) IsAttached() bool {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.dispatcher != nil
-}
-
-var _ stack.LinkEndpoint = (*protectedLinkEndpoint)(nil)
