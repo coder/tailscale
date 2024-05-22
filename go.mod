@@ -1,6 +1,6 @@
 module tailscale.com
 
-go 1.20
+go 1.22.1
 
 require (
 	filippo.io/mkcert v1.4.4
@@ -74,19 +74,19 @@ require (
 	go.uber.org/zap v1.24.0
 	go4.org/mem v0.0.0-20220726221520-4f986261bf13
 	go4.org/netipx v0.0.0-20230728180743-ad4cb58a6516
-	golang.org/x/crypto v0.11.0
+	golang.org/x/crypto v0.18.0
 	golang.org/x/exp v0.0.0-20230725093048-515e97ebf090
-	golang.org/x/mod v0.11.0
-	golang.org/x/net v0.10.0
+	golang.org/x/mod v0.14.0
+	golang.org/x/net v0.20.0
 	golang.org/x/oauth2 v0.7.0
-	golang.org/x/sync v0.2.0
-	golang.org/x/sys v0.10.0
-	golang.org/x/term v0.10.0
-	golang.org/x/time v0.3.0
-	golang.org/x/tools v0.9.1
+	golang.org/x/sync v0.6.0
+	golang.org/x/sys v0.17.0
+	golang.org/x/term v0.16.0
+	golang.org/x/time v0.5.0
+	golang.org/x/tools v0.16.1
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2
 	golang.zx2c4.com/wireguard/windows v0.5.3
-	gvisor.dev/gvisor v0.0.0-20230504175454-7b0a1988a28f
+	gvisor.dev/gvisor v0.0.0-20240509041132-65b30f7869dc
 	honnef.co/go/tools v0.4.3
 	inet.af/peercred v0.0.0-20210906144145-0893ea02156a
 	inet.af/tcpproxy v0.0.0-20221017015627-91f861402626
@@ -292,7 +292,7 @@ require (
 	github.com/securego/gosec/v2 v2.15.0 // indirect
 	github.com/sergi/go-diff v1.3.1 // indirect
 	github.com/shazow/go-diff v0.0.0-20160112020656-b6b7b6733b8c // indirect
-	github.com/sirupsen/logrus v1.9.0 // indirect
+	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/sivchari/containedctx v1.0.3 // indirect
 	github.com/sivchari/nosnakecase v1.7.0 // indirect
 	github.com/sivchari/tenv v1.7.1 // indirect
@@ -333,10 +333,10 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/exp/typeparams v0.0.0-20230425010034-47ecfdc1ba53 // indirect
 	golang.org/x/image v0.7.0 // indirect
-	golang.org/x/text v0.11.0 // indirect
+	golang.org/x/text v0.14.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.3.0 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
-	google.golang.org/protobuf v1.30.0 // indirect
+	google.golang.org/protobuf v1.32.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
