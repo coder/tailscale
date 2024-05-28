@@ -26,7 +26,6 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
-	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -117,7 +116,7 @@ type Impl struct {
 
 	ipstack   *stack.Stack
 	epMu      sync.RWMutex
-	linkEP    *channel.Endpoint
+	linkEP    *Endpoint
 	tundev    *tstun.Wrapper
 	e         wgengine.Engine
 	mc        *magicsock.Conn
@@ -229,7 +228,7 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 		return nil, fmt.Errorf("could not set congestion control: %v", tcpipErr)
 	}
 
-	linkEP := channel.New(512, tstun.DefaultMTU(), "")
+	linkEP := NewEndpoint(512, tstun.DefaultMTU(), "")
 	if tcpipProblem := ipstack.CreateNIC(nicID, linkEP); tcpipProblem != nil {
 		return nil, fmt.Errorf("could not create netstack NIC: %v", tcpipProblem)
 	}
@@ -273,6 +272,8 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 
 func (ns *Impl) Close() error {
 	ns.ctxCancel()
+	// close the linkEP before attempting to close the IP stack, to ensure we unblock writes.
+	ns.linkEP.Close()
 	ns.ipstack.Close()
 	ns.ipstack.Wait()
 	return nil
