@@ -326,15 +326,16 @@ func NewServer(privateKey key.NodePrivate, logf logger.Logf) *Server {
 	s.initMetacert()
 	s.packetsRecvDisco = s.packetsRecvByKind.Get("disco")
 	s.packetsRecvOther = s.packetsRecvByKind.Get("other")
-	s.packetsDroppedReasonCounters = []*expvar.Int{
-		s.packetsDroppedReason.Get("unknown_dest"),
-		s.packetsDroppedReason.Get("unknown_dest_on_fwd"),
-		s.packetsDroppedReason.Get("gone_disconnected"),
-		s.packetsDroppedReason.Get("gone_not_here"),
-		s.packetsDroppedReason.Get("queue_head"),
-		s.packetsDroppedReason.Get("queue_tail"),
-		s.packetsDroppedReason.Get("write_error"),
-	}
+
+	s.packetsDroppedReasonCounters = make([]*expvar.Int, 7)
+	s.packetsDroppedReasonCounters[dropReasonUnknownDest] = s.packetsDroppedReason.Get("unknown_dest")
+	s.packetsDroppedReasonCounters[dropReasonUnknownDestOnFwd] = s.packetsDroppedReason.Get("unknown_dest_on_fwd")
+	s.packetsDroppedReasonCounters[dropReasonGoneDisconnected] = s.packetsDroppedReason.Get("gone_disconnected")
+	s.packetsDroppedReasonCounters[dropReasonQueueHead] = s.packetsDroppedReason.Get("queue_head")
+	s.packetsDroppedReasonCounters[dropReasonQueueTail] = s.packetsDroppedReason.Get("queue_tail")
+	s.packetsDroppedReasonCounters[dropReasonWriteError] = s.packetsDroppedReason.Get("write_error")
+	s.packetsDroppedReasonCounters[dropReasonDupClient] = s.packetsDroppedReason.Get("dup_client")
+
 	s.packetsDroppedTypeDisco = s.packetsDroppedType.Get("disco")
 	s.packetsDroppedTypeOther = s.packetsDroppedType.Get("other")
 	return s
