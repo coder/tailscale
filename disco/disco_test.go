@@ -99,3 +99,78 @@ func mustIPPort(s string) netip.AddrPort {
 	}
 	return ipp
 }
+
+func TestPaddedPings(t *testing.T) {
+	priv0 := key.NewDisco()
+	priv1 := key.NewDisco()
+	sk := priv0.Shared(priv1.Public())
+	ping := &Ping{
+		TxID: [12]byte{1, 2},
+	}
+	plain := ping.AppendMarshal(nil)
+	t.Logf("plaintext len: %d", len(plain))
+	cipher := sk.Seal(plain)
+	t.Logf("ciphertext len: %d", len(cipher))
+
+	pkt := make([]byte, 0)
+	pkt = append(pkt, Magic...)
+	pkt = priv0.Public().AppendTo(pkt)
+	pkt = append(pkt, cipher...)
+	t.Logf("pkt len: %d", len(pkt))
+	if len(pkt) != 1310 {
+		t.Fatal("wrong pkt size")
+	}
+
+	const headerLen = len(Magic) + key.DiscoPublicRawLen
+	sealedBox := pkt[headerLen:]
+	payload, ok := sk.Open(sealedBox)
+	if !ok {
+		t.Fatalf("failed to open sealed box")
+	}
+	got, err := Parse(payload)
+	if err != nil {
+		t.Fatalf("failed to parse payload: %v", err)
+	}
+	gp := got.(*Ping)
+	if !reflect.DeepEqual(gp, ping) {
+		t.Fatalf("got %v, want %v", gp, ping)
+	}
+}
+
+func TestPaddedPongs(t *testing.T) {
+	priv0 := key.NewDisco()
+	priv1 := key.NewDisco()
+	sk := priv0.Shared(priv1.Public())
+	pong := &Pong{
+		TxID: [12]byte{1, 2},
+		Src:  mustIPPort("44.55.66.77:8888"),
+	}
+	plain := pong.AppendMarshal(nil)
+	t.Logf("plaintext len: %d", len(plain))
+	cipher := sk.Seal(plain)
+	t.Logf("ciphertext len: %d", len(cipher))
+
+	pkt := make([]byte, 0)
+	pkt = append(pkt, Magic...)
+	pkt = priv0.Public().AppendTo(pkt)
+	pkt = append(pkt, cipher...)
+	t.Logf("pkt len: %d", len(pkt))
+	if len(pkt) != 1310 {
+		t.Fatal("wrong pkt size")
+	}
+
+	const headerLen = len(Magic) + key.DiscoPublicRawLen
+	sealedBox := pkt[headerLen:]
+	payload, ok := sk.Open(sealedBox)
+	if !ok {
+		t.Fatalf("failed to open sealed box")
+	}
+	got, err := Parse(payload)
+	if err != nil {
+		t.Fatalf("failed to parse payload: %v", err)
+	}
+	gp := got.(*Pong)
+	if !reflect.DeepEqual(gp, pong) {
+		t.Fatalf("got %v, want %v", gp, pong)
+	}
+}

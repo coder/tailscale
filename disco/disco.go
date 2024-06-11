@@ -119,13 +119,18 @@ type Ping struct {
 	NodeKey key.NodePublic
 }
 
+// paddedLen is the data length of ping/pong packets such that the entire Disco
+// packet is 1310 bytes, which is the largest encrypted Wireguard packet we can
+// send (TUN MTU is 1280 + 30 bytes of Wireguard header).
+const paddedLen = 1230
+
 func (m *Ping) AppendMarshal(b []byte) []byte {
 	dataLen := 12
 	hasKey := !m.NodeKey.IsZero()
 	if hasKey {
 		dataLen += key.NodePublicRawLen
 	}
-	ret, d := appendMsgHeader(b, TypePing, v0, dataLen)
+	ret, d := appendMsgHeader(b, TypePing, v0, paddedLen)
 	n := copy(d, m.TxID[:])
 	if hasKey {
 		m.NodeKey.AppendTo(d[:n])
@@ -217,7 +222,7 @@ type Pong struct {
 const pongLen = 12 + 16 + 2
 
 func (m *Pong) AppendMarshal(b []byte) []byte {
-	ret, d := appendMsgHeader(b, TypePong, v0, pongLen)
+	ret, d := appendMsgHeader(b, TypePong, v0, paddedLen)
 	d = d[copy(d, m.TxID[:]):]
 	ip16 := m.Src.Addr().As16()
 	d = d[copy(d, ip16[:]):]
