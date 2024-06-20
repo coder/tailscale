@@ -217,6 +217,9 @@ type Conn struct {
 	// blockEndpoints is whether to avoid capturing, storing and sending
 	// endpoints gathered from local interfaces or STUN. Only DERP endpoints
 	// will be sent.
+	// This will also block incoming endpoints received via call-me-maybe disco
+	// packets. Endpoints manually added (e.g. via coordination) will not be
+	// blocked.
 	blockEndpoints bool
 	// endpointsUpdateActive indicates that updateEndpoints is
 	// currently running. It's used to deduplicate concurrent endpoint
@@ -856,6 +859,7 @@ func (c *Conn) SetBlockEndpoints(block bool) {
 		return
 	}
 
+	// Re-gather local endpoints.
 	const why = "SetBlockEndpoints"
 	if c.endpointsUpdateActive {
 		if c.wantEndpointsUpdate != why {
@@ -865,6 +869,17 @@ func (c *Conn) SetBlockEndpoints(block bool) {
 	} else {
 		c.endpointsUpdateActive = true
 		go c.updateEndpoints(why)
+	}
+
+	// Clear any endpoints from the peerMap if block is true.
+	if block {
+		c.peerMap.forEachEndpoint(func(ep *endpoint) {
+			// Simulate receiving a call-me-maybe disco packet with no
+			// endpoints, which will cause all endpoints to be removed.
+			ep.handleCallMeMaybe(&disco.CallMeMaybe{
+				MyNumber: []netip.AddrPort{},
+			})
+		})
 	}
 }
 
@@ -1522,6 +1537,14 @@ func (c *Conn) handleDiscoMessage(msg []byte, src netip.AddrPort, derpNodeSrc ke
 			metricRecvDiscoCallMeMaybeBadDisco.Add(1)
 			c.logf("[unexpected] CallMeMaybe from peer via DERP whose netmap discokey != disco source")
 			return
+		}
+		if c.blockEndpoints {
+			c.dlogf("[v1] magicsock: disco: %v<-%v (%v, %v)  got call-me-maybe with %d endpoints, but endpoints blocked",
+				c.discoShort, epDisco.short,
+				ep.publicKey.ShortString(), derpStr(src.String()),
+				len(dm.MyNumber),
+			)
+			dm.MyNumber = []netip.AddrPort{}
 		}
 		c.dlogf("[v1] magicsock: disco: %v<-%v (%v, %v)  got call-me-maybe, %d endpoints",
 			c.discoShort, epDisco.short,
