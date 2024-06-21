@@ -3064,8 +3064,10 @@ func TestBlockEndpointsDERPOK(t *testing.T) {
 
 	ms1 := newMagicStack(t, logger.WithPrefix(logf, "conn1: "), d.m1, derpMap)
 	defer ms1.Close()
+	ms1.conn.SetDebugLoggingEnabled(true)
 	ms2 := newMagicStack(t, logger.WithPrefix(logf, "conn2: "), d.m2, derpMap)
 	defer ms2.Close()
+	ms2.conn.SetDebugLoggingEnabled(true)
 
 	cleanupMesh := meshStacks(logf, nil, ms1, ms2)
 	defer cleanupMesh()
@@ -3136,7 +3138,9 @@ func TestBlockEndpointsDERPOK(t *testing.T) {
 
 	// Give time for another call-me-maybe packet to arrive. I couldn't think of
 	// a better way than sleeping without making a bunch of changes.
+	t.Logf("sleeping for call-me-maybe packet to be received and ignored")
 	time.Sleep(time.Second)
+	t.Logf("done sleeping")
 
 	ep2.mu.Lock()
 	defer ep2.mu.Unlock()
