@@ -215,7 +215,14 @@ func (de *endpoint) clearEndpoints(why string) {
 		What: "clearEndpoints-" + why,
 	})
 	de.endpointState = map[netip.AddrPort]*endpointState{}
-	de.bestAddr = addrLatency{}
+	if de.bestAddr.AddrPort.IsValid() {
+		de.debugUpdates.Add(EndpointChange{
+			When: time.Now(),
+			What: "clearEndpoints-bestAddr-" + why,
+			From: de.bestAddr,
+		})
+		de.bestAddr = addrLatency{}
+	}
 	de.c.logf("magicsock: disco: node %s %s now using DERP only (all endpoints deleted)",
 		de.publicKey.ShortString(), de.discoShort())
 }
