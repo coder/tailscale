@@ -207,6 +207,19 @@ func (de *endpoint) deleteEndpointLocked(why string, ep netip.AddrPort) {
 	}
 }
 
+func (de *endpoint) clearEndpoints(why string) {
+	de.mu.Lock()
+	defer de.mu.Unlock()
+	de.debugUpdates.Add(EndpointChange{
+		When: time.Now(),
+		What: "clearEndpoints-" + why,
+	})
+	de.endpointState = map[netip.AddrPort]*endpointState{}
+	de.bestAddr = addrLatency{}
+	de.c.logf("magicsock: disco: node %s %s now using DERP only (all endpoints deleted)",
+		de.publicKey.ShortString(), de.discoShort())
+}
+
 // initFakeUDPAddr populates fakeWGAddr with a globally unique fake UDPAddr.
 // The current implementation just uses the pointer value of de jammed into an IPv6
 // address, but it could also be, say, a counter.

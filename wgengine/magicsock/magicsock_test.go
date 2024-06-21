@@ -3097,35 +3097,16 @@ func TestBlockEndpointsDERPOK(t *testing.T) {
 	waitForEndpoints(t, ms1.conn)
 	waitForEndpoints(t, ms2.conn)
 
-	// meshStacks doesn't use call-me-maybe packets to update endpoints, which
-	// makes them not get cleared when we call SetBlockEndpoints.
-	ep2, ok := ms1.conn.peerMap.endpointForNodeKey(ms2.Public())
-	if !ok {
-		t.Fatalf("endpoint not found for ms2")
-	}
-	ep2.mu.Lock()
-	for k := range ep2.endpointState {
-		ep2.deleteEndpointLocked("TestBlockEndpointsDERPOK", k)
-	}
-	ep2.mu.Unlock()
-
-	// Wait for the call-me-maybe packet to arrive.
-	for i := 0; i < 50; i++ {
-		time.Sleep(100 * time.Millisecond)
-		ep2.mu.Lock()
-		if len(ep2.endpointState) != 0 {
-			ep2.mu.Unlock()
-			break
-		}
-		ep2.mu.Unlock()
-	}
-
 	// SetBlockEndpoints is called later since it's incompatible with the test
 	// meshStacks implementations.
 	// We only set it on ms1, since ms2's endpoints should be ignored by ms1.
 	ms1.conn.SetBlockEndpoints(true)
 
-	// All call-me-maybe endpoints should've been immediately removed from ms1.
+	// All endpoints should've been immediately removed from ms1.
+	ep2, ok := ms1.conn.peerMap.endpointForNodeKey(ms2.Public())
+	if !ok {
+		t.Fatalf("endpoint not found for ms2")
+	}
 	ep2.mu.Lock()
 	if len(ep2.endpointState) != 0 {
 		ep2.mu.Unlock()
