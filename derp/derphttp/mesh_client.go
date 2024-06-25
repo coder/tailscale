@@ -5,7 +5,6 @@ package derphttp
 
 import (
 	"context"
-	"net/netip"
 	"sync"
 	"time"
 
@@ -13,6 +12,12 @@ import (
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 )
+
+var retryInterval = 5 * time.Second
+
+// testHookWatchLookConnectResult, if non-nil for tests, is called by RunWatchConnectionLoop
+// with the connect result. If it returns false, the loop ends.
+var testHookWatchLookConnectResult func(connectError error, wasSelfConnect bool) (keepRunning bool)
 
 // RunWatchConnectionLoop loops until ctx is done, sending WatchConnectionChanges and subscribing to
 // connection changes.
@@ -25,14 +30,21 @@ import (
 // updates about how many peers are on the server. Error log output is
 // set to the c's logger, regardless of infoLogf's value.
 //
-// To force RunWatchConnectionLoop to return quickly, its ctx needs to
-// be closed, and c itself needs to be closed.
-func (c *Client) RunWatchConnectionLoop(ctx context.Context, ignoreServerKey key.NodePublic, infoLogf logger.Logf, add func(key.NodePublic, netip.AddrPort), remove func(key.NodePublic)) {
+// To force RunWatchConnectionLoop to return quickly, its ctx needs to be
+// closed, and c itself needs to be closed.
+//
+// It is a fatal error to call this on an already-started Client without having
+// initialized Client.WatchConnectionChanges to true.
+//
+// If the DERP connection breaks and reconnects, remove will be called for all
+// previously seen peers, with Reason type PeerGoneReasonSynthetic. Those
+// clients are likely still connected and their add message will appear after
+// reconnect.
+func (c *Client) RunWatchConnectionLoop(ctx context.Context, ignoreServerKey key.NodePublic, infoLogf logger.Logf, add func(derp.PeerPresentMessage), remove func(derp.PeerGoneMessage)) {
 	if infoLogf == nil {
 		infoLogf = logger.Discard
 	}
 	logf := c.logf
-	const retryInterval = 5 * time.Second
 	const statusInterval = 10 * time.Second
 	var (
 		mu              sync.Mutex
@@ -47,7 +59,7 @@ func (c *Client) RunWatchConnectionLoop(ctx context.Context, ignoreServerKey key
 		}
 		logf("reconnected; clearing %d forwarding mappings", len(present))
 		for k := range present {
-			remove(k)
+			remove(derp.PeerGoneMessage{Peer: k, Reason: derp.PeerGoneReasonMeshConnBroke})
 		}
 		present = map[key.NodePublic]bool{}
 	}
@@ -69,13 +81,7 @@ func (c *Client) RunWatchConnectionLoop(ctx context.Context, ignoreServerKey key
 	})
 	defer timer.Stop()
 
-	updatePeer := func(k key.NodePublic, ipPort netip.AddrPort, isPresent bool) {
-		if isPresent {
-			add(k, ipPort)
-		} else {
-			remove(k)
-		}
-
+	updatePeer := func(k key.NodePublic, isPresent bool) {
 		mu.Lock()
 		defer mu.Unlock()
 		if isPresent {
@@ -103,13 +109,20 @@ func (c *Client) RunWatchConnectionLoop(ctx context.Context, ignoreServerKey key
 	for ctx.Err() == nil {
 		err := c.WatchConnectionChanges()
 		if err != nil {
+			if f := testHookWatchLookConnectResult; f != nil && !f(err, false) {
+				return
+			}
 			clear()
 			logf("WatchConnectionChanges: %v", err)
 			sleep(retryInterval)
 			continue
 		}
 
-		if c.ServerPublicKey() == ignoreServerKey {
+		selfConnect := c.ServerPublicKey() == ignoreServerKey
+		if f := testHookWatchLookConnectResult; f != nil && !f(nil, selfConnect) {
+			return
+		}
+		if selfConnect {
 			logf("detected self-connect; ignoring host")
 			return
 		}
@@ -127,7 +140,8 @@ func (c *Client) RunWatchConnectionLoop(ctx context.Context, ignoreServerKey key
 			}
 			switch m := m.(type) {
 			case derp.PeerPresentMessage:
-				updatePeer(m.Key, m.IPPort, true)
+				add(m)
+				updatePeer(m.Key, true)
 			case derp.PeerGoneMessage:
 				switch m.Reason {
 				case derp.PeerGoneReasonDisconnected:
@@ -139,7 +153,8 @@ func (c *Client) RunWatchConnectionLoop(ctx context.Context, ignoreServerKey key
 					logf("Recv: peer %s not at server %s for unknown reason %v",
 						key.NodePublic(m.Peer).ShortString(), c.ServerPublicKey().ShortString(), m.Reason)
 				}
-				updatePeer(key.NodePublic(m.Peer), netip.AddrPort{}, false)
+				remove(m)
+				updatePeer(m.Peer, false)
 			default:
 				continue
 			}
