@@ -410,7 +410,20 @@ func (v NetInfoView) PreferredDERP() int              { return v.ж.PreferredDER
 func (v NetInfoView) LinkType() string                { return v.ж.LinkType }
 
 func (v NetInfoView) DERPLatency() views.Map[string, float64] { return views.MapOf(v.ж.DERPLatency) }
-func (v NetInfoView) String() string                          { return v.ж.String() }
+
+func (v NetInfoView) DERPLatencyV4() views.Map[int, float64] { return views.MapOf(v.ж.DERPLatencyV4) }
+
+func (v NetInfoView) DERPLatencyV6() views.Map[int, float64] { return views.MapOf(v.ж.DERPLatencyV6) }
+func (v NetInfoView) UDP() bool                              { return v.ж.UDP }
+func (v NetInfoView) IPv6() bool                             { return v.ж.IPv6 }
+func (v NetInfoView) IPv4() bool                             { return v.ж.IPv4 }
+func (v NetInfoView) IPv6CanSend() bool                      { return v.ж.IPv6CanSend }
+func (v NetInfoView) IPv4CanSend() bool                      { return v.ж.IPv4CanSend }
+func (v NetInfoView) ICMPv4() bool                           { return v.ж.ICMPv4 }
+func (v NetInfoView) GlobalV4() string                       { return v.ж.GlobalV4 }
+func (v NetInfoView) GlobalV6() string                       { return v.ж.GlobalV6 }
+func (v NetInfoView) CaptivePortal() opt.Bool                { return v.ж.CaptivePortal }
+func (v NetInfoView) String() string                         { return v.ж.String() }
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _NetInfoViewNeedsRegeneration = NetInfo(struct {
@@ -427,6 +440,17 @@ var _NetInfoViewNeedsRegeneration = NetInfo(struct {
 	PreferredDERP         int
 	LinkType              string
 	DERPLatency           map[string]float64
+	DERPLatencyV4         map[int]float64
+	DERPLatencyV6         map[int]float64
+	UDP                   bool
+	IPv6                  bool
+	IPv4                  bool
+	IPv6CanSend           bool
+	IPv4CanSend           bool
+	ICMPv4                bool
+	GlobalV4              string
+	GlobalV6              string
+	CaptivePortal         opt.Bool
 }{})
 
 // View returns a readonly view of Login.

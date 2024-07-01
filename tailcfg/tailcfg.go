@@ -733,7 +733,38 @@ type NetInfo struct {
 	// This should only be updated rarely, or when there's a
 	// material change, as any change here also gets uploaded to
 	// the control plane.
-	DERPLatency map[string]float64 `json:",omitempty"`
+	// Deprecated; use DERPLatencyV4 and DERPLatencyV6 instead.
+	DERPLatency   map[string]float64 `json:",omitempty"`
+	DERPLatencyV4 map[int]float64    `json:",omitempty"`
+	DERPLatencyV6 map[int]float64    `json:",omitempty"`
+
+	// a UDP STUN round trip completed
+	UDP bool `json:",omitempty"`
+
+	// an IPv6 STUN round trip completed
+	IPv6 bool `json:",omitempty"`
+
+	// an IPv4 STUN round trip completed
+	IPv4 bool `json:",omitempty"`
+
+	// an IPv6 packet was able to be sent
+	IPv6CanSend bool `json:",omitempty"`
+
+	// an IPv4 packet was able to be sent
+	IPv4CanSend bool `json:",omitempty"`
+
+	// an ICMPv4 round trip completed
+	ICMPv4 bool
+
+	// ip:port of global IPv4
+	GlobalV4 string
+
+	// [ip]:port of global IPv6
+	GlobalV6 string
+
+	// CaptivePortal is set when we think there's a captive portal that is
+	// intercepting HTTP traffic.
+	CaptivePortal opt.Bool
 
 	// Update BasicallyEqual when adding fields.
 }
@@ -793,7 +824,16 @@ func (ni *NetInfo) BasicallyEqual(ni2 *NetInfo) bool {
 		ni.PMP == ni2.PMP &&
 		ni.PCP == ni2.PCP &&
 		ni.PreferredDERP == ni2.PreferredDERP &&
-		ni.LinkType == ni2.LinkType
+		ni.LinkType == ni2.LinkType &&
+		ni.UDP == ni2.UDP &&
+		ni.IPv6 == ni2.IPv6 &&
+		ni.IPv4 == ni2.IPv4 &&
+		ni.IPv6CanSend == ni2.IPv6CanSend &&
+		ni.IPv4CanSend == ni2.IPv4CanSend &&
+		ni.ICMPv4 == ni2.ICMPv4 &&
+		ni.GlobalV4 == ni2.GlobalV4 &&
+		ni.GlobalV6 == ni2.GlobalV6 &&
+		ni.CaptivePortal == ni2.CaptivePortal
 }
 
 // Equal reports whether h and h2 are equal.

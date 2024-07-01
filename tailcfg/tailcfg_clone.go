@@ -178,6 +178,18 @@ func (src *NetInfo) Clone() *NetInfo {
 			dst.DERPLatency[k] = v
 		}
 	}
+	if dst.DERPLatencyV4 != nil {
+		dst.DERPLatencyV4 = map[int]float64{}
+		for k, v := range src.DERPLatencyV4 {
+			dst.DERPLatencyV4[k] = v
+		}
+	}
+	if dst.DERPLatencyV6 != nil {
+		dst.DERPLatencyV6 = map[int]float64{}
+		for k, v := range src.DERPLatencyV6 {
+			dst.DERPLatencyV6[k] = v
+		}
+	}
 	return dst
 }
 
@@ -196,6 +208,17 @@ var _NetInfoCloneNeedsRegeneration = NetInfo(struct {
 	PreferredDERP         int
 	LinkType              string
 	DERPLatency           map[string]float64
+	DERPLatencyV4         map[int]float64
+	DERPLatencyV6         map[int]float64
+	UDP                   bool
+	IPv6                  bool
+	IPv4                  bool
+	IPv6CanSend           bool
+	IPv4CanSend           bool
+	ICMPv4                bool
+	GlobalV4              string
+	GlobalV6              string
+	CaptivePortal         opt.Bool
 }{})
 
 // Clone makes a deep copy of Login.
