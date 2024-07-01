@@ -805,7 +805,7 @@ func conciseOptBool(b opt.Bool, trueVal string) string {
 }
 
 // BasicallyEqual reports whether ni and ni2 are basically equal, ignoring
-// changes in DERP ServerLatency & RegionLatency
+// changes in DERP ServerLatency & RegionLatency.
 func (ni *NetInfo) BasicallyEqual(ni2 *NetInfo) bool {
 	if (ni == nil) != (ni2 == nil) {
 		return false
