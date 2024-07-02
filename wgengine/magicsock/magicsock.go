@@ -668,6 +668,8 @@ func (c *Conn) updateNetInfo(ctx context.Context) (*netcheck.Report, error) {
 
 	ni := &tailcfg.NetInfo{
 		DERPLatency:           map[string]float64{},
+		DERPLatencyV4:         map[int]float64{},
+		DERPLatencyV6:         map[int]float64{},
 		MappingVariesByDestIP: report.MappingVariesByDestIP,
 		HairPinning:           report.HairPinning,
 		UPnP:                  report.UPnP,
