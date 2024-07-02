@@ -674,11 +674,20 @@ func (c *Conn) updateNetInfo(ctx context.Context) (*netcheck.Report, error) {
 		PMP:                   report.PMP,
 		PCP:                   report.PCP,
 		HavePortMap:           c.portMapper.HaveMapping(),
+		UDP:                   report.UDP,
+		IPv6:                  report.IPv6,
+		IPv4:                  report.IPv4,
+		IPv4CanSend:           report.IPv4CanSend,
+		ICMPv4:                report.ICMPv4,
+		GlobalV4:              report.GlobalV4,
+		GlobalV6:              report.GlobalV6,
 	}
 	for rid, d := range report.RegionV4Latency {
+		ni.DERPLatencyV4[rid] = d.Seconds()
 		ni.DERPLatency[fmt.Sprintf("%d-v4", rid)] = d.Seconds()
 	}
 	for rid, d := range report.RegionV6Latency {
+		ni.DERPLatencyV6[rid] = d.Seconds()
 		ni.DERPLatency[fmt.Sprintf("%d-v6", rid)] = d.Seconds()
 	}
 
@@ -687,6 +696,7 @@ func (c *Conn) updateNetInfo(ctx context.Context) (*netcheck.Report, error) {
 	ni.WorkingUDP.Set(report.UDP)
 	ni.WorkingICMPv4.Set(report.ICMPv4)
 	ni.PreferredDERP = report.PreferredDERP
+	ni.CaptivePortal = report.CaptivePortal
 
 	if ni.PreferredDERP == 0 {
 		// Perhaps UDP is blocked. Pick a deterministic but arbitrary
