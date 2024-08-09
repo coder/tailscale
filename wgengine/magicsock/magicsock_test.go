@@ -39,7 +39,7 @@ import (
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 	"tailscale.com/cmd/testwrapper/flakytest"
 	"tailscale.com/derp"
 	"tailscale.com/derp/derphttp"
