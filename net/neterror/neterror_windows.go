@@ -13,4 +13,8 @@ func init() {
 	packetWasTruncated = func(err error) bool {
 		return errors.Is(err, windows.WSAEMSGSIZE)
 	}
+
+	socketWasReset = func(err error) bool {
+		return errors.Is(err, windows.WSAECONNRESET)
+	}
 }
