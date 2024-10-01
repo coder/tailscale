@@ -1213,31 +1213,16 @@ func (c *Conn) receiveIPv6() conn.ReceiveFunc {
 	return c.mkReceiveFunc(&c.pconn6, &health.ReceiveIPv6, metricRecvDataIPv6)
 }
 
-type permanentNetError struct {
-	error
-}
-
-var _ net.Error = permanentNetError{}
-
-func (permanentNetError) Timeout() bool   { return false }
-func (permanentNetError) Temporary() bool { return false }
-
 // mkReceiveFunc creates a ReceiveFunc reading from ruc.
 // The provided healthItem and metric are updated if non-nil.
 func (c *Conn) mkReceiveFunc(ruc *RebindingUDPConn, healthItem *health.ReceiveFuncStats, metric *clientmetric.Metric) conn.ReceiveFunc {
 	// epCache caches an IPPort->endpoint for hot flows.
 	var epCache ippEndpointCache
-	var connErr error
 
 	return func(buffs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
 		if healthItem != nil {
 			healthItem.Enter()
 			defer healthItem.Exit()
-		}
-		if connErr != nil {
-			// Just in case we get another call, we don't want to call ReadBatch
-			// again.
-			return 0, connErr
 		}
 		if ruc == nil {
 			panic("nil RebindingUDPConn")
@@ -1252,12 +1237,9 @@ func (c *Conn) mkReceiveFunc(ruc *RebindingUDPConn, healthItem *health.ReceiveFu
 					continue
 				}
 				if neterror.SocketWasReset(err) {
-					// Wrap the error in a permanentNetError so that Wireguard
-					// doesn't keep trying to read packets from us.
-					connErr = permanentNetError{error: err}
 					c.logf("magicsock: receive: rebind required due to socket reset: %v", err)
 					c.Rebind()
-					return 0, connErr
+					c.ReSTUN("socket-reset")
 				}
 
 				return 0, err
