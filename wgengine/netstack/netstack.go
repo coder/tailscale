@@ -878,17 +878,17 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 	clientRemoteAddrPort := netip.AddrPortFrom(clientRemoteIP, clientRemotePort)
 
 	dialIP := netaddrIPFromNetstackIP(reqDetails.LocalAddress)
-	isTailscaleIP := tsaddr.IsTailscaleIP(dialIP)
+	isLocal := ns.isLocalIP(dialIP)
 
 	dstAddrPort := netip.AddrPortFrom(dialIP, reqDetails.LocalPort)
 
 	if viaRange.Contains(dialIP) {
-		isTailscaleIP = false
+		isLocal = false
 		dialIP = tsaddr.UnmapVia(dialIP)
 	}
 
 	defer func() {
-		if !isTailscaleIP {
+		if !isLocal {
 			// if this is a subnet IP, we added this in before the TCP handshake
 			// so netstack is happy TCP-handshaking as a subnet IP
 			ns.removeSubnetAddress(dialIP)
@@ -975,7 +975,7 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 			return
 		}
 	}
-	if isTailscaleIP {
+	if isLocal {
 		dialIP = netaddr.IPv4(127, 0, 0, 1)
 	}
 	dialAddr := netip.AddrPortFrom(dialIP, uint16(reqDetails.LocalPort))
