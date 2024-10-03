@@ -11,7 +11,7 @@ import (
 	"net"
 	"net/http"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 	"tailscale.com/net/wsconn"
 )
 

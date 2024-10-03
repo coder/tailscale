@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 	"tailscale.com/derp"
 	"tailscale.com/net/wsconn"
 	"tailscale.com/types/key"
