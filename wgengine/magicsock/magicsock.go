@@ -217,6 +217,8 @@ type Conn struct {
 	// blockEndpoints is whether to avoid capturing, storing and sending
 	// endpoints gathered from local interfaces or STUN. Only DERP endpoints
 	// will be sent.
+	// This will also block incoming endpoints received via call-me-maybe disco
+	// packets.
 	blockEndpoints bool
 	// endpointsUpdateActive indicates that updateEndpoints is
 	// currently running. It's used to deduplicate concurrent endpoint
@@ -855,10 +857,10 @@ func (c *Conn) DiscoPublicKey() key.DiscoPublic {
 	return c.discoPublic
 }
 
-// SetBlockEndpoints sets the blockEndpoints field. If changed, endpoints will
-// be updated to apply the new settings. Existing connections may continue to
-// use the old setting until they are reestablished. Disabling endpoints does
-// not affect the UDP socket or portmapper.
+// SetBlockEndpoints sets the blockEndpoints field. If enabled, all peer
+// endpoints will be cleared from the peer map and every connection will
+// immediately switch to DERP. Disabling endpoints does not affect the UDP
+// socket or portmapper.
 func (c *Conn) SetBlockEndpoints(block bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -868,6 +870,7 @@ func (c *Conn) SetBlockEndpoints(block bool) {
 		return
 	}
 
+	// Re-gather local endpoints.
 	const why = "SetBlockEndpoints"
 	if c.endpointsUpdateActive {
 		if c.wantEndpointsUpdate != why {
@@ -877,6 +880,13 @@ func (c *Conn) SetBlockEndpoints(block bool) {
 	} else {
 		c.endpointsUpdateActive = true
 		go c.updateEndpoints(why)
+	}
+
+	// Clear any endpoints from the peerMap if block is true.
+	if block {
+		c.peerMap.forEachEndpoint(func(ep *endpoint) {
+			ep.clearEndpoints("SetBlockEndpoints")
+		})
 	}
 }
 
@@ -1535,6 +1545,14 @@ func (c *Conn) handleDiscoMessage(msg []byte, src netip.AddrPort, derpNodeSrc ke
 			c.logf("[unexpected] CallMeMaybe from peer via DERP whose netmap discokey != disco source")
 			return
 		}
+		if c.blockEndpoints {
+			c.dlogf("[v1] magicsock: disco: %v<-%v (%v, %v)  got call-me-maybe with %d endpoints, but endpoints blocked",
+				c.discoShort, epDisco.short,
+				ep.publicKey.ShortString(), derpStr(src.String()),
+				len(dm.MyNumber),
+			)
+			dm.MyNumber = []netip.AddrPort{}
+		}
 		c.dlogf("[v1] magicsock: disco: %v<-%v (%v, %v)  got call-me-maybe, %d endpoints",
 			c.discoShort, epDisco.short,
 			ep.publicKey.ShortString(), derpStr(src.String()),
@@ -1933,6 +1951,13 @@ func (c *Conn) SetNetworkMap(nm *netmap.NetworkMap) {
 	// we'll fall through to the next pass, which allocates but can
 	// handle full set updates.
 	for _, n := range nm.Peers {
+		if c.blockEndpoints {
+			c.dlogf("[v1] magicsock: SetNetworkingMap: %v (%v, %v) received %d endpoints, but endpoints blocked",
+				n.DiscoKey.ShortString(), n.Key.ShortString(),
+				len(n.Endpoints),
+			)
+			n.Endpoints = []string{}
+		}
 		if ep, ok := c.peerMap.endpointForNodeKey(n.Key); ok {
 			if n.DiscoKey.IsZero() && !n.IsWireGuardOnly {
 				// Discokey transitioned from non-zero to zero? This should not
