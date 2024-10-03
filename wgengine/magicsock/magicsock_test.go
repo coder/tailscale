@@ -30,6 +30,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/coder/websocket"
 	wgconn "github.com/tailscale/wireguard-go/conn"
 	"github.com/tailscale/wireguard-go/device"
 	"github.com/tailscale/wireguard-go/tun/tuntest"
@@ -39,7 +40,6 @@ import (
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
-	"nhooyr.io/websocket"
 	"tailscale.com/cmd/testwrapper/flakytest"
 	"tailscale.com/derp"
 	"tailscale.com/derp/derphttp"
