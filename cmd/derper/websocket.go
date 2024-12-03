@@ -10,9 +10,8 @@ import (
 	"net/http"
 	"strings"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 	"tailscale.com/derp"
-	"tailscale.com/net/wsconn"
 )
 
 var counterWebSocketAccepts = expvar.NewInt("derp_websocket_accepts")
@@ -50,7 +49,7 @@ func addWebSocketSupport(s *derp.Server, base http.Handler) http.Handler {
 			return
 		}
 		counterWebSocketAccepts.Add(1)
-		wc := wsconn.NetConn(r.Context(), c, websocket.MessageBinary)
+		wc := websocket.NetConn(r.Context(), c, websocket.MessageBinary)
 		brw := bufio.NewReadWriter(bufio.NewReader(wc), bufio.NewWriter(wc))
 		s.Accept(r.Context(), wc, brw, r.RemoteAddr)
 	})

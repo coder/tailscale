@@ -15,9 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 	"tailscale.com/derp"
-	"tailscale.com/net/wsconn"
 	"tailscale.com/types/key"
 )
 
@@ -229,7 +228,7 @@ func TestHTTP2OnlyServer(t *testing.T) {
 			return
 		}
 		defer c.Close(websocket.StatusInternalError, "closing")
-		wc := wsconn.NetConn(context.Background(), c, websocket.MessageBinary)
+		wc := websocket.NetConn(context.Background(), c, websocket.MessageBinary)
 		brw := bufio.NewReadWriter(bufio.NewReader(wc), bufio.NewWriter(wc))
 		s.Accept(context.Background(), wc, brw, r.RemoteAddr)
 	}))
@@ -289,7 +288,7 @@ func TestForceWebsockets(t *testing.T) {
 			return
 		}
 		defer c.Close(websocket.StatusInternalError, "closing")
-		wc := wsconn.NetConn(context.Background(), c, websocket.MessageBinary)
+		wc := websocket.NetConn(context.Background(), c, websocket.MessageBinary)
 		brw := bufio.NewReadWriter(bufio.NewReader(wc), bufio.NewWriter(wc))
 		s.Accept(context.Background(), wc, brw, r.RemoteAddr)
 	}))
