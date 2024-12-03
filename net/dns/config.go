@@ -47,10 +47,7 @@ type Config struct {
 }
 
 func (c *Config) serviceIP() netip.Addr {
-	if c.OnlyIPv6 {
-		return tsaddr.TailscaleServiceIPv6()
-	}
-	return tsaddr.TailscaleServiceIP()
+	return tsaddr.CoderServiceIPv6()
 }
 
 // WriteToBufioWriter write a debug version of c for logs to w, omitting

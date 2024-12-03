@@ -53,6 +53,14 @@ func TestTailscaleServiceIPv6(t *testing.T) {
 	}
 }
 
+func TestCoderServiceIPv6(t *testing.T) {
+	got := CoderServiceIPv6().String()
+	want := "fd60:627a:a42b::53"
+	if got != want {
+		t.Errorf("got %q; want %q", got, want)
+	}
+}
+
 func TestChromeOSVMRange(t *testing.T) {
 	if got, want := ChromeOSVMRange().String(), "100.115.92.0/23"; got != want {
 		t.Errorf("got %q; want %q", got, want)
