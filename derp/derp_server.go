@@ -73,15 +73,24 @@ func init() {
 }
 
 const (
-	// perClientSendQueueDepth is the number of packets to buffer for sending.
+	// defaultPerClientSendQueueDepth is the number of packets to buffer for sending.
 	// CODER: We've modified this to 512, up from 32 in upstream Tailscale to improve DERP
 	// throughput.  32 is an understandable number for big, public DERP servers that Tailscale run,
 	// serving many thousands of connections, and where Tailscale is footing the bill.  In Coder's
 	// use case, we are serving hundreds to low thousands of users and the user's own company is
 	// paying the bills.  In testing, it increases DERP throughput up to 6x.
-	perClientSendQueueDepth = 512
-	writeTimeout            = 2 * time.Second
+	defaultPerClientSendQueueDepth = 512
+	writeTimeout                   = 2 * time.Second
+	privilegedWriteTimeout         = 30 * time.Second // for clients with the mesh key
 )
+
+func getPerClientSendQueueDepth() int {
+	if v, ok := envknob.LookupInt("TS_DEBUG_DERP_PER_CLIENT_SEND_QUEUE_DEPTH"); ok {
+		return v
+	}
+
+	return defaultPerClientSendQueueDepth
+}
 
 // dupPolicy is a temporary (2021-08-30) mechanism to change the policy
 // of how duplicate connection for the same key are handled.
@@ -176,6 +185,9 @@ type Server struct {
 
 	// maps from netip.AddrPort to a client's public key
 	keyOfAddr map[netip.AddrPort]key.NodePublic
+
+	// Sets the client send queue depth for the server.
+	perClientSendQueueDepth int
 
 	clock tstime.Clock
 }
@@ -370,6 +382,8 @@ func NewServer(privateKey key.NodePrivate, logf logger.Logf) *Server {
 
 	s.packetsDroppedTypeDisco = s.packetsDroppedType.Get("disco")
 	s.packetsDroppedTypeOther = s.packetsDroppedType.Get("other")
+
+	s.perClientSendQueueDepth = getPerClientSendQueueDepth()
 	return s
 }
 
@@ -803,8 +817,8 @@ func (s *Server) accept(ctx context.Context, nc Conn, brw *bufio.ReadWriter, rem
 		remoteAddr:     remoteAddr,
 		remoteIPPort:   remoteIPPort,
 		connectedAt:    s.clock.Now(),
-		sendQueue:      make(chan pkt, perClientSendQueueDepth),
-		discoSendQueue: make(chan pkt, perClientSendQueueDepth),
+		sendQueue:      make(chan pkt, s.perClientSendQueueDepth),
+		discoSendQueue: make(chan pkt, s.perClientSendQueueDepth),
 		sendPongCh:     make(chan [8]byte, 1),
 		peerGone:       make(chan peerGoneMsg),
 		canMesh:        canMesh,
