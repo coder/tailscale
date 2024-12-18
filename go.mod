@@ -30,7 +30,7 @@ require (
 	github.com/godbus/dbus/v5 v5.1.0
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da
 	github.com/golangci/golangci-lint v1.52.2
-	github.com/google/go-cmp v0.5.9
+	github.com/google/go-cmp v0.6.0
 	github.com/google/go-containerregistry v0.14.0
 	github.com/google/nftables v0.1.1-0.20230115205135-9aa6fdf5a28c
 	github.com/google/uuid v1.3.0
@@ -75,16 +75,16 @@ require (
 	go.uber.org/zap v1.24.0
 	go4.org/mem v0.0.0-20220726221520-4f986261bf13
 	go4.org/netipx v0.0.0-20230728180743-ad4cb58a6516
-	golang.org/x/crypto v0.18.0
+	golang.org/x/crypto v0.30.0
 	golang.org/x/exp v0.0.0-20230725093048-515e97ebf090
-	golang.org/x/mod v0.14.0
-	golang.org/x/net v0.20.0
+	golang.org/x/mod v0.17.0
+	golang.org/x/net v0.32.0
 	golang.org/x/oauth2 v0.7.0
-	golang.org/x/sync v0.6.0
-	golang.org/x/sys v0.17.0
-	golang.org/x/term v0.16.0
+	golang.org/x/sync v0.10.0
+	golang.org/x/sys v0.28.0
+	golang.org/x/term v0.27.0
 	golang.org/x/time v0.5.0
-	golang.org/x/tools v0.16.1
+	golang.org/x/tools v0.21.1-0.20240508182429-e35e4ccd0d2d
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2
 	golang.zx2c4.com/wireguard/windows v0.5.3
 	gvisor.dev/gvisor v0.0.0-20240509041132-65b30f7869dc
@@ -333,7 +333,7 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/exp/typeparams v0.0.0-20230425010034-47ecfdc1ba53 // indirect
 	golang.org/x/image v0.7.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
+	golang.org/x/text v0.21.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.3.0 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
 	google.golang.org/protobuf v1.32.0 // indirect
