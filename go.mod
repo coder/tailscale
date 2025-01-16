@@ -38,6 +38,7 @@ require (
 	github.com/hdevalence/ed25519consensus v0.1.0
 	github.com/iancoleman/strcase v0.2.0
 	github.com/illarion/gonotify v1.0.1
+	github.com/inetaf/tcpproxy v0.0.0-20240214030015-3ce58045626c
 	github.com/insomniacslk/dhcp v0.0.0-20230407062729-974c6f05fe16
 	github.com/josharian/native v1.1.1-0.20230202152459-5c7d0dd6ab86
 	github.com/jsimonetti/rtnetlink v1.3.2
@@ -65,6 +66,8 @@ require (
 	github.com/tailscale/hujson v0.0.0-20221223112325-20486734a56a
 	github.com/tailscale/mkctr v0.0.0-20220601142259-c0b937af2e89
 	github.com/tailscale/netlink v1.1.1-0.20211101221916-cabfb018fe85
+	github.com/tailscale/peercred v0.0.0-20250107143737-35a0c7bd7edc
+	github.com/tailscale/wf v0.0.0-20240214030419-6fbb0a674ee6
 	github.com/tailscale/wireguard-go v0.0.0-20230710185534-bb2c8f22eccf
 	github.com/tc-hib/winres v0.2.0
 	github.com/tcnksm/go-httpstat v0.2.0
@@ -81,7 +84,7 @@ require (
 	golang.org/x/net v0.32.0
 	golang.org/x/oauth2 v0.7.0
 	golang.org/x/sync v0.10.0
-	golang.org/x/sys v0.28.0
+	golang.org/x/sys v0.29.1-0.20250107080300-1c14dcadc3ab
 	golang.org/x/term v0.27.0
 	golang.org/x/time v0.5.0
 	golang.org/x/tools v0.21.1-0.20240531212143-b6235391adb3
@@ -89,9 +92,6 @@ require (
 	golang.zx2c4.com/wireguard/windows v0.5.3
 	gvisor.dev/gvisor v0.0.0-20240509041132-65b30f7869dc
 	honnef.co/go/tools v0.5.1
-	inet.af/peercred v0.0.0-20210906144145-0893ea02156a
-	inet.af/tcpproxy v0.0.0-20221017015627-91f861402626
-	inet.af/wf v0.0.0-20221017222439-36129f591884
 	k8s.io/api v0.27.2
 	k8s.io/apimachinery v0.27.2
 	k8s.io/client-go v0.27.2
