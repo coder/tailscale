@@ -6,7 +6,6 @@
 package safesocket
 
 import (
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -17,9 +16,6 @@ import (
 )
 
 func connect(s *ConnectionStrategy) (net.Conn, error) {
-	if runtime.GOOS == "js" {
-		return nil, errors.New("safesocket.Connect not yet implemented on js/wasm")
-	}
 	return net.Dial("unix", s.path)
 }
 

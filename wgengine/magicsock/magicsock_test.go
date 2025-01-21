@@ -1640,7 +1640,6 @@ func TestEndpointSetsEqual(t *testing.T) {
 			t.Errorf("%q vs %q = %v; want %v", tt.a, tt.b, got, tt.want)
 		}
 	}
-
 }
 
 func TestBetterAddr(t *testing.T) {
@@ -1746,7 +1745,6 @@ func TestBetterAddr(t *testing.T) {
 			t.Errorf("[%d] betterAddr(%+v, %+v) and betterAddr(%+v, %+v) both unexpectedly true", i, tt.a, tt.b, tt.b, tt.a)
 		}
 	}
-
 }
 
 func epStrings(eps []tailcfg.Endpoint) (ret []string) {
@@ -3017,12 +3015,14 @@ func TestBlockEndpoints(t *testing.T) {
 	// have a DERP connection due to newMagicStackFunc.
 	ms.conn.mu.Lock()
 	haveEndpoint := false
-	for _, ep := range ms.conn.lastEndpoints {
+
+	if len(ms.conn.lastEndpoints) > 0 {
+		ep := ms.conn.lastEndpoints[0]
 		if ep.Addr.Addr() == tailcfg.DerpMagicIPAddr {
 			t.Fatal("DERP IP in endpoints list?", ep.Addr)
 		}
+
 		haveEndpoint = true
-		break
 	}
 	ms.conn.mu.Unlock()
 	if !haveEndpoint {

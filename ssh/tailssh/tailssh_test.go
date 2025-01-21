@@ -99,7 +99,8 @@ func TestMatchRule(t *testing.T) {
 				Action: someAction,
 				SSHUsers: map[string]string{
 					"*": "ubuntu",
-				}},
+				},
+			},
 			ci:      &sshConnInfo{},
 			wantErr: errPrincipalMatch,
 		},
@@ -290,7 +291,6 @@ func (ts *localState) WhoIs(ipp netip.AddrPort) (n *tailcfg.Node, u tailcfg.User
 		}, tailcfg.UserProfile{
 			LoginName: "peer",
 		}, true
-
 }
 
 func (ts *localState) DoNoiseRequest(req *http.Request) (*http.Response, error) {
@@ -1049,7 +1049,6 @@ func TestPublicKeyFetching(t *testing.T) {
 	if got, want := atomic.LoadInt32(&reqsIfNoneMatchMiss), int32(0); got != want {
 		t.Errorf("got %d etag misses; want %d", got, want)
 	}
-
 }
 
 func TestExpandPublicKeyURL(t *testing.T) {
@@ -1102,10 +1101,14 @@ func TestPathFromPAMEnvLine(t *testing.T) {
 		want string
 	}{
 		{"", u, ""},
-		{`PATH   DEFAULT="/run/wrappers/bin:@{HOME}/.nix-profile/bin:/etc/profiles/per-user/@{PAM_USER}/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin"`,
-			u, "/run/wrappers/bin:/Homes/Foo/.nix-profile/bin:/etc/profiles/per-user/foo/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin"},
-		{`PATH   DEFAULT="@{SOMETHING_ELSE}:nope:@{HOME}"`,
-			u, ""},
+		{
+			`PATH   DEFAULT="/run/wrappers/bin:@{HOME}/.nix-profile/bin:/etc/profiles/per-user/@{PAM_USER}/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin"`,
+			u, "/run/wrappers/bin:/Homes/Foo/.nix-profile/bin:/etc/profiles/per-user/foo/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin",
+		},
+		{
+			`PATH   DEFAULT="@{SOMETHING_ELSE}:nope:@{HOME}"`,
+			u, "",
+		},
 	}
 	for i, tt := range tests {
 		got := pathFromPAMEnvLine([]byte(tt.line), tt.u)
@@ -1123,8 +1126,10 @@ func TestExpandDefaultPathTmpl(t *testing.T) {
 		want string
 	}{
 		{"", u, ""},
-		{`/run/wrappers/bin:@{HOME}/.nix-profile/bin:/etc/profiles/per-user/@{PAM_USER}/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin`,
-			u, "/run/wrappers/bin:/Homes/Foo/.nix-profile/bin:/etc/profiles/per-user/foo/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin"},
+		{
+			`/run/wrappers/bin:@{HOME}/.nix-profile/bin:/etc/profiles/per-user/@{PAM_USER}/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin`,
+			u, "/run/wrappers/bin:/Homes/Foo/.nix-profile/bin:/etc/profiles/per-user/foo/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin",
+		},
 		{`@{SOMETHING_ELSE}:nope:@{HOME}`, u, ""},
 	}
 	for i, tt := range tests {
@@ -1158,5 +1163,26 @@ func TestStdOsUserUserAssumptions(t *testing.T) {
 	v := reflect.TypeOf(user.User{})
 	if got, want := v.NumField(), 5; got != want {
 		t.Errorf("os/user.User has %v fields; this package assumes %v", got, want)
+	}
+}
+
+func Test_envEq(t *testing.T) {
+	tests := []struct {
+		name string // description of this test case
+		// Named input parameters for target function.
+		a    string
+		b    string
+		want bool
+	}{
+		// TODO: Add test cases.
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := envEq(tt.a, tt.b)
+			// TODO: update the condition below to compare got with tt.want.
+			if true {
+				t.Errorf("envEq() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
