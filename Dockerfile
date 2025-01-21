@@ -31,7 +31,7 @@
 #     $ docker exec tailscaled tailscale status
 
 
-FROM golang:1.20-alpine AS build-env
+FROM golang:1.22-alpine AS build-env
 
 WORKDIR /go/src/tailscale
 
@@ -40,14 +40,14 @@ RUN go mod download
 
 # Pre-build some stuff before the following COPY line invalidates the Docker cache.
 RUN go install \
-    github.com/aws/aws-sdk-go-v2/aws \
-    github.com/aws/aws-sdk-go-v2/config \
-    gvisor.dev/gvisor/pkg/tcpip/adapters/gonet \
-    gvisor.dev/gvisor/pkg/tcpip/stack \
-    golang.org/x/crypto/ssh \
-    golang.org/x/crypto/acme \
-    github.com/coder/websocket \
-    github.com/mdlayher/netlink
+  github.com/aws/aws-sdk-go-v2/aws \
+  github.com/aws/aws-sdk-go-v2/config \
+  gvisor.dev/gvisor/pkg/tcpip/adapters/gonet \
+  gvisor.dev/gvisor/pkg/tcpip/stack \
+  golang.org/x/crypto/ssh \
+  golang.org/x/crypto/acme \
+  github.com/coder/websocket \
+  github.com/mdlayher/netlink
 
 COPY . .
 
@@ -61,10 +61,10 @@ ENV VERSION_GIT_HASH=$VERSION_GIT_HASH
 ARG TARGETARCH
 
 RUN GOARCH=$TARGETARCH go install -ldflags="\
-      -X tailscale.com/version.longStamp=$VERSION_LONG \
-      -X tailscale.com/version.shortStamp=$VERSION_SHORT \
-      -X tailscale.com/version.gitCommitStamp=$VERSION_GIT_HASH" \
-      -v ./cmd/tailscale ./cmd/tailscaled ./cmd/containerboot
+  -X tailscale.com/version.longStamp=$VERSION_LONG \
+  -X tailscale.com/version.shortStamp=$VERSION_SHORT \
+  -X tailscale.com/version.gitCommitStamp=$VERSION_GIT_HASH" \
+  -v ./cmd/tailscale ./cmd/tailscaled ./cmd/containerboot
 
 FROM alpine:3.16
 RUN apk add --no-cache ca-certificates iptables iproute2 ip6tables

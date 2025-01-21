@@ -23,7 +23,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,9 +46,7 @@ import (
 	"tailscale.com/util/multierr"
 )
 
-var (
-	sshVerboseLogging = envknob.RegisterBool("TS_DEBUG_SSH_VLOG")
-)
+var sshVerboseLogging = envknob.RegisterBool("TS_DEBUG_SSH_VLOG")
 
 const (
 	// forcePasswordSuffix is the suffix at the end of a username that forces
@@ -1870,9 +1867,6 @@ func envValFromList(env []string, wantKey string) (v string) {
 // envEq reports whether environment variable a == b for the current
 // operating system.
 func envEq(a, b string) bool {
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(a, b)
-	}
 	return a == b
 }
 

@@ -37,7 +37,7 @@ func autoflagsForTest(argv []string, env *Environment, goroot, nativeGOOS, nativ
 		cgoCflags   = []string{"-O3", "-std=gnu11"}
 		cgoLdflags  []string
 		ldflags     []string
-		tags        = []string{"tailscale_go"}
+		tags        = []string{}
 		cgo         = false
 		failReflect = false
 	)

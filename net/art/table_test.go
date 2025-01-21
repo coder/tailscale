@@ -71,7 +71,7 @@ func TestComputePrefixSplit(t *testing.T) {
 	// subtle, and all the test cases listed below come from
 	// hard-earned debugging of malformed route tables.
 
-	var tests = []struct {
+	tests := []struct {
 		// prefixA can be a /8, /16 or /24 (v4).
 		// prefixB can be anything /9 or more specific.
 		prefixA, prefixB string
@@ -592,7 +592,7 @@ func TestInsertCompare(t *testing.T) {
 	}
 
 	if debugInsert {
-		t.Logf(fast.debugSummary())
+		t.Log(fast.debugSummary())
 	}
 
 	seenVals4 := map[*int]bool{}
@@ -1019,7 +1019,6 @@ func BenchmarkTableGet(b *testing.B) {
 		b.ReportMetric(lookups/elapsedSec, "addrs/s")
 		b.ReportMetric(allocs/lookups, "allocs/op")
 		b.ReportMetric(bytes/lookups, "B/op")
-
 	})
 }
 

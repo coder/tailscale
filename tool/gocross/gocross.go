@@ -15,7 +15,9 @@ import (
 	_ "embed"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 
 	"tailscale.com/atomicfile"
 	"tailscale.com/version"
@@ -36,23 +38,6 @@ func main() {
 			// regular go binary, so it can be used to detect when `go` is
 			// actually gocross.
 			os.Exit(0)
-		case "make-goroot":
-			_, gorootDir, err := getToolchain()
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "getting toolchain: %v\n", err)
-				os.Exit(1)
-			}
-
-			fmt.Println(gorootDir)
-			os.Exit(0)
-		case "gocross-get-toolchain-go":
-			toolchain, _, err := getToolchain()
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "getting toolchain: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Println(filepath.Join(toolchain, "bin/go"))
-			os.Exit(0)
 		case "gocross-write-wrapper-script":
 			if len(os.Args) != 3 {
 				fmt.Fprintf(os.Stderr, "usage: gocross write-wrapper-script <path>\n")
@@ -66,25 +51,13 @@ func main() {
 		}
 	}
 
-	toolchain, goroot, err := getToolchain()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "getting toolchain: %v\n", err)
-		os.Exit(1)
-	}
-
 	args := os.Args
 	if os.Getenv("GOCROSS_BYPASS") == "" {
-		newArgv, env, err := Autoflags(os.Args, goroot)
+		newArgv, env, err := Autoflags(os.Args, runtime.GOROOT())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "computing flags: %v\n", err)
 			os.Exit(1)
 		}
-
-		// Make sure the right version of cmd/go is the first thing in the PATH
-		// for tests that execute `go build` or `go test`.
-		// TODO: if we really need to do this, do it inside Autoflags, not here.
-		path := filepath.Join(toolchain, "bin") + string(os.PathListSeparator) + os.Getenv("PATH")
-		env.Set("PATH", path)
 
 		debug("Input: %s\n", formatArgv(os.Args))
 		debug("Command: %s\n", formatArgv(newArgv))
@@ -95,10 +68,18 @@ func main() {
 			fmt.Fprintf(os.Stderr, "modifying environment: %v\n", err)
 			os.Exit(1)
 		}
-
 	}
 
-	doExec(filepath.Join(toolchain, "bin/go"), args, os.Environ())
+	cmd, err := exec.LookPath("go")
+	if err == nil {
+		cmd, err = filepath.Abs(cmd)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "looking up Go binary path: %v\n", err)
+		os.Exit(1)
+	}
+
+	doExec(cmd, args, os.Environ())
 }
 
 //go:embed gocross-wrapper.sh
