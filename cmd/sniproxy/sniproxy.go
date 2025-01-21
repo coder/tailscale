@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/inetaf/tcpproxy"
 	"golang.org/x/net/dns/dnsmessage"
-	"inet.af/tcpproxy"
 	"tailscale.com/client/tailscale"
 	"tailscale.com/hostinfo"
 	"tailscale.com/net/netutil"
