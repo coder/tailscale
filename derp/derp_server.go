@@ -77,7 +77,7 @@ const (
 	// use case, we are serving hundreds to low thousands of users and the user's own company is
 	// paying the bills.  In testing, it increases DERP throughput up to 6x.
 	defaultPerClientSendQueueDepth = 512
-	writeTimeout                   = 2 * time.Second
+	DefaultTCPWiteTimeout          = 2 * time.Second
 )
 
 func getPerClientSendQueueDepth() int {
@@ -182,6 +182,8 @@ type Server struct {
 
 	// Sets the client send queue depth for the server.
 	perClientSendQueueDepth int
+
+	tcpWriteTimeout time.Duration
 
 	clock tstime.Clock
 }
@@ -321,24 +323,25 @@ func NewServer(privateKey key.NodePrivate, logf logger.Logf) *Server {
 	runtime.ReadMemStats(&ms)
 
 	s := &Server{
-		debug:                envknob.Bool("DERP_DEBUG_LOGS"),
-		privateKey:           privateKey,
-		publicKey:            privateKey.Public(),
-		logf:                 logf,
-		limitedLogf:          logger.RateLimitedFn(logf, 30*time.Second, 5, 100),
-		packetsRecvByKind:    metrics.LabelMap{Label: "kind"},
-		packetsDroppedReason: metrics.LabelMap{Label: "reason"},
-		packetsDroppedType:   metrics.LabelMap{Label: "type"},
-		clients:              map[key.NodePublic]clientSet{},
-		clientsMesh:          map[key.NodePublic]PacketForwarder{},
-		netConns:             map[Conn]chan struct{}{},
-		memSys0:              ms.Sys,
-		watchers:             map[*sclient]bool{},
-		sentTo:               map[key.NodePublic]map[key.NodePublic]int64{},
-		avgQueueDuration:     new(uint64),
-		tcpRtt:               metrics.LabelMap{Label: "le"},
-		keyOfAddr:            map[netip.AddrPort]key.NodePublic{},
-		clock:                tstime.StdClock{},
+			debug:                envknob.Bool("DERP_DEBUG_LOGS"),
+			privateKey:           privateKey,
+			publicKey:            privateKey.Public(),
+			logf:                 logf,
+			limitedLogf:          logger.RateLimitedFn(logf, 30*time.Second, 5, 100),
+			packetsRecvByKind:    metrics.LabelMap{Label: "kind"},
+			packetsDroppedReason: metrics.LabelMap{Label: "reason"},
+			packetsDroppedType:   metrics.LabelMap{Label: "type"},
+			clients:              map[key.NodePublic]clientSet{},
+			clientsMesh:          map[key.NodePublic]PacketForwarder{},
+			netConns:             map[Conn]chan struct{}{},
+			memSys0:              ms.Sys,
+			watchers:             map[*sclient]bool{},
+			sentTo:               map[key.NodePublic]map[key.NodePublic]int64{},
+			avgQueueDuration:     new(uint64),
+			tcpRtt:               metrics.LabelMap{Label: "le"},
+			keyOfAddr:            map[netip.AddrPort]key.NodePublic{},
+			clock:                tstime.StdClock{},
+			tcpWriteTimeout:      DefaultTCPWiteTimeout,
 	}
 	s.initMetacert()
 	s.packetsRecvDisco = s.packetsRecvByKind.Get("disco")
@@ -373,6 +376,13 @@ func (s *Server) SetMeshKey(v string) {
 // It must be called before serving begins.
 func (s *Server) SetVerifyClient(v bool) {
 	s.verifyClients = v
+}
+
+// SetTCPWriteTimeout sets the timeout for writing to connected clients.
+// This timeout does not apply to mesh connections.
+// Defaults to 2 seconds.
+func (s *Server) SetTCPWriteTimeout(d time.Duration) {
+	s.tcpWriteTimeout = d
 }
 
 // HasMeshKey reports whether the server is configured with a mesh key.
@@ -1521,7 +1531,11 @@ func (c *sclient) sendLoop(ctx context.Context) error {
 }
 
 func (c *sclient) setWriteDeadline() {
-	c.nc.SetWriteDeadline(time.Now().Add(writeTimeout))
+	d := c.s.tcpWriteTimeout
+	// Ignore the error from setting the write deadline. In practice,
+	// setting the deadline will only fail if the connection is closed
+	// or closing, so the subsequent Write() will fail anyway.
+	_ = c.nc.SetWriteDeadline(time.Now().Add(d))
 }
 
 // sendKeepAlive sends a keep-alive frame, without flushing.

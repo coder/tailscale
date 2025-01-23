@@ -56,6 +56,9 @@ var (
 
 	acceptConnLimit = flag.Float64("accept-connection-limit", math.Inf(+1), "rate limit for accepting new connection")
 	acceptConnBurst = flag.Int("accept-connection-burst", math.MaxInt, "burst limit for accepting new connection")
+
+	// tcpWriteTimeout is the timeout for writing to client TCP connections. It does not apply to mesh connections.
+	tcpWriteTimeout = flag.Duration("tcp-write-timeout", derp.DefaultTCPWiteTimeout, "TCP write timeout; 0 results in no timeout being set on writes")
 )
 
 var (
@@ -152,6 +155,7 @@ func main() {
 
 	s := derp.NewServer(cfg.PrivateKey, log.Printf)
 	s.SetVerifyClient(*verifyClients)
+	s.SetTCPWriteTimeout(*tcpWriteTimeout)
 
 	if *meshPSKFile != "" {
 		b, err := os.ReadFile(*meshPSKFile)
