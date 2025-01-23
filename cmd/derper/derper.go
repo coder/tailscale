@@ -56,6 +56,13 @@ var (
 
 	acceptConnLimit = flag.Float64("accept-connection-limit", math.Inf(+1), "rate limit for accepting new connection")
 	acceptConnBurst = flag.Int("accept-connection-burst", math.MaxInt, "burst limit for accepting new connection")
+
+	// tcpKeepAlive is intentionally long, to reduce battery cost. There is an L7 keepalive on a higher frequency schedule.
+	tcpKeepAlive = flag.Duration("tcp-keepalive-time", 10*time.Minute, "TCP keepalive time")
+	// tcpUserTimeout is intentionally short, so that hung connections are cleaned up promptly. DERPs should be nearby users.
+	tcpUserTimeout = flag.Duration("tcp-user-timeout", 15*time.Second, "TCP user timeout")
+	// tcpWriteTimeout is the timeout for writing to client TCP connections. It does not apply to mesh connections.
+	tcpWriteTimeout = flag.Duration("tcp-write-timeout", derp.DefaultTCPWiteTimeout, "TCP write timeout; 0 results in no timeout being set on writes")
 )
 
 var (
@@ -152,6 +159,7 @@ func main() {
 
 	s := derp.NewServer(cfg.PrivateKey, log.Printf)
 	s.SetVerifyClient(*verifyClients)
+	s.SetTCPWriteTimeout(*tcpWriteTimeout)
 
 	if *meshPSKFile != "" {
 		b, err := os.ReadFile(*meshPSKFile)
