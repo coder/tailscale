@@ -366,7 +366,6 @@ func NewServer(privateKey key.NodePrivate, logf logger.Logf) *Server {
 		tcpRtt:              metrics.LabelMap{Label: "le"},
 		meshUpdateBatchSize: metrics.NewHistogram([]float64{0, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000}),
 		meshUpdateLoopCount: metrics.NewHistogram([]float64{0, 1, 2, 5, 10, 20, 50, 100}),
-		bufferedWriteFrames: metrics.NewHistogram([]float64{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 50, 100}),
 		keyOfAddr:           map[netip.AddrPort]key.NodePublic{},
 		clock:               tstime.StdClock{},
 		tcpWriteTimeout:     DefaultTCPWiteTimeout,
@@ -576,7 +575,7 @@ func (s *Server) registerClient(c *sclient) {
 		s.dupClientConns.Add(2) // both old and new count
 		s.dupClientConnTotal.Add(1)
 		dup = &dupClientSet{
-			set:         set.Of(c, was),
+			set:         set.Set[*sclient]{c: {}, was: {}},
 			last:        c,
 			sendHistory: []*sclient{was},
 		}
@@ -1695,6 +1694,14 @@ func (c *sclient) setWriteDeadline() {
 		// and might hit throttling and need more time to get the initial dump
 		// of connected peers.
 		d = privilegedWriteTimeout
+	}
+	if d == 0 {
+		// A zero value should disable the write deadline per
+		// --tcp-write-timeout docs. The flag should only be applicable for
+		// non-mesh connections, again per its docs. If mesh happened to use a
+		// zero value constant above it would be a bug, so we don't bother
+		// with a condition on c.canMesh.
+		return
 	}
 	// Ignore the error from setting the write deadline. In practice,
 	// setting the deadline will only fail if the connection is closed

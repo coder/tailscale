@@ -27,20 +27,11 @@ import (
 // To force RunWatchConnectionLoop to return quickly, its ctx needs to be
 // closed, and c itself needs to be closed.
 //
-// It is a fatal error to call this on an already-started Client without having
-// initialized Client.WatchConnectionChanges to true.
-//
 // If the DERP connection breaks and reconnects, remove will be called for all
 // previously seen peers, with Reason type PeerGoneReasonSynthetic. Those
 // clients are likely still connected and their add message will appear after
 // reconnect.
 func (c *Client) RunWatchConnectionLoop(ctx context.Context, ignoreServerKey key.NodePublic, infoLogf logger.Logf, add func(derp.PeerPresentMessage), remove func(derp.PeerGoneMessage)) {
-	if !c.WatchConnectionChanges {
-		if c.isStarted() {
-			panic("invalid use of RunWatchConnectionLoop on already-started Client without setting Client.RunWatchConnectionLoop")
-		}
-		c.WatchConnectionChanges = true
-	}
 	if infoLogf == nil {
 		infoLogf = logger.Discard
 	}
