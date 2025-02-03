@@ -1532,6 +1532,11 @@ func (c *sclient) sendLoop(ctx context.Context) error {
 
 func (c *sclient) setWriteDeadline() {
 	d := c.s.tcpWriteTimeout
+	if d == 0 {
+		// A zero value should disable the write deadline per
+		// --tcp-write-timeout docs.
+		return
+	}
 	// Ignore the error from setting the write deadline. In practice,
 	// setting the deadline will only fail if the connection is closed
 	// or closing, so the subsequent Write() will fail anyway.
