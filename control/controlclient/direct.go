@@ -1292,6 +1292,7 @@ type devKnobs struct {
 	DumpNetMaps    func() bool
 	ForceProxyDNS  func() bool
 	StripEndpoints func() bool // strip endpoints from control (only use disco messages)
+	StripHomeDERP  func() bool // strip Home DERP from control
 	StripCaps      func() bool // strip all local node's control-provided capabilities
 }
 
@@ -1300,6 +1301,7 @@ func initDevKnob() devKnobs {
 		DumpNetMaps:    envknob.RegisterBool("TS_DEBUG_NETMAP"),
 		ForceProxyDNS:  envknob.RegisterBool("TS_DEBUG_PROXY_DNS"),
 		StripEndpoints: envknob.RegisterBool("TS_DEBUG_STRIP_ENDPOINTS"),
+		StripHomeDERP:  envknob.RegisterBool("TS_DEBUG_STRIP_HOME_DERP"),
 		StripCaps:      envknob.RegisterBool("TS_DEBUG_STRIP_CAPS"),
 	}
 }
