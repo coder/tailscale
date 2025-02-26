@@ -9,9 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -20,7 +18,6 @@ import (
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
-	"tailscale.com/atomicfile"
 	"tailscale.com/envknob"
 	"tailscale.com/types/logger"
 	"tailscale.com/util/dnsname"
@@ -154,30 +151,36 @@ func setTailscaleHosts(prevHostsFile []byte, hosts []*HostEntry) ([]byte, error)
 
 // setHosts sets the hosts file to contain the given host entries.
 func (m *windowsManager) setHosts(hosts []*HostEntry) error {
-	systemDir, err := windows.GetSystemDirectory()
-	if err != nil {
-		return err
-	}
-	hostsFile := filepath.Join(systemDir, "drivers", "etc", "hosts")
-	b, err := os.ReadFile(hostsFile)
-	if err != nil {
-		return err
-	}
-	outB, err := setTailscaleHosts(b, hosts)
-	if err != nil {
-		return err
-	}
-	const fileMode = 0 // ignored on windows.
+	// Coder: we don't use the hosts file, but this code will still try to write
+	// it and interfere with real Tailscale.
+	return nil
 
-	// This can fail spuriously with an access denied error, so retry it a
-	// few times.
-	for i := 0; i < 5; i++ {
-		if err = atomicfile.WriteFile(hostsFile, outB, fileMode); err == nil {
-			return nil
+	/*
+		systemDir, err := windows.GetSystemDirectory()
+		if err != nil {
+			return err
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return err
+		hostsFile := filepath.Join(systemDir, "drivers", "etc", "hosts")
+		b, err := os.ReadFile(hostsFile)
+		if err != nil {
+			return err
+		}
+		outB, err := setTailscaleHosts(b, hosts)
+		if err != nil {
+			return err
+		}
+		const fileMode = 0 // ignored on windows.
+
+		// This can fail spuriously with an access denied error, so retry it a
+		// few times.
+		for i := 0; i < 5; i++ {
+			if err = atomicfile.WriteFile(hostsFile, outB, fileMode); err == nil {
+				return nil
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return err
+	*/
 }
 
 // setPrimaryDNS sets the given resolvers and domains as the Tailscale
