@@ -41,7 +41,10 @@ func TreatAsLostUDP(err error) bool {
 	return false
 }
 
-var packetWasTruncated func(error) bool // non-nil on Windows at least
+var (
+	packetWasTruncated func(error) bool // non-nil on Windows at least
+	socketWasReset     func(error) bool // non-nil on Windows at least
+)
 
 // PacketWasTruncated reports whether err indicates truncation but the RecvFrom
 // that generated err was otherwise successful. On Windows, Go's UDP RecvFrom
@@ -57,6 +60,17 @@ func PacketWasTruncated(err error) bool {
 		return false
 	}
 	return packetWasTruncated(err)
+}
+
+// SocketWasReset reports whether err is an error from a TCP or UDP send/recv
+// operation that should be treated as a connection reset. On Windows,
+// WSARecvFrom can return WSAECONNRESET when the remote side sends an ICMP error
+// message.
+func SocketWasReset(err error) bool {
+	if socketWasReset == nil {
+		return false
+	}
+	return socketWasReset(err)
 }
 
 var shouldDisableUDPGSO func(error) bool // non-nil on Linux
