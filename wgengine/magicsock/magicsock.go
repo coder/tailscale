@@ -1244,6 +1244,12 @@ func (c *Conn) mkReceiveFunc(ruc *RebindingUDPConn, healthItem *health.ReceiveFu
 				if neterror.PacketWasTruncated(err) {
 					continue
 				}
+				if neterror.SocketWasReset(err) {
+					c.logf("magicsock: receive: rebind required due to socket reset: %v", err)
+					c.Rebind()
+					c.ReSTUN("socket-reset")
+				}
+
 				return 0, err
 			}
 
