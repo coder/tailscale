@@ -217,6 +217,8 @@ type Conn struct {
 	// blockEndpoints is whether to avoid capturing, storing and sending
 	// endpoints gathered from local interfaces or STUN. Only DERP endpoints
 	// will be sent.
+	// This will also block incoming endpoints received via call-me-maybe disco
+	// packets.
 	blockEndpoints bool
 	// endpointsUpdateActive indicates that updateEndpoints is
 	// currently running. It's used to deduplicate concurrent endpoint
@@ -855,10 +857,10 @@ func (c *Conn) DiscoPublicKey() key.DiscoPublic {
 	return c.discoPublic
 }
 
-// SetBlockEndpoints sets the blockEndpoints field. If changed, endpoints will
-// be updated to apply the new settings. Existing connections may continue to
-// use the old setting until they are reestablished. Disabling endpoints does
-// not affect the UDP socket or portmapper.
+// SetBlockEndpoints sets the blockEndpoints field. If enabled, all peer
+// endpoints will be cleared from the peer map and every connection will
+// immediately switch to DERP. Disabling endpoints does not affect the UDP
+// socket or portmapper.
 func (c *Conn) SetBlockEndpoints(block bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -868,6 +870,7 @@ func (c *Conn) SetBlockEndpoints(block bool) {
 		return
 	}
 
+	// Re-gather local endpoints.
 	const why = "SetBlockEndpoints"
 	if c.endpointsUpdateActive {
 		if c.wantEndpointsUpdate != why {
@@ -878,6 +881,11 @@ func (c *Conn) SetBlockEndpoints(block bool) {
 		c.endpointsUpdateActive = true
 		go c.updateEndpoints(why)
 	}
+
+	// Update all endpoints to abide by the new setting.
+	c.peerMap.forEachEndpoint(func(ep *endpoint) {
+		ep.setBlockEndpoints(block)
+	})
 }
 
 // determineEndpoints returns the machine's endpoint addresses. It
@@ -1435,6 +1443,12 @@ func (c *Conn) handleDiscoMessage(msg []byte, src netip.AddrPort, derpNodeSrc ke
 		return
 	}
 
+	isDERP := src.Addr() == tailcfg.DerpMagicIPAddr
+	if !isDERP && c.blockEndpoints {
+		// Ignore disco messages over UDP if endpoints are blocked.
+		return
+	}
+
 	if !c.peerMap.anyEndpointForDiscoKey(sender) {
 		metricRecvDiscoBadPeer.Add(1)
 		if debugDisco() {
@@ -1490,7 +1504,6 @@ func (c *Conn) handleDiscoMessage(msg []byte, src netip.AddrPort, derpNodeSrc ke
 		return
 	}
 
-	isDERP := src.Addr() == tailcfg.DerpMagicIPAddr
 	if isDERP {
 		metricRecvDiscoDERP.Add(1)
 	} else {
@@ -1535,7 +1548,15 @@ func (c *Conn) handleDiscoMessage(msg []byte, src netip.AddrPort, derpNodeSrc ke
 			c.logf("[unexpected] CallMeMaybe from peer via DERP whose netmap discokey != disco source")
 			return
 		}
-		c.dlogf("[v1] magicsock: disco: %v<-%v (%v, %v)  got call-me-maybe, %d endpoints",
+		if c.blockEndpoints {
+			c.dlogf("[v1] magicsock: disco: %v<-%v (%v, %v) got call-me-maybe with %d endpoints, but endpoints blocked",
+				c.discoShort, epDisco.short,
+				ep.publicKey.ShortString(), derpStr(src.String()),
+				len(dm.MyNumber),
+			)
+			return
+		}
+		c.dlogf("[v1] magicsock: disco: %v<-%v (%v, %v) got call-me-maybe, %d endpoints",
 			c.discoShort, epDisco.short,
 			ep.publicKey.ShortString(), derpStr(src.String()),
 			len(dm.MyNumber))
@@ -1963,13 +1984,19 @@ func (c *Conn) SetNetworkMap(nm *netmap.NetworkMap) {
 			debugUpdates:      ringbuffer.New[EndpointChange](entriesPerBuffer),
 			publicKey:         n.Key,
 			publicKeyHex:      n.Key.UntypedHexString(),
+			blockEndpoints:    c.blockEndpoints,
 			sentPing:          map[stun.TxID]sentPing{},
 			endpointState:     map[netip.AddrPort]*endpointState{},
 			heartbeatDisabled: heartbeatDisabled,
 			isWireguardOnly:   n.IsWireGuardOnly,
 		}
-		if len(n.Addresses) > 0 {
-			ep.nodeAddr = n.Addresses[0].Addr()
+		for _, addr := range n.Addresses {
+			// Only set nodeAddr if it's a DERP address while endpoints are
+			// blocked.
+			if !c.blockEndpoints || addr.Addr() == tailcfg.DerpMagicIPAddr {
+				ep.nodeAddr = addr.Addr()
+				break
+			}
 		}
 		ep.initFakeUDPAddr()
 		if n.DiscoKey.IsZero() {

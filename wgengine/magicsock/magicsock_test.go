@@ -3060,30 +3060,27 @@ func TestBlockEndpointsDERPOK(t *testing.T) {
 	logf, closeLogf := logger.LogfCloser(t.Logf)
 	defer closeLogf()
 
-	derpMap, cleanup := runDERPAndStun(t, t.Logf, localhostListener{}, netaddr.IPv4(127, 0, 0, 1))
-	defer cleanup()
+	derpMap, cleanupDerp := runDERPAndStun(t, t.Logf, localhostListener{}, netaddr.IPv4(127, 0, 0, 1))
+	defer cleanupDerp()
 
 	ms1 := newMagicStack(t, logger.WithPrefix(logf, "conn1: "), d.m1, derpMap)
 	defer ms1.Close()
+	ms1.conn.SetDebugLoggingEnabled(true)
 	ms2 := newMagicStack(t, logger.WithPrefix(logf, "conn2: "), d.m2, derpMap)
 	defer ms2.Close()
+	ms2.conn.SetDebugLoggingEnabled(true)
 
-	cleanup = meshStacks(logf, nil, ms1, ms2)
-	defer cleanup()
+	cleanupMesh := meshStacks(logf, nil, ms1, ms2)
+	defer cleanupMesh()
 
 	m1IP := ms1.IP()
 	m2IP := ms2.IP()
 	logf("IPs: %s %s", m1IP, m2IP)
 
-	// SetBlockEndpoints is called later since it's incompatible with the test
-	// meshStacks implementations.
-	ms1.conn.SetBlockEndpoints(true)
-	ms2.conn.SetBlockEndpoints(true)
-	waitForNoEndpoints(t, ms1.conn)
-	waitForNoEndpoints(t, ms2.conn)
-
-	cleanup = newPinger(t, logf, ms1, ms2)
-	defer cleanup()
+	cleanupPinger1 := newPinger(t, logf, ms1, ms2)
+	defer cleanupPinger1()
+	cleanupPinger2 := newPinger(t, logf, ms2, ms1)
+	defer cleanupPinger2()
 
 	// Wait for both peers to know about each other.
 	for {
@@ -3098,14 +3095,42 @@ func TestBlockEndpointsDERPOK(t *testing.T) {
 		break
 	}
 
-	cleanup = newPinger(t, t.Logf, ms1, ms2)
-	defer cleanup()
+	waitForEndpoints(t, ms1.conn)
+	waitForEndpoints(t, ms2.conn)
 
-	if len(ms1.conn.activeDerp) == 0 {
-		t.Errorf("unexpected DERP empty got: %v want: >0", len(ms1.conn.activeDerp))
+	// SetBlockEndpoints is called later since it's incompatible with the test
+	// meshStacks implementations.
+	// We only set it on ms1, since ms2's endpoints should be ignored by ms1.
+	ms1.conn.SetBlockEndpoints(true)
+
+	// All endpoints should've been immediately removed from ms1.
+	ep2, ok := ms1.conn.peerMap.endpointForNodeKey(ms2.Public())
+	if !ok {
+		t.Fatalf("endpoint not found for ms2 in ms1")
 	}
-	if len(ms2.conn.activeDerp) == 0 {
-		t.Errorf("unexpected DERP empty got: %v want: >0", len(ms2.conn.activeDerp))
+	ep2.mu.Lock()
+	if !ep2.blockEndpoints {
+		t.Fatalf("endpoints not blocked on ep2 in ms1")
+	}
+	if len(ep2.endpointState) != 0 {
+		ep2.mu.Unlock()
+		t.Fatalf("endpoints not removed on ep2 in ms1")
+	}
+	ep2.mu.Unlock()
+
+	// Wait for endpoints to finish updating.
+	waitForNoEndpoints(t, ms1.conn)
+
+	// Give time for another call-me-maybe packet to arrive. I couldn't think of
+	// a better way than sleeping without making a bunch of changes.
+	t.Logf("sleeping for call-me-maybe packet to be received and ignored")
+	time.Sleep(time.Second)
+	t.Logf("done sleeping")
+
+	ep2.mu.Lock()
+	defer ep2.mu.Unlock()
+	for i := range ep2.endpointState {
+		t.Fatalf("endpoint %q not missing", i.String())
 	}
 }
 
@@ -3128,4 +3153,21 @@ func waitForNoEndpoints(t *testing.T, ms *Conn) {
 		t.Fatal("endpoints were not blocked after 50 attempts")
 	}
 	t.Log("endpoints are blocked")
+}
+
+func waitForEndpoints(t *testing.T, ms *Conn) {
+	t.Helper()
+	for i := 0; i < 50; i++ {
+		time.Sleep(100 * time.Millisecond)
+		ms.mu.Lock()
+		for _, ep := range ms.lastEndpoints {
+			if ep.Addr.Addr() != tailcfg.DerpMagicIPAddr {
+				t.Log("endpoint found")
+				ms.mu.Unlock()
+				return
+			}
+		}
+		ms.mu.Unlock()
+	}
+	t.Fatal("endpoint was not found after 50 attempts")
 }
