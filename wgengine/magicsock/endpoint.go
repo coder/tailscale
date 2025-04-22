@@ -790,29 +790,29 @@ func (de *endpoint) updateFromNode(n *tailcfg.Node, heartbeatDisabled bool) {
 	}
 
 	var newIpps []netip.AddrPort
-	if !de.blockEndpoints {
-		for i, epStr := range n.Endpoints {
-			if i > math.MaxInt16 {
-				// Seems unlikely.
-				continue
-			}
-			ipp, err := netip.ParseAddrPort(epStr)
-			if err != nil {
-				de.c.logf("magicsock: bogus netmap endpoint %q", epStr)
-				continue
-			}
-			if st, ok := de.endpointState[ipp]; ok {
-				st.index = int16(i)
-			} else {
-				de.endpointState[ipp] = &endpointState{index: int16(i)}
-				newIpps = append(newIpps, ipp)
-			}
+	for i, epStr := range n.Endpoints {
+		if i > math.MaxInt16 {
+			// Seems unlikely.
+			continue
 		}
-	} else {
-		de.c.dlogf("[v1] magicsock: disco: updateFromNode: %v received %d endpoints, but endpoints blocked",
-			de.publicKey.ShortString(),
-			len(n.Endpoints),
-		)
+		ipp, err := netip.ParseAddrPort(epStr)
+		if err != nil {
+			de.c.logf("magicsock: bogus netmap endpoint %q", epStr)
+			continue
+		}
+		if de.blockEndpoints && ipp.Addr() != tailcfg.DerpMagicIPAddr {
+			de.c.dlogf("[v1] magicsock: disco: updateFromNode: %v received non-DERP endpoint %v, but endpoints blocked",
+				de.publicKey.ShortString(),
+				ipp,
+			)
+			continue
+		}
+		if st, ok := de.endpointState[ipp]; ok {
+			st.index = int16(i)
+		} else {
+			de.endpointState[ipp] = &endpointState{index: int16(i)}
+			newIpps = append(newIpps, ipp)
+		}
 	}
 	if len(newIpps) > 0 {
 		de.debugUpdates.Add(EndpointChange{
@@ -842,9 +842,8 @@ func (de *endpoint) addCandidateEndpoint(ep netip.AddrPort, forRxPingTxID stun.T
 	de.mu.Lock()
 	defer de.mu.Unlock()
 
-	isDERP := ep.Addr() == tailcfg.DerpMagicIPAddr
-	if isDERP && de.blockEndpoints {
-		de.c.logf("[unexpected] attempted to add candidate endpoint %v to %v (%v) but endpoints blocked", ep, de.discoShort(), de.publicKey.ShortString())
+	if de.blockEndpoints && ep.Addr() != tailcfg.DerpMagicIPAddr {
+		de.c.logf("[unexpected] attempted to add non-DERP candidate endpoint %v to %v (%v) but endpoints blocked", ep, de.discoShort(), de.publicKey.ShortString())
 		return false
 	}
 
