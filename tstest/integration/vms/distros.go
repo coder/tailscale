@@ -11,7 +11,8 @@ import (
 	"github.com/tailscale/hujson"
 )
 
-// go:generate go run ./gen
+// Commenting out the following line so that staticcheck does not complain
+// // go:generate go run ./gen
 
 type Distro struct {
 	Name           string // amazon-linux

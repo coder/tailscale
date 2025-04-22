@@ -56,10 +56,7 @@ const debugPackets = false
 
 var debugNetstack = envknob.RegisterBool("TS_DEBUG_NETSTACK")
 
-var (
-	magicDNSIP   = tsaddr.TailscaleServiceIP()
-	magicDNSIPv6 = tsaddr.TailscaleServiceIPv6()
-)
+var coderDNSIPv6 = tsaddr.CoderServiceIPv6()
 
 func init() {
 	mode := envknob.String("TS_DEBUG_NETSTACK_LEAK_MODE")
@@ -170,6 +167,17 @@ const (
 	// CUBIC congestion control is the default in Windows, Linux, and MacOS, and generally achieves
 	// better throughput on large, long networks.
 	congestionControlCubic = "cubic"
+	// maxRetries is the maximum number of retransmissions that the TCP stack should undertake for
+	// unacked TCP segments, that is, when we are trying to send TCP data and the other side is
+	// unresponsive. It does not affect TCP operation while both sides are idle. The retry timeout
+	// has a minimum of 200ms and maximum of 120s, and grows exponentially when the other side is
+	// unresponsive. The default maxRetries in gVisor is 15, which means in practice over ten
+	// minutes of unresponsiveness before we time out.  Setting to 5 should time out in 15-30s,
+	// depending on the latency of the connection.  In Coder's system we depend on Wireguard as the
+	// underlay, which retries handshakes on a 5s timer, so we don't want to shorten the timeout
+	// less than 15s or so, to give us several chances to re-establish a Wireguard session after
+	// idling.
+	maxRetries = 5
 )
 
 // Create creates and populates a new Impl.
@@ -226,6 +234,11 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &cc)
 	if tcpipErr != nil {
 		return nil, fmt.Errorf("could not set congestion control: %v", tcpipErr)
+	}
+	retries := tcpip.TCPMaxRetriesOption(maxRetries)
+	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &retries)
+	if tcpipErr != nil {
+		return nil, fmt.Errorf("could not set max retries: %v", tcpipErr)
 	}
 
 	linkEP := NewEndpoint(512, tstun.DefaultMTU(), "")
@@ -448,7 +461,7 @@ func (ns *Impl) handleLocalPackets(p *packet.Parsed, t *tstun.Wrapper) filter.Re
 
 	// If it's not traffic to the service IP (i.e. magicDNS) we don't
 	// care; resume processing.
-	if dst := p.Dst.Addr(); dst != magicDNSIP && dst != magicDNSIPv6 {
+	if dst := p.Dst.Addr(); dst != coderDNSIPv6 {
 		return filter.Accept
 	}
 	// Of traffic to the service IP, we only care about UDP 53, and TCP
@@ -549,18 +562,9 @@ func (ns *Impl) inject() {
 		// TODO(tom): Figure out if its safe to modify packet.Parsed to fill in
 		//            the IP src/dest even if its missing the rest of the pkt.
 		//            That way we dont have to do this twitchy-af byte-yeeting.
-		if b := pkt.NetworkHeader().Slice(); len(b) >= 20 { // min ipv4 header
-			switch b[0] >> 4 { // ip proto field
-			case 4:
-				if srcIP := netaddr.IPv4(b[12], b[13], b[14], b[15]); magicDNSIP == srcIP {
-					sendToHost = true
-				}
-			case 6:
-				if len(b) >= 40 { // min ipv6 header
-					if srcIP, ok := netip.AddrFromSlice(net.IP(b[8:24])); ok && magicDNSIPv6 == srcIP {
-						sendToHost = true
-					}
-				}
+		if b := pkt.NetworkHeader().Slice(); len(b) >= 40 && (b[0]>>4) == 6 { // min ipv6 header && ip proto field
+			if srcIP, ok := netip.AddrFromSlice(net.IP(b[8:24])); ok && coderDNSIPv6 == srcIP {
+				sendToHost = true
 			}
 		}
 
@@ -862,17 +866,17 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 	clientRemoteAddrPort := netip.AddrPortFrom(clientRemoteIP, clientRemotePort)
 
 	dialIP := netaddrIPFromNetstackIP(reqDetails.LocalAddress)
-	isTailscaleIP := tsaddr.IsTailscaleIP(dialIP)
+	isLocal := ns.isLocalIP(dialIP)
 
 	dstAddrPort := netip.AddrPortFrom(dialIP, reqDetails.LocalPort)
 
 	if viaRange.Contains(dialIP) {
-		isTailscaleIP = false
+		isLocal = false
 		dialIP = tsaddr.UnmapVia(dialIP)
 	}
 
 	defer func() {
-		if !isTailscaleIP {
+		if !isLocal {
 			// if this is a subnet IP, we added this in before the TCP handshake
 			// so netstack is happy TCP-handshaking as a subnet IP
 			ns.removeSubnetAddress(dialIP)
@@ -923,7 +927,7 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 	}
 
 	// DNS
-	if reqDetails.LocalPort == 53 && (dialIP == magicDNSIP || dialIP == magicDNSIPv6) {
+	if reqDetails.LocalPort == 53 && dialIP == coderDNSIPv6 {
 		c := getConnOrReset()
 		if c == nil {
 			return
@@ -959,7 +963,7 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 			return
 		}
 	}
-	if isTailscaleIP {
+	if isLocal {
 		dialIP = netaddr.IPv4(127, 0, 0, 1)
 	}
 	dialAddr := netip.AddrPortFrom(dialIP, uint16(reqDetails.LocalPort))
@@ -1078,7 +1082,7 @@ func (ns *Impl) acceptUDP(r *udp.ForwarderRequest) {
 	}
 
 	// Handle magicDNS traffic (via UDP) here.
-	if dst := dstAddr.Addr(); dst == magicDNSIP || dst == magicDNSIPv6 {
+	if dst := dstAddr.Addr(); dst == coderDNSIPv6 {
 		if dstAddr.Port() != 53 {
 			ep.Close()
 			return // Only MagicDNS traffic runs on the service IPs for now.

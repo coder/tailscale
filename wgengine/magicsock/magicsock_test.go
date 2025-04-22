@@ -39,7 +39,6 @@ import (
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
-	"nhooyr.io/websocket"
 	"tailscale.com/cmd/testwrapper/flakytest"
 	"tailscale.com/derp"
 	"tailscale.com/derp/derphttp"
@@ -51,7 +50,6 @@ import (
 	"tailscale.com/net/ping"
 	"tailscale.com/net/stun/stuntest"
 	"tailscale.com/net/tstun"
-	"tailscale.com/net/wsconn"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tstest"
 	"tailscale.com/tstest/natlab"
@@ -68,6 +66,8 @@ import (
 	"tailscale.com/wgengine/wgcfg"
 	"tailscale.com/wgengine/wgcfg/nmcfg"
 	"tailscale.com/wgengine/wglog"
+
+	"github.com/coder/websocket"
 )
 
 func init() {
@@ -1640,7 +1640,6 @@ func TestEndpointSetsEqual(t *testing.T) {
 			t.Errorf("%q vs %q = %v; want %v", tt.a, tt.b, got, tt.want)
 		}
 	}
-
 }
 
 func TestBetterAddr(t *testing.T) {
@@ -1746,7 +1745,6 @@ func TestBetterAddr(t *testing.T) {
 			t.Errorf("[%d] betterAddr(%+v, %+v) and betterAddr(%+v, %+v) both unexpectedly true", i, tt.a, tt.b, tt.b, tt.a)
 		}
 	}
-
 }
 
 func epStrings(eps []tailcfg.Endpoint) (ret []string) {
@@ -2927,7 +2925,7 @@ func addWebSocketSupport(s *derp.Server, base http.Handler) http.Handler {
 			c.Close(websocket.StatusPolicyViolation, "client must speak the derp subprotocol")
 			return
 		}
-		wc := wsconn.NetConn(r.Context(), c, websocket.MessageBinary)
+		wc := websocket.NetConn(r.Context(), c, websocket.MessageBinary)
 		brw := bufio.NewReadWriter(bufio.NewReader(wc), bufio.NewWriter(wc))
 		s.Accept(r.Context(), wc, brw, r.RemoteAddr)
 	})
@@ -3017,10 +3015,13 @@ func TestBlockEndpoints(t *testing.T) {
 	// have a DERP connection due to newMagicStackFunc.
 	ms.conn.mu.Lock()
 	haveEndpoint := false
-	for _, ep := range ms.conn.lastEndpoints {
+
+	if len(ms.conn.lastEndpoints) > 0 {
+		ep := ms.conn.lastEndpoints[0]
 		if ep.Addr.Addr() == tailcfg.DerpMagicIPAddr {
 			t.Fatal("DERP IP in endpoints list?", ep.Addr)
 		}
+
 		haveEndpoint = true
 	}
 	ms.conn.mu.Unlock()

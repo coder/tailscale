@@ -35,13 +35,14 @@ func CGNATRange() netip.Prefix {
 }
 
 var (
-	cgnatRange   oncePrefix
-	ulaRange     oncePrefix
-	tsUlaRange   oncePrefix
-	tsViaRange   oncePrefix
-	ula4To6Range oncePrefix
-	ulaEph6Range oncePrefix
-	serviceIPv6  oncePrefix
+	cgnatRange       oncePrefix
+	ulaRange         oncePrefix
+	tsUlaRange       oncePrefix
+	tsViaRange       oncePrefix
+	ula4To6Range     oncePrefix
+	ulaEph6Range     oncePrefix
+	serviceIPv6      oncePrefix
+	coderServiceIPv6 oncePrefix
 )
 
 // TailscaleServiceIP returns the IPv4 listen address of services
@@ -61,9 +62,15 @@ func TailscaleServiceIPv6() netip.Addr {
 	return serviceIPv6.v.Addr()
 }
 
+func CoderServiceIPv6() netip.Addr {
+	coderServiceIPv6.Do(func() { mustPrefix(&coderServiceIPv6.v, CoderServiceIPv6String+"/128") })
+	return coderServiceIPv6.v.Addr()
+}
+
 const (
 	TailscaleServiceIPString   = "100.100.100.100"
 	TailscaleServiceIPv6String = "fd7a:115c:a1e0::53"
+	CoderServiceIPv6String     = "fd60:627a:a42b::53"
 )
 
 // IsTailscaleIP reports whether ip is an IP address in a range that
