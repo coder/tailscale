@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"reflect"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -62,6 +63,7 @@ type endpoint struct {
 	lastFullPing   mono.Time      // last time we pinged all disco endpoints
 	derpAddr       netip.AddrPort // fallback/bootstrap path, if non-zero (non-zero for well-behaved clients)
 
+	blockEndpoints     bool        // if true, all new endpoints are discarded
 	bestAddr           addrLatency // best non-DERP path; zero if none
 	bestAddrAt         mono.Time   // time best address re-confirmed
 	trustBestAddrUntil mono.Time   // time when bestAddr expires
@@ -207,24 +209,28 @@ func (de *endpoint) deleteEndpointLocked(why string, ep netip.AddrPort) {
 	}
 }
 
-func (de *endpoint) clearEndpoints(why string) {
+func (de *endpoint) setBlockEndpoints(blocked bool) {
 	de.mu.Lock()
 	defer de.mu.Unlock()
 	de.debugUpdates.Add(EndpointChange{
 		When: time.Now(),
-		What: "clearEndpoints-" + why,
+		What: "setBlockEndpoints-" + strconv.FormatBool(blocked),
 	})
-	de.endpointState = map[netip.AddrPort]*endpointState{}
-	if de.bestAddr.AddrPort.IsValid() {
-		de.debugUpdates.Add(EndpointChange{
-			When: time.Now(),
-			What: "clearEndpoints-bestAddr-" + why,
-			From: de.bestAddr,
-		})
-		de.bestAddr = addrLatency{}
+
+	de.blockEndpoints = blocked
+	if blocked {
+		de.endpointState = map[netip.AddrPort]*endpointState{}
+		if de.bestAddr.AddrPort.IsValid() {
+			de.debugUpdates.Add(EndpointChange{
+				When: time.Now(),
+				What: "setBlockEndpoints-" + strconv.FormatBool(blocked) + "-bestAddr",
+				From: de.bestAddr,
+			})
+			de.bestAddr = addrLatency{}
+		}
+		de.c.logf("magicsock: disco: node %s %s now using DERP only (all endpoints deleted)",
+			de.publicKey.ShortString(), de.discoShort())
 	}
-	de.c.logf("magicsock: disco: node %s %s now using DERP only (all endpoints deleted)",
-		de.publicKey.ShortString(), de.discoShort())
 }
 
 // initFakeUDPAddr populates fakeWGAddr with a globally unique fake UDPAddr.
@@ -784,22 +790,29 @@ func (de *endpoint) updateFromNode(n *tailcfg.Node, heartbeatDisabled bool) {
 	}
 
 	var newIpps []netip.AddrPort
-	for i, epStr := range n.Endpoints {
-		if i > math.MaxInt16 {
-			// Seems unlikely.
-			continue
+	if !de.blockEndpoints {
+		for i, epStr := range n.Endpoints {
+			if i > math.MaxInt16 {
+				// Seems unlikely.
+				continue
+			}
+			ipp, err := netip.ParseAddrPort(epStr)
+			if err != nil {
+				de.c.logf("magicsock: bogus netmap endpoint %q", epStr)
+				continue
+			}
+			if st, ok := de.endpointState[ipp]; ok {
+				st.index = int16(i)
+			} else {
+				de.endpointState[ipp] = &endpointState{index: int16(i)}
+				newIpps = append(newIpps, ipp)
+			}
 		}
-		ipp, err := netip.ParseAddrPort(epStr)
-		if err != nil {
-			de.c.logf("magicsock: bogus netmap endpoint %q", epStr)
-			continue
-		}
-		if st, ok := de.endpointState[ipp]; ok {
-			st.index = int16(i)
-		} else {
-			de.endpointState[ipp] = &endpointState{index: int16(i)}
-			newIpps = append(newIpps, ipp)
-		}
+	} else {
+		de.c.dlogf("[v1] magicsock: disco: updateFromNode: %v received %d endpoints, but endpoints blocked",
+			de.publicKey.ShortString(),
+			len(n.Endpoints),
+		)
 	}
 	if len(newIpps) > 0 {
 		de.debugUpdates.Add(EndpointChange{
@@ -828,6 +841,12 @@ func (de *endpoint) updateFromNode(n *tailcfg.Node, heartbeatDisabled bool) {
 func (de *endpoint) addCandidateEndpoint(ep netip.AddrPort, forRxPingTxID stun.TxID) (duplicatePing bool) {
 	de.mu.Lock()
 	defer de.mu.Unlock()
+
+	isDERP := ep.Addr() == tailcfg.DerpMagicIPAddr
+	if isDERP && de.blockEndpoints {
+		de.c.logf("[unexpected] attempted to add candidate endpoint %v to %v (%v) but endpoints blocked", ep, de.discoShort(), de.publicKey.ShortString())
+		return false
+	}
 
 	if st, ok := de.endpointState[ep]; ok {
 		duplicatePing = forRxPingTxID == st.lastGotPingTxID

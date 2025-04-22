@@ -3106,12 +3106,15 @@ func TestBlockEndpointsDERPOK(t *testing.T) {
 	// All endpoints should've been immediately removed from ms1.
 	ep2, ok := ms1.conn.peerMap.endpointForNodeKey(ms2.Public())
 	if !ok {
-		t.Fatalf("endpoint not found for ms2")
+		t.Fatalf("endpoint not found for ms2 in ms1")
 	}
 	ep2.mu.Lock()
+	if !ep2.blockEndpoints {
+		t.Fatalf("endpoints not blocked on ep2 in ms1")
+	}
 	if len(ep2.endpointState) != 0 {
 		ep2.mu.Unlock()
-		t.Fatalf("endpoints not removed from ms1")
+		t.Fatalf("endpoints not removed on ep2 in ms1")
 	}
 	ep2.mu.Unlock()
 
