@@ -429,7 +429,6 @@ jobs:
       - vm
       - cross
       - ios
-      - wasm
       - fuzz
       - depaware
       - go_generate
@@ -473,7 +472,6 @@ jobs:
       - vm
       - cross
       - ios
-      - wasm
       - fuzz
       - depaware
       - go_generate
