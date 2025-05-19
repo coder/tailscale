@@ -33,16 +33,13 @@ build386: ## Build tailscale CLI for linux/386
 buildlinuxarm: ## Build tailscale CLI for linux/arm
 	GOOS=linux GOARCH=arm ./tool/go install tailscale.com/cmd/tailscale tailscale.com/cmd/tailscaled
 
-buildwasm: ## Build tailscale CLI for js/wasm
-	GOOS=js GOARCH=wasm ./tool/go install ./cmd/tsconnect/wasm ./cmd/tailscale/cli
-
 buildlinuxloong64: ## Build tailscale CLI for linux/loong64
 	GOOS=linux GOARCH=loong64 ./tool/go install tailscale.com/cmd/tailscale tailscale.com/cmd/tailscaled
 
 buildmultiarchimage: ## Build (and optionally push) multiarch docker image
 	./build_docker.sh
 
-check: staticcheck vet depaware buildwindows build386 buildlinuxarm buildwasm ## Perform basic checks and compilation tests
+check: staticcheck vet depaware buildwindows build386 buildlinuxarm ## Perform basic checks and compilation tests
 
 staticcheck: ## Run staticcheck.io checks
 	./tool/go run honnef.co/go/tools/cmd/staticcheck -- $$(./tool/go list ./... | grep -v tempfork)
