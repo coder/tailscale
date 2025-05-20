@@ -2,6 +2,11 @@ module tailscale.com
 
 go 1.23.0
 
+// We have this in coder/coder too, for the same reason. We need it here too for
+// the tests to pass.
+// https://github.com/tcnksm/go-httpstat/pull/29
+replace github.com/tcnksm/go-httpstat => github.com/coder/go-httpstat v0.0.0-20230801153223-321c88088322
+
 require (
 	filippo.io/mkcert v1.4.4
 	github.com/Microsoft/go-winio v0.6.1
@@ -21,7 +26,6 @@ require (
 	github.com/dave/jennifer v1.6.1
 	github.com/dblohm7/wingoes v0.0.0-20230803162905-5c6286bb8c6e
 	github.com/dsnet/try v0.0.3
-	github.com/evanw/esbuild v0.14.53
 	github.com/frankban/quicktest v1.14.5
 	github.com/fxamacker/cbor/v2 v2.4.0
 	github.com/go-json-experiment/json v0.0.0-20230321051131-ccbac49a6929
