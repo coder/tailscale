@@ -54,7 +54,10 @@ const v1 = byte(1)
 
 // paddedPayloadLen is the desired length we want to pad Ping and Pong payloads
 // to so that they are the maximum size of a Wireguard packet we would
-// subsequently send.
+// subsequently send. This ensures that any UDP paths we discover will actually
+// support the packet sizes the net stack will send over those paths. Any peers
+// behind a small-MTU link will have to depend on DERP.
+// c.f. https://github.com/coder/coder/issues/15523
 // Our inner IP packets can be up to 1280 bytes, with the Wireguard header of
 // 30 bytes, that is 1310. The final 2 is the inner payload header's type and version.
 const paddedPayloadLen = 1310 - len(Magic) - keyLen - NonceLen - box.Overhead - 2

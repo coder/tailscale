@@ -8,11 +8,11 @@ import (
 	"tailscale.com/types/nettype"
 )
 
-func trySetPathMTUDiscover(pconn nettype.PacketConn, logf logger.Logf, network string) {
+func tryPreventFragmentation(pconn nettype.PacketConn, logf logger.Logf, network string) {
 	if c, ok := pconn.(*net.UDPConn); ok {
 		s, err := c.SyscallConn()
 		if err != nil {
-			logf("magicsock: failed to set Path MTU Discover: get syscall conn: %v", err)
+			logf("magicsock: dontfrag: failed to get syscall conn: %v", err)
 		}
 		level := unix.IPPROTO_IP
 		option := unix.IP_DONTFRAG
@@ -23,14 +23,14 @@ func trySetPathMTUDiscover(pconn nettype.PacketConn, logf logger.Logf, network s
 		err = s.Control(func(fd uintptr) {
 			err := unix.SetsockoptInt(int(fd), level, option, 1)
 			if err != nil {
-				logf("magicsock: failed to set Path MTU Discover: SetsockoptInt failed: %v", err)
+				logf("magicsock: dontfrag: SetsockoptInt failed: %v", err)
 			}
 		})
 		if err != nil {
-			logf("magicsock: failed to set Path MTU Discover: control connection: %v", err)
+			logf("magicsock: dontfrag: control connection failed: %v", err)
 		}
-		logf("magicsock: successfully set Path MTU Discover on %s", pconn.LocalAddr().String())
+		logf("magicsock: dontfrag: success on %s", pconn.LocalAddr().String())
 		return
 	}
-	logf("magicsock: failed to set Path MTU Discover: not a UDPConn")
+	logf("magicsock: dontfrag: failed because it was not a UDPConn")
 }
