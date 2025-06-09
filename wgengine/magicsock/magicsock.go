@@ -2377,6 +2377,7 @@ func (c *Conn) bindSocket(ruc *RebindingUDPConn, network string, curPortFate cur
 			continue
 		}
 		trySetSocketBuffer(pconn, c.logf)
+		trySetPathMTUDiscover(pconn, c.logf, network)
 		// Success.
 		if debugBindSocket() {
 			c.logf("magicsock: bindSocket: successfully listened %v port %d", network, port)

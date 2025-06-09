@@ -27,6 +27,7 @@ import (
 	"net/netip"
 
 	"go4.org/mem"
+	"golang.org/x/crypto/nacl/box"
 	"tailscale.com/types/key"
 )
 
@@ -47,6 +48,16 @@ const (
 )
 
 const v0 = byte(0)
+
+// v1 Ping and Pong are padded as follows. CallMeMaybe is still on v0 and unpadded.
+const v1 = byte(1)
+
+// paddedPayloadLen is the desired length we want to pad Ping and Pong payloads
+// to so that they are the maximum size of a Wireguard packet we would
+// subsequently send.
+// Our inner IP packets can be up to 1280 bytes, with the Wireguard header of
+// 30 bytes, that is 1310. The final 2 is the inner payload header's type and version.
+const paddedPayloadLen = 1310 - len(Magic) - keyLen - NonceLen - box.Overhead - 2
 
 var errShort = errors.New("short message")
 
@@ -120,12 +131,8 @@ type Ping struct {
 }
 
 func (m *Ping) AppendMarshal(b []byte) []byte {
-	dataLen := 12
 	hasKey := !m.NodeKey.IsZero()
-	if hasKey {
-		dataLen += key.NodePublicRawLen
-	}
-	ret, d := appendMsgHeader(b, TypePing, v0, dataLen)
+	ret, d := appendMsgHeader(b, TypePing, v1, paddedPayloadLen)
 	n := copy(d, m.TxID[:])
 	if hasKey {
 		m.NodeKey.AppendTo(d[:n])
@@ -217,7 +224,7 @@ type Pong struct {
 const pongLen = 12 + 16 + 2
 
 func (m *Pong) AppendMarshal(b []byte) []byte {
-	ret, d := appendMsgHeader(b, TypePong, v0, pongLen)
+	ret, d := appendMsgHeader(b, TypePong, v1, paddedPayloadLen)
 	d = d[copy(d, m.TxID[:]):]
 	ip16 := m.Src.Addr().As16()
 	d = d[copy(d, ip16[:]):]
