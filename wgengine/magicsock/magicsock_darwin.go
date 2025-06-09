@@ -15,13 +15,13 @@ func trySetPathMTUDiscover(pconn nettype.PacketConn, logf logger.Logf, network s
 			logf("magicsock: failed to set Path MTU Discover: get syscall conn: %v", err)
 		}
 		level := unix.IPPROTO_IP
-		option := unix.IP_MTU_DISCOVER
+		option := unix.IP_DONTFRAG
 		if network == "udp6" {
 			level = unix.IPPROTO_IPV6
-			option = unix.IPV6_MTU_DISCOVER
+			option = unix.IPV6_DONTFRAG
 		}
 		err = s.Control(func(fd uintptr) {
-			err := unix.SetsockoptInt(int(fd), level, option, unix.IP_PMTUDISC_DO)
+			err := unix.SetsockoptInt(int(fd), level, option, 1)
 			if err != nil {
 				logf("magicsock: failed to set Path MTU Discover: SetsockoptInt failed: %v", err)
 			}
