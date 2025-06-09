@@ -22,7 +22,6 @@ const (
 )
 
 func trySetPathMTUDiscover(pconn nettype.PacketConn, logf logger.Logf, network string) {
-	logf("setting Path MTU Discover on %s", pconn.LocalAddr().String())
 	if c, ok := pconn.(*net.UDPConn); ok {
 		s, err := c.SyscallConn()
 		if err != nil {
@@ -41,7 +40,7 @@ func trySetPathMTUDiscover(pconn nettype.PacketConn, logf logger.Logf, network s
 		if err != nil {
 			logf("magicsock: failed to set Path MTU Discover: control connection: %v", err)
 		}
-		logf("sucessfully set Path MTU Discover on %s", pconn.LocalAddr().String())
+		logf("magicsock: successfully set Path MTU Discover on %s", pconn.LocalAddr().String())
 		return
 	}
 	logf("magicsock: failed to set Path MTU Discover: not a UDPConn")
