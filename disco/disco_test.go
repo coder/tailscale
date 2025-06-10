@@ -5,13 +5,13 @@ package disco
 
 import (
 	"fmt"
-	"golang.org/x/crypto/nacl/box"
 	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
 
 	"go4.org/mem"
+	"golang.org/x/crypto/nacl/box"
 	"tailscale.com/types/key"
 )
 
