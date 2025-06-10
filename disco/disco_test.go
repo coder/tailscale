@@ -5,6 +5,7 @@ package disco
 
 import (
 	"fmt"
+	"golang.org/x/crypto/nacl/box"
 	"net/netip"
 	"reflect"
 	"strings"
@@ -74,6 +75,11 @@ func TestMarshalAndParse(t *testing.T) {
 			got, ok := strings.CutPrefix(got, "foo")
 			if !ok {
 				t.Fatalf("didn't start with foo: got %q", got)
+			}
+			// CODER: 1310 is max size of a Wireguard packet we will send.
+			expectedLen := 1310 - len(Magic) - keyLen - NonceLen - box.Overhead
+			if _, ok := tt.m.(*CallMeMaybe); !ok && len(got) != expectedLen {
+				t.Fatalf("Ping/Pong not padded: got len %d, want len %d", len(got), expectedLen)
 			}
 
 			gotHex := fmt.Sprintf("% x", got)
