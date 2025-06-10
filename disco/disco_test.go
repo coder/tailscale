@@ -78,8 +78,16 @@ func TestMarshalAndParse(t *testing.T) {
 			}
 			// CODER: 1310 is max size of a Wireguard packet we will send.
 			expectedLen := 1310 - len(Magic) - keyLen - NonceLen - box.Overhead
-			if _, ok := tt.m.(*CallMeMaybe); !ok && len(got) != expectedLen {
-				t.Fatalf("Ping/Pong not padded: got len %d, want len %d", len(got), expectedLen)
+			switch tt.m.(type) {
+			case *Ping:
+				if len(got) != expectedLen {
+					t.Fatalf("Ping not padded: got len %d, want len %d", len(got), expectedLen)
+				}
+			case *Pong:
+				if len(got) != expectedLen {
+					t.Fatalf("Pong not padded: got len %d, want len %d", len(got), expectedLen)
+				}
+				// CallMeMaybe is unpadded
 			}
 
 			gotHex := fmt.Sprintf("% x", got)
