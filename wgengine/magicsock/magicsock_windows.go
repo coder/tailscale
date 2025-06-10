@@ -11,14 +11,7 @@ import (
 // https://github.com/tpn/winsdk-10/blob/9b69fd26ac0c7d0b83d378dba01080e93349c2ed/Include/10.0.16299.0/shared/ws2ipdef.h
 const (
 	IP_MTU_DISCOVER = 71 // IPV6_MTU_DISCOVER has the same value, which is nice.
-)
-
-const (
-	IP_PMTUDISC_NOT_SET = iota
-	IP_PMTUDISC_DO
-	IP_PMTUDISC_DONT
-	IP_PMTUDISC_PROBE
-	IP_PMTUDISC_MAX
+	IP_PMTUDISC_DO  = 1
 )
 
 func tryPreventFragmentation(pconn nettype.PacketConn, logf logger.Logf, network string) {
