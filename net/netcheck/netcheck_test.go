@@ -281,6 +281,7 @@ func TestAddReportHistoryAndSetPreferredDERP(t *testing.T) {
 		homeParams  *tailcfg.DERPHomeParams
 		regions     map[int]*tailcfg.DERPRegion
 		opts        *GetReportOpts
+		forcedDERP  int // if non-zero, force this DERP to be the preferred one
 		wantDERP    int // want PreferredDERP on final step
 		wantPrevLen int // wanted len(c.prev)
 	}{
@@ -479,12 +480,107 @@ func TestAddReportHistoryAndSetPreferredDERP(t *testing.T) {
 			wantPrevLen: 3,
 			wantDERP:    2, // moved to d2 since d1 is gone
 		},
+		{
+			name: "preferred_derp_hysteresis_no_switch_pct",
+			steps: []step{
+				{0 * time.Second, report("d1", 34*time.Millisecond, "d2", 35*time.Millisecond)},
+				{1 * time.Second, report("d1", 34*time.Millisecond, "d2", 23*time.Millisecond)},
+			},
+			wantPrevLen: 2,
+			wantDERP:    1, // diff is 11ms, but d2 is greater than 2/3s of d1
+		},
+		{
+			name: "forced_two",
+			steps: []step{
+				{time.Second, report("d1", 2, "d2", 3)},
+				{2 * time.Second, report("d1", 4, "d2", 3)},
+			},
+			forcedDERP:  2,
+			wantPrevLen: 2,
+			wantDERP:    2,
+		},
+		{
+			name: "forced_two_unavailable",
+			steps: []step{
+				{time.Second, report("d1", 2, "d2", 1)},
+				{2 * time.Second, report("d1", 4)},
+			},
+			forcedDERP:  2,
+			wantPrevLen: 2,
+			wantDERP:    1,
+		},
+		{
+			name: "forced_two_no_probe_recent_activity",
+			steps: []step{
+				{time.Second, report("d1", 2)},
+				{2 * time.Second, report("d1", 4)},
+			},
+			opts: &GetReportOpts{
+				GetLastDERPActivity: mkLDAFunc(map[int]time.Time{
+					1: startTime,
+					2: startTime.Add(time.Second),
+				}),
+			},
+			forcedDERP:  2,
+			wantPrevLen: 2,
+			wantDERP:    2,
+		},
+		{
+			name: "forced_two_no_probe_no_recent_activity",
+			steps: []step{
+				{time.Second, report("d1", 2)},
+				{PreferredDERPFrameTime + time.Second, report("d1", 4)},
+			},
+			opts: &GetReportOpts{
+				GetLastDERPActivity: mkLDAFunc(map[int]time.Time{
+					1: startTime,
+					2: startTime,
+				}),
+			},
+			forcedDERP:  2,
+			wantPrevLen: 2,
+			wantDERP:    1,
+		},
+		{
+			name: "no_data_keep_home",
+			steps: []step{
+				{0, report("d1", 2, "d2", 3)},
+				{30 * time.Second, report()},
+				{2 * time.Second, report()},
+				{2 * time.Second, report()},
+				{2 * time.Second, report()},
+				{2 * time.Second, report()},
+			},
+			opts: &GetReportOpts{
+				GetLastDERPActivity: mkLDAFunc(map[int]time.Time{
+					1: startTime,
+				}),
+			},
+			wantPrevLen: 6,
+			wantDERP:    1,
+		},
+		{
+			name: "no_data_home_expires",
+			steps: []step{
+				{0, report("d1", 2, "d2", 3)},
+				{30 * time.Second, report()},
+				{2 * derp.KeepAlive, report()},
+			},
+			opts: &GetReportOpts{
+				GetLastDERPActivity: mkLDAFunc(map[int]time.Time{
+					1: startTime,
+				}),
+			},
+			wantPrevLen: 3,
+			wantDERP:    0,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fakeTime := startTime
 			c := &Client{
-				TimeNow: func() time.Time { return fakeTime },
+				TimeNow:            func() time.Time { return fakeTime },
+				ForcePreferredDERP: tt.forcedDERP,
 			}
 			dm := &tailcfg.DERPMap{HomeParams: tt.homeParams}
 			if tt.regions != nil {
