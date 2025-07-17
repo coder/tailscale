@@ -24,6 +24,7 @@ import (
 	"tailscale.com/disco"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/net/stun"
+	"tailscale.com/net/tsaddr"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tstime/mono"
 	"tailscale.com/types/key"
@@ -1064,7 +1065,7 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
 	}
 	var newEPs []netip.AddrPort
 	for _, ep := range m.MyNumber {
-		if ep.Addr().Is6() && ep.Addr().IsLinkLocalUnicast() {
+		if (ep.Addr().Is6() && ep.Addr().IsLinkLocalUnicast()) || tsaddr.IsTailscaleIP(ep.Addr()) {
 			// We send these out, but ignore them for now.
 			// TODO: teach the ping code to ping on all interfaces
 			// for these.
