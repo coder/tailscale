@@ -24,7 +24,7 @@ import (
 // which HTTP proxy the system should use.
 var LoginEndpointForProxyDetermination = "https://controlplane.tailscale.com/"
 
-// Tailscale returns the current machine's Tailscale interface, if any.
+// Tailscale returns the current machine's Coder interface, if any.
 // If none is found, all zero values are returned.
 // A non-nil error is only returned on a problem listing the system interfaces.
 func Tailscale() ([]netip.Addr, *net.Interface, error) {
@@ -58,12 +58,10 @@ func Tailscale() ([]netip.Addr, *net.Interface, error) {
 }
 
 // maybeTailscaleInterfaceName reports whether s is an interface
-// name that might be used by Tailscale.
+// name that might be used by Coder.
 func maybeTailscaleInterfaceName(s string) bool {
-	return s == "Tailscale" ||
-		strings.HasPrefix(s, "wg") ||
-		strings.HasPrefix(s, "ts") ||
-		strings.HasPrefix(s, "tailscale") ||
+	return s == "Coder" ||
+		strings.HasPrefix(s, "coder") ||
 		strings.HasPrefix(s, "utun")
 }
 
@@ -496,8 +494,8 @@ func isTailscaleInterface(name string, ips []netip.Prefix) bool {
 		// macOS NetworkExtensions and utun devices.
 		return true
 	}
-	return name == "Tailscale" || // as it is on Windows
-		strings.HasPrefix(name, "tailscale") // TODO: use --tun flag value, etc; see TODO in method doc
+	return name == "Coder" || // as it is on Windows
+		strings.HasPrefix(name, "coder") // TODO: use --tun flag value, etc; see TODO in method doc
 }
 
 // getPAC, if non-nil, returns the current PAC file URL.

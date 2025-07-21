@@ -55,7 +55,7 @@ func (c *darwinConfigurator) SetDNS(cfg OSConfig) error {
 	// Add a dummy file to /etc/resolver with a "search ..." directive if we have
 	// search suffixes to add.
 	if len(cfg.SearchDomains) > 0 {
-		const searchFile = "search.tailscale" // fake DNS suffix+TLD to put our search
+		const searchFile = "search.coder" // fake DNS suffix+TLD to put our search
 		mak.Set(&keep, searchFile, true)
 		var sbuf bytes.Buffer
 		sbuf.WriteString(macResolverFileHeader)
@@ -86,7 +86,7 @@ func (c *darwinConfigurator) GetBaseConfig() (OSConfig, error) {
 	return OSConfig{}, ErrGetBaseConfigNotSupported
 }
 
-const macResolverFileHeader = "# Added by tailscaled\n"
+const macResolverFileHeader = "# Added by Coder Desktop\n"
 
 // removeResolverFiles deletes all files in /etc/resolver for which the shouldDelete
 // func returns true.

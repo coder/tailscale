@@ -54,7 +54,14 @@ func controlLogf(logf logger.Logf, netMon *netmon.Monitor, network, address stri
 		return nil
 	}
 
-	return bindConnToInterface(c, network, address, idx, logf)
+	// Verify that we didn't just choose the Coder interface.
+	_, tsif, err2 := interfaces.Tailscale()
+	if err2 == nil && tsif != nil && tsif.Index == idx {
+		return fmt.Errorf("netns_darwin: refusing bind to Coder interface %q (index %d) for address %q", tsif.Name, tsif.Index, address)
+	}
+
+	// Let the OS decide
+	return nil
 }
 
 func getInterfaceIndex(logf logger.Logf, netMon *netmon.Monitor, address string) (int, error) {
@@ -98,21 +105,14 @@ func getInterfaceIndex(logf logger.Logf, netMon *netmon.Monitor, address string)
 	// If the address doesn't parse, use the default index.
 	addr, err := netip.ParseAddr(host)
 	if err != nil {
-		logf("[unexpected] netns: error parsing address %q: %v", host, err)
+		// Log removed to prevent noise when the address is `:0`
+		// logf("[unexpected] netns: error parsing address %q: %v", host, err)
 		return defaultIdx()
 	}
 
 	idx, err := interfaceIndexFor(addr, true /* canRecurse */)
 	if err != nil {
 		logf("netns: error in interfaceIndexFor: %v", err)
-		return defaultIdx()
-	}
-
-	// Verify that we didn't just choose the Tailscale interface;
-	// if so, we fall back to binding from the default.
-	_, tsif, err2 := interfaces.Tailscale()
-	if err2 == nil && tsif != nil && tsif.Index == idx {
-		logf("[unexpected] netns: interfaceIndexFor returned Tailscale interface")
 		return defaultIdx()
 	}
 
