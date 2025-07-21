@@ -78,9 +78,6 @@ const (
 // IsTailscaleIP reports whether ip is an IP address in a range that
 // Coder assigns from.
 func IsTailscaleIP(ip netip.Addr) bool {
-	if ip.Is4() {
-		return CGNATRange().Contains(ip) && !ChromeOSVMRange().Contains(ip)
-	}
 	return TailscaleULARange().Contains(ip)
 }
 
