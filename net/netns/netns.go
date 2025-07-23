@@ -71,7 +71,8 @@ var coderSoftIsolation atomic.Bool
 // a single interface, which causes problems with direct connections in
 // magicsock.
 //
-// This currently only has an effect on Windows and macOS.
+// This currently only has an effect on Windows and macOS, and is only used by
+// Coder Connect.
 func SetCoderSoftIsolation(v bool) {
 	coderSoftIsolation.Store(v)
 }

@@ -33,7 +33,7 @@ func Coder() ([]netip.Addr, *net.Interface, error) {
 		return nil, nil, err
 	}
 	for _, iface := range ifs {
-		if !maybeTailscaleInterfaceName(iface.Name) {
+		if !maybeCoderInterfaceName(iface.Name) {
 			continue
 		}
 		addrs, err := iface.Addrs()
@@ -57,9 +57,9 @@ func Coder() ([]netip.Addr, *net.Interface, error) {
 	return nil, nil, nil
 }
 
-// maybeTailscaleInterfaceName reports whether s is an interface
+// maybeCoderInterfaceName reports whether s is an interface
 // name that might be used by Coder.
-func maybeTailscaleInterfaceName(s string) bool {
+func maybeCoderInterfaceName(s string) bool {
 	return s == "Coder" ||
 		strings.HasPrefix(s, "coder") ||
 		strings.HasPrefix(s, "utun")
