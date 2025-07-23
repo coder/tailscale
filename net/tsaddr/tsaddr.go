@@ -73,48 +73,37 @@ const (
 	CoderServiceIPv6String     = "fd60:627a:a42b::53"
 )
 
+// These are all unfortunately Coder IP ranges, not Tailscale IP ranges.
+
 // IsTailscaleIP reports whether ip is an IP address in a range that
-// Tailscale assigns from.
+// Coder assigns from.
 func IsTailscaleIP(ip netip.Addr) bool {
-	if ip.Is4() {
-		return CGNATRange().Contains(ip) && !ChromeOSVMRange().Contains(ip)
-	}
 	return TailscaleULARange().Contains(ip)
 }
 
 // TailscaleULARange returns the IPv6 Unique Local Address range that
-// is the superset range that Tailscale assigns out of.
+// is the superset range that Coder assigns out of.
 func TailscaleULARange() netip.Prefix {
-	tsUlaRange.Do(func() { mustPrefix(&tsUlaRange.v, "fd7a:115c:a1e0::/48") })
+	tsUlaRange.Do(func() { mustPrefix(&tsUlaRange.v, "fd60:627a:a42b::/48") })
 	return tsUlaRange.v
 }
 
-// TailscaleViaRange returns the IPv6 Unique Local Address subset range
-// TailscaleULARange that's used for IPv4 tunneling via IPv6.
+// Unused by Coder
 func TailscaleViaRange() netip.Prefix {
-	// Mnemonic: "b1a" sounds like "via".
-	tsViaRange.Do(func() { mustPrefix(&tsViaRange.v, "fd7a:115c:a1e0:b1a::/64") })
+	tsViaRange.Do(func() { mustPrefix(&tsViaRange.v, "fd60:627a:a42b::/128") })
 	return tsViaRange.v
 }
 
-// Tailscale4To6Range returns the subset of TailscaleULARange used for
-// auto-translated Tailscale ipv4 addresses.
+// Unused by Coder
 func Tailscale4To6Range() netip.Prefix {
-	// This IP range has no significance, beyond being a subset of
-	// TailscaleULARange. The bits from /48 to /104 were picked at
-	// random.
-	ula4To6Range.Do(func() { mustPrefix(&ula4To6Range.v, "fd7a:115c:a1e0:ab12:4843:cd96:6200::/104") })
+	// This needs to be a /104 prefix, so it can fit IPv4 addresses
+	ula4To6Range.Do(func() { mustPrefix(&ula4To6Range.v, "fd60:627a:a42b::/104") })
 	return ula4To6Range.v
 }
 
-// TailscaleEphemeral6Range returns the subset of TailscaleULARange
-// used for ephemeral IPv6-only Tailscale nodes.
+// Unused by Coder
 func TailscaleEphemeral6Range() netip.Prefix {
-	// This IP range has no significance, beyond being a subset of
-	// TailscaleULARange. The bits from /48 to /64 were picked at
-	// random, with the only criterion being to not be the conflict
-	// with the Tailscale4To6Range above.
-	ulaEph6Range.Do(func() { mustPrefix(&ulaEph6Range.v, "fd7a:115c:a1e0:efe3::/64") })
+	ulaEph6Range.Do(func() { mustPrefix(&ulaEph6Range.v, "fd60:627a:a42b::/128") })
 	return ulaEph6Range.v
 }
 
