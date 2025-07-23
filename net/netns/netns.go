@@ -53,6 +53,29 @@ func SetDisableBindConnToInterface(v bool) {
 	disableBindConnToInterface.Store(v)
 }
 
+var coderSoftIsolation atomic.Bool
+
+// SetCoderSoftIsolation enables or disables Coder's soft-isolation
+// functionality. All other network isolation settings are ignored when this is
+// set.
+//
+// Soft isolation does the following:
+//  1. Determine the interface that will be used for a given destination IP by
+//     consulting the OS.
+//  2. If that interface looks like our own, we will bind the socket to the
+//     default interface (to match the existing behavior).
+//  3. If it doesn't look like our own, we will let the packet flow through
+//     without binding the socket to the interface.
+//
+// This is considered "soft" because it doesn't force the socket to be bound to
+// a single interface, which causes problems with direct connections in
+// magicsock.
+//
+// This currently only has an effect on Windows and macOS.
+func SetCoderSoftIsolation(v bool) {
+	coderSoftIsolation.Store(v)
+}
+
 // Listener returns a new net.Listener with its Control hook func
 // initialized as necessary to run in logical network namespace that
 // doesn't route back into Tailscale.

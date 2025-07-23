@@ -4,7 +4,11 @@
 package netns
 
 import (
+	"fmt"
 	"math/bits"
+	"net"
+	"net/netip"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -27,13 +31,15 @@ func interfaceIndex(iface *winipcfg.IPAdapterAddresses) uint32 {
 	return iface.IfIndex
 }
 
-func control(logger.Logf, *netmon.Monitor) func(network, address string, c syscall.RawConn) error {
-	return controlC
+func control(logf logger.Logf, netMon *netmon.Monitor) func(network, address string, c syscall.RawConn) error {
+	return func(network, address string, c syscall.RawConn) error {
+		return controlLogf(logf, netMon, network, address, c)
+	}
 }
 
 // controlC binds c to the Windows interface that holds a default
 // route, and is not the Tailscale WinTun interface.
-func controlC(network, address string, c syscall.RawConn) error {
+func controlLogf(logf logger.Logf, _ *netmon.Monitor, network, address string, c syscall.RawConn) error {
 	if strings.HasPrefix(address, "127.") {
 		// Don't bind to an interface for localhost connections,
 		// otherwise we get:
@@ -49,6 +55,42 @@ func controlC(network, address string, c syscall.RawConn) error {
 		canV4 = true
 	case "tcp6", "udp6":
 		canV6 = true
+	}
+
+	if coderSoftIsolation.Load() {
+		sockAddr, err := getSockAddr(address)
+		if err != nil {
+			logf("netns: Coder soft isolation: error getting sockaddr: %v", err)
+			return err
+		}
+		if sockAddr == nil {
+			// Sockets bound like :0 or :1234 cannot be checked.
+			return nil
+		}
+
+		// Ask Windows to find the best interface for this address by consulting
+		// the routing table.
+		//
+		// On macOS this value gets cached, but on Windows we don't need to
+		// because this API is very fast and doesn't require opening an AF_ROUTE
+		// socket.
+		var idx uint32
+		err = windows.GetBestInterfaceEx(sockAddr, &idx)
+		if err != nil {
+			logf("netns: Coder soft isolation: error getting best interface: %v", err)
+			return err
+		}
+
+		_, tsif, err2 := interfaces.Tailscale()
+		if err2 == nil && tsif != nil && tsif.Index == int(idx) {
+			logf("[unexpected] netns: Coder soft isolation: detected Tailscale interface")
+			// No return, we want to run the code below to bind this socket to
+			// the default interface.
+		} else {
+			// It doesn't look like our own interface, so we return early to
+			// prevent the socket from being bound to the default interface.
+			return nil
+		}
 	}
 
 	if canV4 {
@@ -123,4 +165,41 @@ func nativeToBigEndian(i uint32) uint32 {
 		return i
 	}
 	return bits.ReverseBytes32(i)
+}
+
+// getSockAddr returns the Windows sockaddr for the given address, or nil if
+// the address is not specified.
+func getSockAddr(address string) (windows.Sockaddr, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, fmt.Errorf("invalid address %q: %w", address, err)
+	}
+	if host == "" {
+		// Sockets bound like :0 or :1234 cannot be checked.
+		return nil, nil
+	}
+	portInt, err := strconv.Atoi(port)
+	if err != nil {
+		return nil, fmt.Errorf("invalid port %q: %w", port, err)
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return nil, fmt.Errorf("invalid address %q: %w", address, err)
+	}
+
+	if addr.Is4() {
+		return &windows.SockaddrInet4{
+			Port: portInt,
+			Addr: addr.As4(),
+		}, nil
+	} else if addr.Is6() {
+		if addr.Zone() != "" {
+			return nil, fmt.Errorf("invalid address %q, has zone: %w", address, err)
+		}
+		return &windows.SockaddrInet6{
+			Port: portInt,
+			Addr: addr.As16(),
+		}, nil
+	}
+	return nil, fmt.Errorf("invalid address %q, is not IPv4 or IPv6: %w", address, err)
 }
