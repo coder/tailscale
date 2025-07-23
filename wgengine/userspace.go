@@ -1459,13 +1459,13 @@ func (e *userspaceEngine) PeerForIP(ip netip.Addr) (ret PeerForIP, ok bool) {
 	// TODO(bradfitz): add maps for these. on NetworkMap?
 	for _, p := range nm.Peers {
 		for _, a := range p.Addresses {
-			if a.Addr() == ip && a.IsSingleIP() && tsaddr.IsTailscaleIP(ip) {
+			if a.Addr() == ip && a.IsSingleIP() && tsaddr.IsCoderIP(ip) {
 				return PeerForIP{Node: p, Route: a}, true
 			}
 		}
 	}
 	for _, a := range nm.Addresses {
-		if a.Addr() == ip && a.IsSingleIP() && tsaddr.IsTailscaleIP(ip) {
+		if a.Addr() == ip && a.IsSingleIP() && tsaddr.IsCoderIP(ip) {
 			return PeerForIP{Node: nm.SelfNode, IsSelf: true, Route: a}, true
 		}
 	}

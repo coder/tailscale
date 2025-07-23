@@ -24,10 +24,10 @@ import (
 // which HTTP proxy the system should use.
 var LoginEndpointForProxyDetermination = "https://controlplane.tailscale.com/"
 
-// Tailscale returns the current machine's Coder interface, if any.
+// Coder returns the current machine's Coder interface, if any.
 // If none is found, all zero values are returned.
 // A non-nil error is only returned on a problem listing the system interfaces.
-func Tailscale() ([]netip.Addr, *net.Interface, error) {
+func Coder() ([]netip.Addr, *net.Interface, error) {
 	ifs, err := netInterfaces()
 	if err != nil {
 		return nil, nil, err
@@ -45,7 +45,7 @@ func Tailscale() ([]netip.Addr, *net.Interface, error) {
 			if ipnet, ok := a.(*net.IPNet); ok {
 				nip, ok := netip.AddrFromSlice(ipnet.IP)
 				nip = nip.Unmap()
-				if ok && tsaddr.IsTailscaleIP(nip) {
+				if ok && tsaddr.IsCoderIP(nip) {
 					tsIPs = append(tsIPs, nip)
 				}
 			}
@@ -118,7 +118,7 @@ func LocalAddresses() (regular, loopback []netip.Addr, err error) {
 				// very well be something we can route to
 				// directly, because both nodes are
 				// behind the same CGNAT router.
-				if tsaddr.IsTailscaleIP(ip) {
+				if tsaddr.IsCoderIP(ip) {
 					continue
 				}
 				if ip.IsLoopback() || ifcIsLoopback {
@@ -477,7 +477,7 @@ func (s *State) AnyInterfaceUp() bool {
 
 func hasTailscaleIP(pfxs []netip.Prefix) bool {
 	for _, pfx := range pfxs {
-		if tsaddr.IsTailscaleIP(pfx.Addr()) {
+		if tsaddr.IsCoderIP(pfx.Addr()) {
 			return true
 		}
 	}

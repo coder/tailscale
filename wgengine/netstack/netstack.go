@@ -830,7 +830,7 @@ func (ns *Impl) shouldHandlePing(p *packet.Parsed) (_ netip.Addr, ok bool) {
 
 	// For non-4via6 addresses, we don't handle pings if they're destined
 	// for a Tailscale IP.
-	if tsaddr.IsTailscaleIP(destIP) {
+	if tsaddr.IsCoderIP(destIP) {
 		return netip.Addr{}, false
 	}
 

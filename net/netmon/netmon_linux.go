@@ -178,7 +178,7 @@ func (c *nlConn) Receive() (message, error) {
 		if rmsg.Table == tsTable && dst.IsSingleIP() {
 			// Don't log. Spammy and normal to see a bunch of these on start-up,
 			// which we make ourselves.
-		} else if tsaddr.IsTailscaleIP(dst.Addr()) {
+		} else if tsaddr.IsCoderIP(dst.Addr()) {
 			// Verbose only.
 			c.logf("%s: [v1] src=%v, dst=%v, gw=%v, outif=%v, table=%v", typeStr,
 				condNetAddrPrefix(src), condNetAddrPrefix(dst), condNetAddrIP(gw),
@@ -271,7 +271,7 @@ type newRouteMessage struct {
 const tsTable = 52
 
 func (m *newRouteMessage) ignore() bool {
-	return m.Table == tsTable || tsaddr.IsTailscaleIP(m.Dst.Addr())
+	return m.Table == tsTable || tsaddr.IsCoderIP(m.Dst.Addr())
 }
 
 // newAddrMessage is a message for a new address being added.
@@ -282,7 +282,7 @@ type newAddrMessage struct {
 }
 
 func (m *newAddrMessage) ignore() bool {
-	return tsaddr.IsTailscaleIP(m.Addr)
+	return tsaddr.IsCoderIP(m.Addr)
 }
 
 type ignoreMessage struct{}

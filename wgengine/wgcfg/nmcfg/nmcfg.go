@@ -114,7 +114,7 @@ func WGCfg(nm *netmap.NetworkMap, logf logger.Logf, flags netmap.WGConfigFlags, 
 				}
 				fmt.Fprintf(skippedUnselected, "%q (%v)", nodeDebugName(peer), peer.Key.ShortString())
 				continue
-			} else if allowedIP.IsSingleIP() && tsaddr.IsTailscaleIP(allowedIP.Addr()) && (flags&netmap.AllowSingleHosts) == 0 {
+			} else if allowedIP.IsSingleIP() && tsaddr.IsCoderIP(allowedIP.Addr()) && (flags&netmap.AllowSingleHosts) == 0 {
 				if skippedIPs.Len() > 0 {
 					skippedIPs.WriteString(", ")
 				}

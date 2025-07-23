@@ -35,14 +35,16 @@ func CGNATRange() netip.Prefix {
 }
 
 var (
-	cgnatRange       oncePrefix
-	ulaRange         oncePrefix
-	tsUlaRange       oncePrefix
-	tsViaRange       oncePrefix
-	ula4To6Range     oncePrefix
-	ulaEph6Range     oncePrefix
-	serviceIPv6      oncePrefix
+	cgnatRange   oncePrefix
+	ulaRange     oncePrefix
+	tsUlaRange   oncePrefix
+	tsViaRange   oncePrefix
+	ula4To6Range oncePrefix
+	ulaEph6Range oncePrefix
+	serviceIPv6  oncePrefix
+
 	coderServiceIPv6 oncePrefix
+	coderV6Range     oncePrefix
 )
 
 // TailscaleServiceIP returns the IPv4 listen address of services
@@ -73,37 +75,58 @@ const (
 	CoderServiceIPv6String     = "fd60:627a:a42b::53"
 )
 
-// These are all unfortunately Coder IP ranges, not Tailscale IP ranges.
-
 // IsTailscaleIP reports whether ip is an IP address in a range that
-// Coder assigns from.
+// Tailscale assigns from.
 func IsTailscaleIP(ip netip.Addr) bool {
+	if ip.Is4() {
+		return CGNATRange().Contains(ip) && !ChromeOSVMRange().Contains(ip)
+	}
 	return TailscaleULARange().Contains(ip)
 }
 
+// IsCoderIP reports whether ip is an IP address in the Coder IPv6 range.
+func IsCoderIP(ip netip.Addr) bool {
+	return CoderV6Range().Contains(ip)
+}
+
 // TailscaleULARange returns the IPv6 Unique Local Address range that
-// is the superset range that Coder assigns out of.
+// is the superset range that Tailscale assigns out of.
 func TailscaleULARange() netip.Prefix {
-	tsUlaRange.Do(func() { mustPrefix(&tsUlaRange.v, "fd60:627a:a42b::/48") })
+	tsUlaRange.Do(func() { mustPrefix(&tsUlaRange.v, "fd7a:115c:a1e0::/48") })
 	return tsUlaRange.v
 }
 
-// Unused by Coder
+func CoderV6Range() netip.Prefix {
+	coderV6Range.Do(func() { mustPrefix(&coderV6Range.v, "fd60:627a:a42b::/48") })
+	return coderV6Range.v
+}
+
+// TailscaleViaRange returns the IPv6 Unique Local Address subset range
+// TailscaleULARange that's used for IPv4 tunneling via IPv6.
 func TailscaleViaRange() netip.Prefix {
-	tsViaRange.Do(func() { mustPrefix(&tsViaRange.v, "fd60:627a:a42b::/128") })
+	// Mnemonic: "b1a" sounds like "via".
+	tsViaRange.Do(func() { mustPrefix(&tsViaRange.v, "fd7a:115c:a1e0:b1a::/64") })
 	return tsViaRange.v
 }
 
-// Unused by Coder
+// Tailscale4To6Range returns the subset of TailscaleULARange used for
+// auto-translated Tailscale ipv4 addresses.
 func Tailscale4To6Range() netip.Prefix {
-	// This needs to be a /104 prefix, so it can fit IPv4 addresses
-	ula4To6Range.Do(func() { mustPrefix(&ula4To6Range.v, "fd60:627a:a42b::/104") })
+	// This IP range has no significance, beyond being a subset of
+	// TailscaleULARange. The bits from /48 to /104 were picked at
+	// random.
+	ula4To6Range.Do(func() { mustPrefix(&ula4To6Range.v, "fd7a:115c:a1e0:ab12:4843:cd96:6200::/104") })
 	return ula4To6Range.v
 }
 
-// Unused by Coder
+// TailscaleEphemeral6Range returns the subset of TailscaleULARange
+// used for ephemeral IPv6-only Tailscale nodes.
 func TailscaleEphemeral6Range() netip.Prefix {
-	ulaEph6Range.Do(func() { mustPrefix(&ulaEph6Range.v, "fd60:627a:a42b::/128") })
+	// This IP range has no significance, beyond being a subset of
+	// TailscaleULARange. The bits from /48 to /64 were picked at
+	// random, with the only criterion being to not be the conflict
+	// with the Tailscale4To6Range above.
+	ulaEph6Range.Do(func() { mustPrefix(&ulaEph6Range.v, "fd7a:115c:a1e0:efe3::/64") })
 	return ulaEph6Range.v
 }
 

@@ -81,9 +81,9 @@ func controlLogf(logf logger.Logf, _ *netmon.Monitor, network, address string, c
 			return err
 		}
 
-		_, tsif, err2 := interfaces.Tailscale()
+		_, tsif, err2 := interfaces.Coder()
 		if err2 == nil && tsif != nil && tsif.Index == int(idx) {
-			logf("[unexpected] netns: Coder soft isolation: detected Tailscale interface")
+			logf("[unexpected] netns: Coder soft isolation: detected socket bound to Coder interface")
 			// No return, we want to run the code below to bind this socket to
 			// the default interface.
 		} else {
