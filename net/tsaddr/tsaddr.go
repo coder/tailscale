@@ -35,14 +35,16 @@ func CGNATRange() netip.Prefix {
 }
 
 var (
-	cgnatRange       oncePrefix
-	ulaRange         oncePrefix
-	tsUlaRange       oncePrefix
-	tsViaRange       oncePrefix
-	ula4To6Range     oncePrefix
-	ulaEph6Range     oncePrefix
-	serviceIPv6      oncePrefix
+	cgnatRange   oncePrefix
+	ulaRange     oncePrefix
+	tsUlaRange   oncePrefix
+	tsViaRange   oncePrefix
+	ula4To6Range oncePrefix
+	ulaEph6Range oncePrefix
+	serviceIPv6  oncePrefix
+
 	coderServiceIPv6 oncePrefix
+	coderV6Range     oncePrefix
 )
 
 // TailscaleServiceIP returns the IPv4 listen address of services
@@ -82,11 +84,21 @@ func IsTailscaleIP(ip netip.Addr) bool {
 	return TailscaleULARange().Contains(ip)
 }
 
+// IsCoderIP reports whether ip is an IP address in the Coder IPv6 range.
+func IsCoderIP(ip netip.Addr) bool {
+	return CoderV6Range().Contains(ip)
+}
+
 // TailscaleULARange returns the IPv6 Unique Local Address range that
 // is the superset range that Tailscale assigns out of.
 func TailscaleULARange() netip.Prefix {
 	tsUlaRange.Do(func() { mustPrefix(&tsUlaRange.v, "fd7a:115c:a1e0::/48") })
 	return tsUlaRange.v
+}
+
+func CoderV6Range() netip.Prefix {
+	coderV6Range.Do(func() { mustPrefix(&coderV6Range.v, "fd60:627a:a42b::/48") })
+	return coderV6Range.v
 }
 
 // TailscaleViaRange returns the IPv6 Unique Local Address subset range

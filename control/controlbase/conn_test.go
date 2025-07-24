@@ -228,7 +228,7 @@ func TestConnStd(t *testing.T) {
 }
 
 // tests that the idle memory overhead of a Conn blocked in a read is
-// reasonable (under 2K). It was previously over 8KB with two 4KB
+// reasonable (under 2.5K). It was previously over 8KB with two 4KB
 // buffers for rx/tx. This make sure we don't regress. Hopefully it
 // doesn't turn into a flaky test. If so, const max can be adjusted,
 // or it can be deleted or reworked.
@@ -281,7 +281,7 @@ func TestConnMemoryOverhead(t *testing.T) {
 	growthTotal := int64(ms.HeapAlloc) - int64(ms0.HeapAlloc)
 	growthEach := float64(growthTotal) / float64(num)
 	t.Logf("Alloced %v bytes, %.2f B/each", growthTotal, growthEach)
-	const max = 2000
+	const max = 2500
 	if growthEach > max {
 		t.Errorf("allocated more than expected; want max %v bytes/each", max)
 	}

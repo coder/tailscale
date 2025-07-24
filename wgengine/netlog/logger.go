@@ -172,7 +172,7 @@ func recordStatistics(logger *logtail.Logger, nodeID tailcfg.StableNodeID, start
 				break
 			}
 		}
-		return withinRoute && tsaddr.IsTailscaleIP(a), withinRoute && !tsaddr.IsTailscaleIP(a)
+		return withinRoute && tsaddr.IsCoderIP(a), withinRoute && !tsaddr.IsCoderIP(a)
 	}
 
 	exitTraffic := make(map[netlogtype.Connection]netlogtype.Counts)

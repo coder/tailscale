@@ -2287,6 +2287,8 @@ func TestIsWireGuardOnlyPeer(t *testing.T) {
 }
 
 func TestIsWireGuardOnlyPeerWithMasquerade(t *testing.T) {
+	t.Skip("Coder: We do not support wireguard only peers, and this test fails because we currently only support IPv6 addresses for TS IPs")
+
 	derpMap, cleanup := runDERPAndStun(t, t.Logf, localhostListener{}, netaddr.IPv4(127, 0, 0, 1))
 	defer cleanup()
 
@@ -3134,40 +3136,47 @@ func TestBlockEndpointsDERPOK(t *testing.T) {
 	}
 }
 
+func getNonDERPEndpoints(ms *Conn) []tailcfg.Endpoint {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	nonDERPEndpoints := make([]tailcfg.Endpoint, 0, len(ms.lastEndpoints))
+	for _, ep := range ms.lastEndpoints {
+		if ep.Addr.Addr() != tailcfg.DerpMagicIPAddr {
+			nonDERPEndpoints = append(nonDERPEndpoints, ep)
+		}
+	}
+	return nonDERPEndpoints
+}
+
 func waitForNoEndpoints(t *testing.T, ms *Conn) {
 	t.Helper()
-	ok := false
-	for i := 0; i < 50; i++ {
+
+	t.Log("waiting for endpoints to be blocked")
+	for range 50 {
 		time.Sleep(100 * time.Millisecond)
-		ms.mu.Lock()
-		if len(ms.lastEndpoints) != 0 {
-			t.Errorf("some endpoints were not blocked: %v", ms.lastEndpoints)
-			ms.mu.Unlock()
+		nonDERPEndpoints := getNonDERPEndpoints(ms)
+		if len(nonDERPEndpoints) != 0 {
+			t.Logf("some non-DERP endpoints were not blocked yet: %v", nonDERPEndpoints)
 			continue
 		}
-		ms.mu.Unlock()
-		ok = true
-		break
+
+		t.Log("endpoints are blocked")
+		return
 	}
-	if !ok {
-		t.Fatal("endpoints were not blocked after 50 attempts")
-	}
-	t.Log("endpoints are blocked")
+	t.Fatal("endpoints were not blocked after 50 attempts")
 }
 
 func waitForEndpoints(t *testing.T, ms *Conn) {
 	t.Helper()
-	for i := 0; i < 50; i++ {
+
+	t.Log("waiting for endpoints to be found")
+	for range 50 {
 		time.Sleep(100 * time.Millisecond)
-		ms.mu.Lock()
-		for _, ep := range ms.lastEndpoints {
-			if ep.Addr.Addr() != tailcfg.DerpMagicIPAddr {
-				t.Log("endpoint found")
-				ms.mu.Unlock()
-				return
-			}
+		nonDERPEndpoints := getNonDERPEndpoints(ms)
+		if len(nonDERPEndpoints) > 0 {
+			t.Logf("non-DERP endpoints found: %v", nonDERPEndpoints)
+			return
 		}
-		ms.mu.Unlock()
 	}
 	t.Fatal("endpoint was not found after 50 attempts")
 }

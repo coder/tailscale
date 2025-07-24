@@ -139,7 +139,7 @@ func (m *nmManager) trySet(ctx context.Context, config OSConfig) error {
 	// tell it explicitly to keep it. Read out the current interface
 	// settings and mirror them out to NetworkManager.
 	var addrs6 []map[string]any
-	addrs, _, err := interfaces.Tailscale()
+	addrs, _, err := interfaces.Coder()
 	if err == nil {
 		for _, a := range addrs {
 			if a.Is6() {
