@@ -59,6 +59,10 @@ var coderSoftIsolation atomic.Bool
 // functionality. All other network isolation settings are ignored when this is
 // set.
 //
+// Soft isolation is a workaround for allowing Coder Connect to function with
+// corporate VPNs. Without this, Coder Connect cannot connect to Coder
+// deployments behind corporate VPNs.
+//
 // Soft isolation does the following:
 //  1. Determine the interface that will be used for a given destination IP by
 //     consulting the OS.
@@ -70,6 +74,11 @@ var coderSoftIsolation atomic.Bool
 // This is considered "soft" because it doesn't force the socket to be bound to
 // a single interface, which causes problems with direct connections in
 // magicsock.
+//
+// Enabling this has the risk of potential network loops, as sockets could race
+// changes to the OS routing table or interface list. Coder doesn't provide
+// functionality similar to Tailscale's Exit Nodes, so we don't expect loops
+// to occur in our use case.
 //
 // This currently only has an effect on Windows and macOS, and is only used by
 // Coder Connect.
