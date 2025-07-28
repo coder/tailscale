@@ -15,8 +15,9 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
-	lru "github.com/hashicorp/golang-lru/v2"
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
 	"tailscale.com/envknob"
@@ -38,19 +39,14 @@ var errInterfaceStateInvalid = errors.New("interface state invalid")
 // routeCache caches the results of interfaceIndexFor calls to avoid
 // spamming the AF_ROUTE socket. This is used for soft
 // isolation mode where we do many route lookups.
-type routeCacheEntry struct {
-	ifIndex int
-	err     error
-}
-
 var (
-	routeCache     *lru.Cache[string, routeCacheEntry]
+	routeCache     *expirable.LRU[string, int]
 	routeCacheOnce sync.Once
 )
 
-func getRouteCache() *lru.Cache[string, routeCacheEntry] {
+func getRouteCache() *expirable.LRU[string, int] {
 	routeCacheOnce.Do(func() {
-		routeCache, _ = lru.New[string, routeCacheEntry](256)
+		routeCache = expirable.NewLRU[string, int](256, nil, 15*time.Second)
 	})
 	return routeCache
 }
@@ -58,7 +54,9 @@ func getRouteCache() *lru.Cache[string, routeCacheEntry] {
 // ClearRouteCache clears the route cache. This should be called by the
 // network monitor when a link changes occur.
 func ClearRouteCache() {
-	getRouteCache().Purge()
+	if coderSoftIsolation.Load() {
+		getRouteCache().Purge()
+	}
 }
 
 // isInterfaceCoderInterface can be swapped out in tests.
@@ -101,13 +99,8 @@ func parseAddrForRouting(address string) (netip.Addr, error) {
 		return netip.Addr{}, fmt.Errorf("invalid address %q: %w", address, err)
 	}
 	if addr.Zone() != "" {
-		// Addresses with zones *can* be represented as a route lookup with extra
-		// effort, but we don't use or support them currently.
+		// We're not supporting addresses with zones right now.
 		return netip.Addr{}, fmt.Errorf("invalid address %q, has zone: %q", address, addr.Zone())
-	}
-	if addr.IsUnspecified() {
-		// This covers the cases of 0.0.0.0 and [::].
-		return netip.Addr{}, nil
 	}
 
 	return addr, nil
@@ -125,7 +118,7 @@ func shouldBindToDefaultInterface(logf logger.Logf, _ *netmon.Monitor, address s
 			logf("[unexpected] netns: Coder soft isolation: error parsing address %q, binding to default: %v", address, err)
 			return true
 		}
-		if !addr.IsValid() {
+		if !addr.IsValid() || addr.IsUnspecified() {
 			// Unspecified addresses should not be bound to any interface.
 			return false
 		}
@@ -329,21 +322,21 @@ func getBestInterfaceCached(addr netip.Addr) (int, error) {
 	key := addr.String()
 
 	// Check cache first
-	if entry, ok := cache.Get(key); ok {
-		return entry.ifIndex, entry.err
+	if idx, ok := cache.Get(key); ok {
+		return idx, nil
 	}
 
 	// Cache miss, do the actual lookup
 	idx, err := interfaceIndexFor(addr, true /* canRecurse */)
-
-	// Cache the result
-	entry := routeCacheEntry{
-		ifIndex: idx,
-		err:     err,
+	if err != nil {
+		// Don't cache errors
+		return idx, err
 	}
-	cache.Add(key, entry)
 
-	return idx, err
+	// Cache only successful results
+	cache.Add(key, idx)
+
+	return idx, nil
 }
 
 // SetListenConfigInterfaceIndex sets lc.Control such that sockets are bound
