@@ -23,6 +23,7 @@ import (
 	"tailscale.com/envknob"
 	"tailscale.com/net/interfaces"
 	"tailscale.com/net/netmon"
+	"tailscale.com/net/tsaddr"
 	"tailscale.com/types/logger"
 )
 
@@ -122,6 +123,12 @@ func shouldBindToDefaultInterface(logf logger.Logf, _ *netmon.Monitor, address s
 		if !addr.IsValid() || addr.IsUnspecified() {
 			// Unspecified addresses should not be bound to any interface.
 			return false
+		}
+
+		// Shortcut if the addr is a Coder IP, which we should always bind to
+		// the default interface.
+		if tsaddr.IsCoderIP(addr) {
+			return true
 		}
 
 		// Ask Darwin routing table to find the best interface for this address
