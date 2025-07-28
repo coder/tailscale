@@ -54,6 +54,7 @@ func getRouteCache() *expirable.LRU[string, int] {
 // ClearRouteCache clears the route cache. This should be called by the
 // network monitor when a link changes occur.
 func ClearRouteCache() {
+	// The route cache is only used in Coder soft isolation mode.
 	if coderSoftIsolation.Load() {
 		getRouteCache().Purge()
 	}
