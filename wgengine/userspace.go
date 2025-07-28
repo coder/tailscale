@@ -28,6 +28,7 @@ import (
 	"tailscale.com/net/flowtrack"
 	"tailscale.com/net/interfaces"
 	"tailscale.com/net/netmon"
+	"tailscale.com/net/netns"
 	"tailscale.com/net/packet"
 	"tailscale.com/net/sockstats"
 	"tailscale.com/net/tsaddr"
@@ -1137,6 +1138,7 @@ func (e *userspaceEngine) linkChange(changed bool, cur *interfaces.State) {
 		if err := e.dns.FlushCaches(); err != nil {
 			e.logf("wgengine: dns flush failed after major link change: %v", err)
 		}
+		netns.ClearRouteCache()
 	}
 
 	// Hacky workaround for Linux DNS issue 2458: on

@@ -137,6 +137,11 @@ func (m *darwinRouteMon) skipRouteMessage(msg *route.RouteMessage) bool {
 		// dst = fe80::b476:66ff:fe30:c8f6%15
 		return true
 	}
+	if msg.Type == unix.RTM_GET {
+		// Skip RTM_GET messages, which are used to query the routing table.
+		// See netns_darwin.go
+		return true
+	}
 	return false
 }
 

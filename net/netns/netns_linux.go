@@ -20,6 +20,10 @@ import (
 	"tailscale.com/util/linuxfw"
 )
 
+func ClearRouteCache() {
+	// There's no route cache to clear on Linux
+}
+
 // socketMarkWorksOnce is the sync.Once & cached value for useSocketMark.
 var socketMarkWorksOnce struct {
 	sync.Once

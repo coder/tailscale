@@ -48,6 +48,10 @@ func control(logf logger.Logf, netMon *netmon.Monitor) func(network, address str
 	}
 }
 
+func ClearRouteCache() {
+	// There's no route cache to clear on Windows
+}
+
 // controlC binds c to the Windows interface that holds a default
 // route, and is not the Tailscale WinTun interface.
 func controlLogf(logf logger.Logf, _ *netmon.Monitor, network, address string, c syscall.RawConn) error {
@@ -206,7 +210,7 @@ func getSockAddr(address string) (windows.Sockaddr, error) {
 	if addr.Zone() != "" {
 		// Addresses with zones *can* be represented as a Sockaddr with extra
 		// effort, but we don't use or support them currently.
-		return nil, fmt.Errorf("invalid address %q, has zone: %w", address, err)
+		return nil, fmt.Errorf("invalid address %q, has zone: %q", address, addr.Zone())
 	}
 	if addr.IsUnspecified() {
 		// This covers the cases of 0.0.0.0 and [::].

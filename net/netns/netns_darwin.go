@@ -13,8 +13,10 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 
+	lru "github.com/hashicorp/golang-lru/v2"
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
 	"tailscale.com/envknob"
@@ -33,60 +35,154 @@ var bindToInterfaceByRouteEnv = envknob.RegisterBool("TS_BIND_TO_INTERFACE_BY_RO
 
 var errInterfaceStateInvalid = errors.New("interface state invalid")
 
-// controlLogf marks c as necessary to dial in a separate network namespace.
-//
-// It's intentionally the same signature as net.Dialer.Control
-// and net.ListenConfig.Control.
+// routeCache caches the results of interfaceIndexFor calls to avoid
+// spamming the AF_ROUTE socket. This is used for soft
+// isolation mode where we do many route lookups.
+type routeCacheEntry struct {
+	ifIndex int
+	err     error
+}
+
+var (
+	routeCache     *lru.Cache[string, routeCacheEntry]
+	routeCacheOnce sync.Once
+)
+
+func getRouteCache() *lru.Cache[string, routeCacheEntry] {
+	routeCacheOnce.Do(func() {
+		routeCache, _ = lru.New[string, routeCacheEntry](256)
+	})
+	return routeCache
+}
+
+// ClearRouteCache clears the route cache. This should be called by the
+// network monitor when a link changes occur.
+func ClearRouteCache() {
+	getRouteCache().Purge()
+}
+
+// isInterfaceCoderInterface can be swapped out in tests.
+var isInterfaceCoderInterface func(int) bool = isInterfaceCoderInterfaceDefault
+
+func isInterfaceCoderInterfaceDefault(idx int) bool {
+	_, tsif, err := interfaces.Coder()
+	return err == nil && tsif != nil && tsif.Index == idx
+}
+
+// controlLogf binds c to the default interface if it would otherwise
+// be bound to the Coder interface.
 func controlLogf(logf logger.Logf, netMon *netmon.Monitor, network, address string, c syscall.RawConn) error {
-	if isLocalhost(address) {
-		// Don't bind to an interface for localhost connections.
+	if !shouldBindToDefaultInterface(logf, netMon, address) {
 		return nil
 	}
 
-	if disableBindConnToInterface.Load() {
-		logf("netns_darwin: binding connection to interfaces disabled")
-		return nil
-	}
-
-	idx, err := getInterfaceIndex(logf, netMon, address)
+	idx, err := getDefaultInterfaceIndex(logf, netMon)
 	if err != nil {
-		// callee logged
 		return nil
 	}
 
 	return bindConnToInterface(c, network, address, idx, logf)
 }
 
-func getInterfaceIndex(logf logger.Logf, netMon *netmon.Monitor, address string) (int, error) {
-	// Helper so we can log errors.
-	defaultIdx := func() (int, error) {
-		if netMon == nil {
-			idx, err := interfaces.DefaultRouteInterfaceIndex()
-			if err != nil {
-				// It's somewhat common for there to be no default gateway route
-				// (e.g. on a phone with no connectivity), don't log those errors
-				// since they are expected.
-				if !errors.Is(err, interfaces.ErrNoGatewayIndexFound) {
-					logf("[unexpected] netns: DefaultRouteInterfaceIndex: %v", err)
-				}
-				return -1, err
-			}
-			return idx, nil
+// parseAddrForRouting returns the IP address for the given address, or an invalid
+// address if the address is not specified.
+func parseAddrForRouting(address string) (netip.Addr, error) {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("invalid address %q: %w", address, err)
+	}
+	if host == "" {
+		// netip.ParseAddr("") will fail
+		return netip.Addr{}, nil
+	}
+
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("invalid address %q: %w", address, err)
+	}
+	if addr.Zone() != "" {
+		// Addresses with zones *can* be represented as a route lookup with extra
+		// effort, but we don't use or support them currently.
+		return netip.Addr{}, fmt.Errorf("invalid address %q, has zone: %q", address, addr.Zone())
+	}
+	if addr.IsUnspecified() {
+		// This covers the cases of 0.0.0.0 and [::].
+		return netip.Addr{}, nil
+	}
+
+	return addr, nil
+}
+
+func shouldBindToDefaultInterface(logf logger.Logf, _ *netmon.Monitor, address string) bool {
+	if isLocalhost(address) {
+		// Don't bind to an interface for localhost connections.
+		return false
+	}
+
+	if coderSoftIsolation.Load() {
+		addr, err := parseAddrForRouting(address)
+		if err != nil {
+			logf("[unexpected] netns: Coder soft isolation: error parsing address %q, binding to default: %v", address, err)
+			return true
 		}
-		state := netMon.InterfaceState()
-		if state == nil {
-			return -1, errInterfaceStateInvalid
+		if !addr.IsValid() {
+			// Unspecified addresses should not be bound to any interface.
+			return false
 		}
 
-		if iface, ok := state.Interface[state.DefaultRouteInterface]; ok {
-			return iface.Index, nil
+		// Ask Darwin routing table to find the best interface for this address
+		// by using cached route lookups to avoid spamming the AF_ROUTE socket.
+		idx, err := getBestInterfaceCached(addr)
+		if err != nil {
+			logf("[unexpected] netns: Coder soft isolation: error getting best interface, binding to default: %v", err)
+			return true
 		}
+
+		if isInterfaceCoderInterface(idx) {
+			logf("[unexpected] netns: Coder soft isolation: detected socket destined for Coder interface, binding to default")
+			return true
+		}
+
+		// It doesn't look like our own interface, so we don't need to bind the
+		// socket to the default interface.
+		return false
+	}
+
+	// The default isolation behavior is to always bind to the default
+	// interface.
+	return true
+}
+
+func getDefaultInterfaceIndex(logf logger.Logf, netMon *netmon.Monitor) (int, error) {
+	if netMon == nil {
+		idx, err := interfaces.DefaultRouteInterfaceIndex()
+		if err != nil {
+			// It's somewhat common for there to be no default gateway route
+			// (e.g. on a phone with no connectivity), don't log those errors
+			// since they are expected.
+			if !errors.Is(err, interfaces.ErrNoGatewayIndexFound) {
+				logf("[unexpected] netns: DefaultRouteInterfaceIndex: %v", err)
+			}
+			return -1, err
+		}
+		return idx, nil
+	}
+
+	state := netMon.InterfaceState()
+	if state == nil {
 		return -1, errInterfaceStateInvalid
 	}
 
+	if iface, ok := state.Interface[state.DefaultRouteInterface]; ok {
+		return iface.Index, nil
+	}
+	return -1, errInterfaceStateInvalid
+}
+
+func getInterfaceIndex(logf logger.Logf, netMon *netmon.Monitor, address string) (int, error) {
 	useRoute := bindToInterfaceByRoute.Load() || bindToInterfaceByRouteEnv()
 	if !useRoute {
-		return defaultIdx()
+		return getDefaultInterfaceIndex(logf, netMon)
 	}
 
 	host, _, err := net.SplitHostPort(address)
@@ -99,13 +195,13 @@ func getInterfaceIndex(logf logger.Logf, netMon *netmon.Monitor, address string)
 	addr, err := netip.ParseAddr(host)
 	if err != nil {
 		logf("[unexpected] netns: error parsing address %q: %v", host, err)
-		return defaultIdx()
+		return getDefaultInterfaceIndex(logf, netMon)
 	}
 
 	idx, err := interfaceIndexFor(addr, true /* canRecurse */)
 	if err != nil {
 		logf("netns: error in interfaceIndexFor: %v", err)
-		return defaultIdx()
+		return getDefaultInterfaceIndex(logf, netMon)
 	}
 
 	// Verify that we didn't just choose the Coder interface;
@@ -113,7 +209,7 @@ func getInterfaceIndex(logf logger.Logf, netMon *netmon.Monitor, address string)
 	_, tsif, err2 := interfaces.Coder()
 	if err2 == nil && tsif != nil && tsif.Index == idx {
 		logf("[unexpected] netns: interfaceIndexFor returned Coder interface")
-		return defaultIdx()
+		return getDefaultInterfaceIndex(logf, netMon)
 	}
 
 	return idx, err
@@ -223,6 +319,31 @@ func interfaceIndexFor(addr netip.Addr, canRecurse bool) (int, error) {
 	}
 
 	return 0, fmt.Errorf("no valid address found")
+}
+
+// getBestInterfaceCached returns the interface index that we should bind to in
+// order to send traffic to the provided address, using a cache to avoid
+// spamming the AF_ROUTE socket.
+func getBestInterfaceCached(addr netip.Addr) (int, error) {
+	cache := getRouteCache()
+	key := addr.String()
+
+	// Check cache first
+	if entry, ok := cache.Get(key); ok {
+		return entry.ifIndex, entry.err
+	}
+
+	// Cache miss, do the actual lookup
+	idx, err := interfaceIndexFor(addr, true /* canRecurse */)
+
+	// Cache the result
+	entry := routeCacheEntry{
+		ifIndex: idx,
+		err:     err,
+	}
+	cache.Add(key, entry)
+
+	return idx, err
 }
 
 // SetListenConfigInterfaceIndex sets lc.Control such that sockets are bound

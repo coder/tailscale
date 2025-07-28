@@ -54,6 +54,10 @@ func control(logger.Logf, *netmon.Monitor) func(network, address string, c sysca
 	return controlC
 }
 
+func ClearRouteCache() {
+	// There's no route cache to clear on Android.
+}
+
 // controlC marks c as necessary to dial in a separate network namespace.
 //
 // It's intentionally the same signature as net.Dialer.Control
