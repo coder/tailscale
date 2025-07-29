@@ -38,8 +38,7 @@ var errInterfaceStateInvalid = errors.New("interface state invalid")
 // It's intentionally the same signature as net.Dialer.Control
 // and net.ListenConfig.Control.
 func controlLogf(logf logger.Logf, netMon *netmon.Monitor, network, address string, c syscall.RawConn) error {
-	if isLocalhost(address) {
-		// Don't bind to an interface for localhost connections.
+	if !shouldBindToDefaultInterface(logf, address) {
 		return nil
 	}
 

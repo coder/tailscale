@@ -4,11 +4,7 @@
 package netns
 
 import (
-	"fmt"
 	"math/bits"
-	"net"
-	"net/netip"
-	"strings"
 	"syscall"
 
 	"golang.org/x/sys/cpu"
@@ -16,7 +12,6 @@ import (
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 	"tailscale.com/net/interfaces"
 	"tailscale.com/net/netmon"
-	"tailscale.com/net/tsaddr"
 	"tailscale.com/types/logger"
 )
 
@@ -77,40 +72,6 @@ func controlLogf(logf logger.Logf, _ *netmon.Monitor, network, address string, c
 	return nil
 }
 
-func shouldBindToDefaultInterface(logf logger.Logf, address string) bool {
-	if strings.HasPrefix(address, "127.") {
-		// Don't bind to an interface for localhost connections,
-		// otherwise we get:
-		//   connectex: The requested address is not valid in its context
-		// (The derphttp tests were failing)
-		return false
-	}
-
-	if coderSoftIsolation.Load() {
-		addr, err := getAddr(address)
-		if err != nil {
-			logf("[unexpected] netns: Coder soft isolation: error getting addr for %q, binding to default: %v", address, err)
-			return true
-		}
-		if !addr.IsValid() || addr.IsUnspecified() {
-			// Invalid or unspecified addresses should not be bound to any
-			// interface.
-			return false
-		}
-		if tsaddr.IsCoderIP(addr) {
-			logf("[unexpected] netns: Coder soft isolation: detected socket destined for Coder interface, binding to default")
-			return true
-		}
-
-		// It doesn't look like our own interface, so we don't need to bind the
-		// socket to the default interface.
-		return false
-	}
-
-	// The default isolation behavior is to always bind to the default
-	// interface.
-	return true
-}
 
 // sockoptBoundInterface is the value of IP_UNICAST_IF and IPV6_UNICAST_IF.
 //
@@ -163,31 +124,3 @@ func nativeToBigEndian(i uint32) uint32 {
 	return bits.ReverseBytes32(i)
 }
 
-// getAddr returns the netip.Addr for the given address, or an invalid address
-// if the address is not specified. Use addr.IsValid() to check for this.
-func getAddr(address string) (netip.Addr, error) {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return netip.Addr{}, fmt.Errorf("invalid address %q: %w", address, err)
-	}
-	if host == "" {
-		// netip.ParseAddr("") will fail
-		return netip.Addr{}, nil
-	}
-
-	addr, err := netip.ParseAddr(host)
-	if err != nil {
-		return netip.Addr{}, fmt.Errorf("invalid address %q: %w", address, err)
-	}
-	if addr.Zone() != "" {
-		// Addresses with zones *can* be represented as a Sockaddr with extra
-		// effort, but we don't use or support them currently.
-		return netip.Addr{}, fmt.Errorf("invalid address %q, has zone: %w", address, err)
-	}
-	if addr.IsUnspecified() {
-		// This covers the cases of 0.0.0.0 and [::].
-		return netip.Addr{}, nil
-	}
-
-	return addr, nil
-}
