@@ -15,12 +15,14 @@ package netns
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"sync/atomic"
 
 	"tailscale.com/net/netknob"
 	"tailscale.com/net/netmon"
+	"tailscale.com/net/tsaddr"
 	"tailscale.com/types/logger"
 )
 
@@ -159,4 +161,67 @@ func isLocalhost(addr string) bool {
 
 	ip, _ := netip.ParseAddr(host)
 	return ip.IsLoopback()
+}
+
+// shouldBindToDefaultInterface determines whether a socket should be bound to
+// the default interface based on the destination address and soft isolation settings.
+func shouldBindToDefaultInterface(logf logger.Logf, address string) bool {
+	if isLocalhost(address) {
+		// Don't bind to an interface for localhost connections.
+		return false
+	}
+
+	if coderSoftIsolation.Load() {
+		addr, err := getAddr(address)
+		if err != nil {
+			logf("[unexpected] netns: Coder soft isolation: error getting addr for %q, binding to default: %v", address, err)
+			return true
+		}
+		if !addr.IsValid() || addr.IsUnspecified() {
+			// Invalid or unspecified addresses should not be bound to any
+			// interface.
+			return false
+		}
+		if tsaddr.IsCoderIP(addr) {
+			logf("[unexpected] netns: Coder soft isolation: detected socket destined for Coder interface, binding to default")
+			return true
+		}
+
+		// It doesn't look like our own interface, so we don't need to bind the
+		// socket to the default interface.
+		return false
+	}
+
+	// The default isolation behavior is to always bind to the default
+	// interface.
+	return true
+}
+
+// getAddr returns the netip.Addr for the given address, or an invalid address
+// if the address is not specified. Use addr.IsValid() to check for this.
+func getAddr(address string) (netip.Addr, error) {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("invalid address %q: %w", address, err)
+	}
+	if host == "" {
+		// netip.ParseAddr("") will fail
+		return netip.Addr{}, nil
+	}
+
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("invalid address %q: %w", address, err)
+	}
+	if addr.Zone() != "" {
+		// Addresses with zones *can* be represented as a Sockaddr with extra
+		// effort, but we don't use or support them currently.
+		return netip.Addr{}, fmt.Errorf("invalid address %q, has zone: %w", address, err)
+	}
+	if addr.IsUnspecified() {
+		// This covers the cases of 0.0.0.0 and [::].
+		return netip.Addr{}, nil
+	}
+
+	return addr, nil
 }
