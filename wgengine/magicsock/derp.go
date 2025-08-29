@@ -85,7 +85,7 @@ func (c *Conn) addDerpPeerRoute(peer key.NodePublic, derpID int, dc *derphttp.Cl
 type activeDerp struct {
 	c       *derphttp.Client
 	cancel  context.CancelFunc
-	writeCh chan<- derpWriteRequest
+	writeCh chan derpWriteRequest
 	// lastWrite is the time of the last request for its write
 	// channel (currently even if there was no write).
 	// It is always non-nil and initialized to a non-zero Time.
@@ -274,7 +274,7 @@ const derpWriteQueueDepth = 32
 //
 // If peer is non-zero, it can be used to find an active reverse
 // path, without using addr.
-func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) chan<- derpWriteRequest {
+func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) chan derpWriteRequest {
 	if addr.Addr() != tailcfg.DerpMagicIPAddr {
 		return nil
 	}
