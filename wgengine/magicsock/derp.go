@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/netip"
 	"reflect"
-	"slices"
 	"sort"
 	"time"
 
@@ -30,8 +29,7 @@ import (
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 	"tailscale.com/util/mak"
-	"tailscale.com/util/rands"
-	"tailscale.com/util/testenv"
+
 )
 
 // useDerpRoute reports whether magicsock should enable the DERP
@@ -99,7 +97,7 @@ func (c *Conn) fallbackDERPRegionForPeer(peer key.NodePublic) (regionID int) {
 type activeDerp struct {
 	c       *derphttp.Client
 	cancel  context.CancelFunc
-	writeCh chan<- derpWriteRequest
+	writeCh chan derpWriteRequest
 	// lastWrite is the time of the last request for its write
 	// channel (currently even if there was no write).
 	// It is always non-nil and initialized to a non-zero Time.
@@ -288,7 +286,7 @@ const derpWriteQueueDepth = 32
 //
 // If peer is non-zero, it can be used to find an active reverse
 // path, without using addr.
-func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) chan<- derpWriteRequest {
+func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) chan derpWriteRequest {
 	if addr.Addr() != tailcfg.DerpMagicIPAddr {
 		return nil
 	}
