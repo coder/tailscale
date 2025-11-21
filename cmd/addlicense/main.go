@@ -18,13 +18,11 @@ var (
 )
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `
-usage: addlicense -file FILE <subcommand args...>
-`[1:])
+	fmt.Fprintf(os.Stderr, `usage: addlicense -file FILE <subcommand args...>
+`)
 
 	flag.PrintDefaults()
-	fmt.Fprintf(os.Stderr, `
-addlicense adds a Tailscale license to the beginning of file.
+	fmt.Fprintf(os.Stderr, `addlicense adds a Tailscale license to the beginning of file.
 
 It is intended for use with 'go generate', so it also runs a subcommand,
 which presumably creates the file.
@@ -32,7 +30,7 @@ which presumably creates the file.
 Sample usage:
 
 addlicense -file pull_strings.go stringer -type=pull
-`[1:])
+`)
 	os.Exit(2)
 }
 
@@ -66,8 +64,7 @@ func check(err error) {
 	}
 }
 
-var license = `
-// Copyright (c) Tailscale Inc & AUTHORS
+var license = `// Copyright (c) Tailscale Inc & AUTHORS
 // SPDX-License-Identifier: BSD-3-Clause
 
-`[1:]
+`
