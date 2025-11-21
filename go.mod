@@ -1,6 +1,6 @@
 module tailscale.com
 
-go 1.23.0
+go 1.24.0
 
 // We have this in coder/coder too, for the same reason. We need it here too for
 // the tests to pass.
@@ -63,7 +63,7 @@ require (
 	github.com/prometheus/common v0.42.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/tailscale/certstore v0.1.1-0.20220316223106-78d6e1c49d8d
-	github.com/tailscale/depaware v0.0.0-20210622194025-720c4b409502
+	github.com/tailscale/depaware v0.0.0-20251001183927-9c2ad255ef3f
 	github.com/tailscale/goexpect v0.0.0-20210902213824-6e8c725cea41
 	github.com/tailscale/golang-x-crypto v0.0.0-20230713185742-f0b76a10a08e
 	github.com/tailscale/goupnp v1.0.1-0.20210804011211-c64d0f06ea05
@@ -82,16 +82,16 @@ require (
 	go.uber.org/zap v1.24.0
 	go4.org/mem v0.0.0-20220726221520-4f986261bf13
 	go4.org/netipx v0.0.0-20230728180743-ad4cb58a6516
-	golang.org/x/crypto v0.36.0
+	golang.org/x/crypto v0.45.0
 	golang.org/x/exp v0.0.0-20240719175910-8a7402abbf56
-	golang.org/x/mod v0.19.0
-	golang.org/x/net v0.38.0
+	golang.org/x/mod v0.30.0
+	golang.org/x/net v0.47.0
 	golang.org/x/oauth2 v0.27.0
-	golang.org/x/sync v0.12.0
-	golang.org/x/sys v0.31.0
-	golang.org/x/term v0.30.0
+	golang.org/x/sync v0.18.0
+	golang.org/x/sys v0.38.0
+	golang.org/x/term v0.37.0
 	golang.org/x/time v0.5.0
-	golang.org/x/tools v0.23.0
+	golang.org/x/tools v0.39.0
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2
 	golang.zx2c4.com/wireguard/windows v0.5.3
 	gvisor.dev/gvisor v0.0.0-20240509041132-65b30f7869dc
@@ -338,7 +338,10 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/exp/typeparams v0.0.0-20231108232855-2478ac86f678 // indirect
 	golang.org/x/image v0.18.0 // indirect
-	golang.org/x/text v0.23.0 // indirect
+	golang.org/x/telemetry v0.0.0-20251111182119-bc8e575c7b54 // indirect
+	golang.org/x/text v0.31.0 // indirect
+	golang.org/x/tools/go/expect v0.1.1-deprecated // indirect
+	golang.org/x/tools/go/packages/packagestest v0.1.1-deprecated // indirect
 	gomodules.xyz/jsonpatch/v2 v2.3.0 // indirect
 	google.golang.org/protobuf v1.33.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
