@@ -131,6 +131,14 @@ func (*Endpoint) SetLinkAddress(tcpip.LinkAddress) {
 	panic("not implemented")
 }
 
+func (*Endpoint) SetMTU(uint32) {
+	panic("not implemented")
+}
+
+func (*Endpoint) SetOnCloseAction(func()) {
+	panic("not implemented")
+}
+
 // Close closes e. Further packet injections will return an error, and all pending
 // packets are discarded. Close may be called concurrently with WritePackets.
 func (e *Endpoint) Close() {
