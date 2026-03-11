@@ -347,6 +347,9 @@ func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) cha
 	dc.SetAddressFamilySelector(derpAddrFamSelector{c})
 	dc.SetForcedWebsocketCallback(c.derpForcedWebsocketFunc)
 	dc.DNSCache = dnscache.Get()
+	if tlsCfg := c.derpTLSConfig.Load(); tlsCfg != nil {
+		dc.TLSConfig = tlsCfg
+	}
 	header := c.derpHeader.Load()
 	if header != nil {
 		dc.Header = header.Clone()

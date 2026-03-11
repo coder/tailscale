@@ -7,6 +7,7 @@ package netcheck
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -206,6 +207,9 @@ type Client struct {
 	// GetDERPHeaders optionally specifies headers to send with all HTTP(S) DERP
 	// probes.
 	GetDERPHeaders func() http.Header
+
+	// DERPTLSConfig is an optional TLS config for DERP connections.
+	DERPTLSConfig *tls.Config
 
 	// For tests
 	testEnoughRegions      int
@@ -1301,6 +1305,9 @@ func (c *Client) measureHTTPLatency(ctx context.Context, reg *tailcfg.DERPRegion
 
 	dc := derphttp.NewNetcheckClient(c.logf)
 	dc.Header = derpHeaders
+	if c.DERPTLSConfig != nil {
+		dc.TLSConfig = c.DERPTLSConfig
+	}
 	defer dc.Close()
 
 	var hasForceHTTPNode = false

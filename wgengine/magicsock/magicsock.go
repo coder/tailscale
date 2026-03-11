@@ -8,6 +8,7 @@ package magicsock
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -175,6 +176,9 @@ type Conn struct {
 
 	// derpRegionDialer is passed to the DERP client
 	derpRegionDialer atomic.Pointer[func(ctx context.Context, region *tailcfg.DERPRegion) net.Conn]
+
+	// derpTLSConfig is an optional TLS config for DERP connections.
+	derpTLSConfig atomic.Pointer[tls.Config]
 
 	// stats maintains per-connection counters.
 	stats atomic.Pointer[connstats.Statistics]
@@ -1757,6 +1761,10 @@ func (c *Conn) SetDERPHeader(header http.Header) {
 
 func (c *Conn) SetDERPForceWebsockets(v bool) {
 	c.derpForceWebsockets.Store(v)
+}
+
+func (c *Conn) SetDERPTLSConfig(cfg *tls.Config) {
+	c.derpTLSConfig.Store(cfg)
 }
 
 func (c *Conn) SetDERPRegionDialer(dialer func(ctx context.Context, region *tailcfg.DERPRegion) net.Conn) {
