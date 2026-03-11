@@ -7,6 +7,7 @@ package netcheck
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -211,6 +212,9 @@ type Client struct {
 	// ForcePreferredDERP, if non-zero, forces this DERP region as the
 	// preferred one if it has recent activity or a latency sample.
 	ForcePreferredDERP int
+
+	// DERPTLSConfig is an optional TLS config for DERP connections.
+	DERPTLSConfig *tls.Config
 
 	// For tests
 	testEnoughRegions      int
@@ -1365,6 +1369,9 @@ func (c *Client) measureHTTPLatency(ctx context.Context, reg *tailcfg.DERPRegion
 
 	dc := derphttp.NewNetcheckClient(c.logf)
 	dc.Header = derpHeaders
+	if c.DERPTLSConfig != nil {
+		dc.TLSConfig = c.DERPTLSConfig
+	}
 	defer dc.Close()
 
 	var hasForceHTTPNode = false
