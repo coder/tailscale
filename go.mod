@@ -1,6 +1,6 @@
 module tailscale.com
 
-go 1.24.0
+go 1.25.7
 
 // We have this in coder/coder too, for the same reason. We need it here too for
 // the tests to pass.
