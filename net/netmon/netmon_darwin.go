@@ -132,6 +132,18 @@ func (m *darwinRouteMon) skipInterfaceAddrMessage(msg *route.InterfaceAddrMessag
 }
 
 func (m *darwinRouteMon) skipRouteMessage(msg *route.RouteMessage) bool {
+	// RTM_MISS fires on every failed route lookup (no matching
+	// entry in the routing table). It scales with traffic volume,
+	// not network-state changes, and is never the leading signal
+	// for a topology change — route withdrawals emit RTM_DELETE
+	// synchronously before any subsequent lookup can miss.
+	// Letting these through causes netmon to report spurious
+	// LinkChange events, which trigger a ReSTUN/netcheck loop
+	// when the destination is unreachable (e.g. STUN probes to
+	// an IPv6 address with no route).
+	if msg.Type == unix.RTM_MISS {
+		return true
+	}
 	if ip := ipOfAddr(addrType(msg.Addrs, unix.RTAX_DST)); ip.IsLinkLocalUnicast() {
 		// Skip those like:
 		// dst = fe80::b476:66ff:fe30:c8f6%15
