@@ -125,6 +125,8 @@ func (c *Client) RunWatchConnectionLoop(ctx context.Context, ignoreServerKey key
 			if connGen != lastConnGen {
 				lastConnGen = connGen
 				clear()
+				logf("reconnected (connGen=%d); re-subscribing to watch", connGen)
+				break // re-subscribe via WatchConnectionChanges in outer loop
 			}
 			switch m := m.(type) {
 			case derp.PeerPresentMessage:
