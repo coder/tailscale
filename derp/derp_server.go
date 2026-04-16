@@ -153,6 +153,7 @@ type Server struct {
 	removePktForwardOther        expvar.Int
 	avgQueueDuration             *uint64          // In milliseconds; accessed atomically
 	tcpRtt                       metrics.LabelMap // histogram
+	meshTraceCounter             atomic.Int64
 
 	// verifyClients only accepts client connections to the DERP server if the clientKey is a
 	// known peer in the network, as specified by a running tailscaled's client's LocalAPI.
@@ -946,8 +947,8 @@ func (c *sclient) handleFrameForwardPacket(ft frameType, fl uint32) error {
 		if dstLen > 1 {
 			reason = dropReasonDupClient
 		} else {
-			s.notHereLogf("[drop] PeerGoneNotHere src=%s dst=%s clients=%d clientsMesh=%d inMesh=%v",
-				srcKey.ShortString(), dstKey.ShortString(),
+			s.notHereLogf("[drop] PeerGoneNotHere src=%s dst=%s via=%s clients=%d clientsMesh=%d inMesh=%v",
+				srcKey.ShortString(), dstKey.ShortString(), c.key.ShortString(),
 				clientsCount, clientsMeshCount, hasMeshEntry)
 			c.requestPeerGoneWriteLimited(dstKey, contents, PeerGoneReasonNotHere)
 		}
@@ -955,7 +956,8 @@ func (c *sclient) handleFrameForwardPacket(ft frameType, fl uint32) error {
 		return nil
 	}
 
-	dst.debugLogf("received forwarded packet from %s via %s", srcKey.ShortString(), c.key.ShortString())
+	s.meshTrace("[mesh-fwd-in] src=%s dst=%s via=%s delivering_locally",
+		srcKey.ShortString(), dstKey.ShortString(), c.key.ShortString())
 
 	return c.sendPkt(dst, pkt{
 		bs:         contents,
@@ -1010,9 +1012,11 @@ func (c *sclient) handleFrameSendPacket(ft frameType, fl uint32) error {
 		if fwd != nil {
 			s.packetsForwardedOut.Add(1)
 			err := fwd.ForwardPacket(c.key, dstKey, contents)
-			c.debugLogf("SendPacket for %s, forwarding via %s: %v", dstKey.ShortString(), fwd, err)
+			s.meshTrace("[mesh-fwd-out] src=%s dst=%s via=%s err=%v",
+				c.key.ShortString(), dstKey.ShortString(), fwd, err)
 			if err != nil {
-				// TODO:
+				s.limitedLogf("[mesh-fwd-out] ERROR src=%s dst=%s via=%s: %v",
+					c.key.ShortString(), dstKey.ShortString(), fwd, err)
 				return nil
 			}
 			return nil
@@ -1060,6 +1064,15 @@ const (
 	dropReasonWriteError                         // OS write() failed
 	dropReasonDupClient                          // the public key is connected 2+ times (active/active, fighting)
 )
+
+// meshTrace samples 1-in-1000 packets to log mesh forwarding activity
+// without overwhelming the log. Errors should be logged separately via
+// limitedLogf rather than relying on sampling.
+func (s *Server) meshTrace(format string, args ...any) {
+	if s.meshTraceCounter.Add(1)%1000 == 0 {
+		s.limitedLogf(fmt.Sprintf(format, args...))
+	}
+}
 
 func (s *Server) recordDrop(packetBytes []byte, srcKey, dstKey key.NodePublic, reason dropReason) {
 	s.packetsDropped.Add(1)
