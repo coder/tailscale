@@ -77,7 +77,12 @@ const (
 	// use case, we are serving hundreds to low thousands of users and the user's own company is
 	// paying the bills.  In testing, it increases DERP throughput up to 6x.
 	perClientSendQueueDepth = 512
-	writeTimeout            = 2 * time.Second
+	writeTimeout = 2 * time.Second
+	// privilegedWriteTimeout is the write timeout for mesh peers (canMesh=true).
+	// Mesh peers receive broadcast PeerPresent/PeerGone frames for every client
+	// in the region, which can overwhelm the TCP buffer during burst. A longer
+	// timeout prevents spurious disconnects.
+	privilegedWriteTimeout = 30 * time.Second
 )
 
 // dupPolicy is a temporary (2021-08-30) mechanism to change the policy
@@ -1532,7 +1537,11 @@ func (c *sclient) sendLoop(ctx context.Context) error {
 }
 
 func (c *sclient) setWriteDeadline() {
-	c.nc.SetWriteDeadline(time.Now().Add(writeTimeout))
+	d := writeTimeout
+	if c.canMesh {
+		d = privilegedWriteTimeout
+	}
+	c.nc.SetWriteDeadline(time.Now().Add(d))
 }
 
 // sendKeepAlive sends a keep-alive frame, without flushing.
