@@ -37,6 +37,8 @@ func (c *Client) RunWatchConnectionLoop(ctx context.Context, ignoreServerKey key
 		mu              sync.Mutex
 		present         = map[key.NodePublic]bool{}
 		loggedConnected = false
+		ppCount         int // PeerPresent messages since last status log
+		pgCount         int // PeerGone messages since last status log
 	)
 	clear := func() {
 		mu.Lock()
@@ -126,8 +128,10 @@ func (c *Client) RunWatchConnectionLoop(ctx context.Context, ignoreServerKey key
 			}
 			switch m := m.(type) {
 			case derp.PeerPresentMessage:
+				ppCount++
 				updatePeer(key.NodePublic(m), true)
 			case derp.PeerGoneMessage:
+				pgCount++
 				switch m.Reason {
 				case derp.PeerGoneReasonDisconnected:
 					// Normal case, log nothing
@@ -144,7 +148,9 @@ func (c *Client) RunWatchConnectionLoop(ctx context.Context, ignoreServerKey key
 			}
 			if now := c.clock.Now(); now.Sub(lastStatus) > statusInterval {
 				lastStatus = now
-				infoLogf("%d peers", len(present))
+				infoLogf("%d peers (peerPresent=%d peerGone=%d in last %v)", len(present), ppCount, pgCount, statusInterval)
+				ppCount = 0
+				pgCount = 0
 			}
 		}
 	}

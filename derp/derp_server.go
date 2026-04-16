@@ -109,6 +109,7 @@ type Server struct {
 	memSys0     uint64 // runtime.MemStats.Sys at start (or early-ish)
 	meshKey     string
 	limitedLogf logger.Logf
+	notHereLogf logger.Logf
 	metaCert    []byte // the encoded x509 cert to send after LetsEncrypt cert+intermediate
 	dupPolicy   dupPolicy
 	debug       bool
@@ -315,6 +316,7 @@ func NewServer(privateKey key.NodePrivate, logf logger.Logf) *Server {
 		publicKey:            privateKey.Public(),
 		logf:                 logf,
 		limitedLogf:          logger.RateLimitedFn(logf, 30*time.Second, 5, 100),
+		notHereLogf:          logger.RateLimitedFn(logf, 30*time.Second, 5, 100),
 		packetsRecvByKind:    metrics.LabelMap{Label: "kind"},
 		packetsDroppedReason: metrics.LabelMap{Label: "reason"},
 		packetsDroppedType:   metrics.LabelMap{Label: "type"},
@@ -541,6 +543,8 @@ func (s *Server) registerClient(c *sclient) {
 	}
 	s.keyOfAddr[c.remoteIPPort] = c.key
 	s.curClients.Add(1)
+	s.logf("[conn] registered key=%s canMesh=%v clients=%d clientsMesh=%d",
+		c.key.ShortString(), c.canMesh, len(s.clients), len(s.clientsMesh))
 	s.broadcastPeerStateChangeLocked(c.key, true)
 }
 
@@ -606,6 +610,9 @@ func (s *Server) unregisterClient(c *sclient) {
 	if c.preferred {
 		s.curHomeClients.Add(-1)
 	}
+
+	s.logf("[conn] unregistered key=%s canMesh=%v clients=%d clientsMesh=%d",
+		c.key.ShortString(), c.canMesh, len(s.clients), len(s.clientsMesh))
 }
 
 // notePeerGoneFromRegionLocked sends peerGone frames to parties that
@@ -913,6 +920,9 @@ func (c *sclient) handleFrameForwardPacket(ft frameType, fl uint32) error {
 	var dstLen int
 	var dst *sclient
 
+	var clientsCount, clientsMeshCount int
+	var hasMeshEntry bool
+
 	s.mu.Lock()
 	if set, ok := s.clients[dstKey]; ok {
 		dstLen = set.Len()
@@ -921,6 +931,9 @@ func (c *sclient) handleFrameForwardPacket(ft frameType, fl uint32) error {
 	if dst != nil {
 		s.notePeerSendLocked(srcKey, dst)
 	}
+	clientsCount = len(s.clients)
+	clientsMeshCount = len(s.clientsMesh)
+	_, hasMeshEntry = s.clientsMesh[dstKey]
 	s.mu.Unlock()
 
 	if dst == nil {
@@ -928,6 +941,9 @@ func (c *sclient) handleFrameForwardPacket(ft frameType, fl uint32) error {
 		if dstLen > 1 {
 			reason = dropReasonDupClient
 		} else {
+			s.notHereLogf("[drop] PeerGoneNotHere src=%s dst=%s clients=%d clientsMesh=%d inMesh=%v",
+				srcKey.ShortString(), dstKey.ShortString(),
+				clientsCount, clientsMeshCount, hasMeshEntry)
 			c.requestPeerGoneWriteLimited(dstKey, contents, PeerGoneReasonNotHere)
 		}
 		s.recordDrop(contents, srcKey, dstKey, reason)
@@ -967,6 +983,8 @@ func (c *sclient) handleFrameSendPacket(ft frameType, fl uint32) error {
 	var fwd PacketForwarder
 	var dstLen int
 	var dst *sclient
+	var clientsCount, clientsMeshCount int
+	var hasMeshEntry bool
 
 	s.mu.Lock()
 	if set, ok := s.clients[dstKey]; ok {
@@ -978,6 +996,9 @@ func (c *sclient) handleFrameSendPacket(ft frameType, fl uint32) error {
 	} else if dstLen < 1 {
 		fwd = s.clientsMesh[dstKey]
 	}
+	clientsCount = len(s.clients)
+	clientsMeshCount = len(s.clientsMesh)
+	_, hasMeshEntry = s.clientsMesh[dstKey]
 	s.mu.Unlock()
 
 	if dst == nil {
@@ -995,6 +1016,9 @@ func (c *sclient) handleFrameSendPacket(ft frameType, fl uint32) error {
 		if dstLen > 1 {
 			reason = dropReasonDupClient
 		} else {
+			s.notHereLogf("[drop] PeerGoneNotHere src=%s dst=%s clients=%d clientsMesh=%d inMesh=%v fwd=%v",
+				c.key.ShortString(), dstKey.ShortString(),
+				clientsCount, clientsMeshCount, hasMeshEntry, fwd)
 			c.requestPeerGoneWriteLimited(dstKey, contents, PeerGoneReasonNotHere)
 		}
 		s.recordDrop(contents, c.key, dstKey, reason)
@@ -1665,6 +1689,7 @@ func (s *Server) AddPacketForwarder(dst key.NodePublic, fwd PacketForwarder) {
 		}
 	}
 	s.clientsMesh[dst] = fwd
+	s.limitedLogf("[mesh] AddPacketForwarder key=%s clientsMesh=%d", dst.ShortString(), len(s.clientsMesh))
 }
 
 // RemovePacketForwarder removes fwd as a packet forwarder for dst.
@@ -1699,12 +1724,14 @@ func (s *Server) RemovePacketForwarder(dst key.NodePublic, fwd PacketForwarder) 
 		return
 	}
 
-	if _, isLocal := s.clients[dst]; isLocal {
+	_, isLocal := s.clients[dst]
+	if isLocal {
 		s.clientsMesh[dst] = nil
 	} else {
 		delete(s.clientsMesh, dst)
 		s.notePeerGoneFromRegionLocked(dst)
 	}
+	s.limitedLogf("[mesh] RemovePacketForwarder key=%s clientsMesh=%d isLocal=%v", dst.ShortString(), len(s.clientsMesh), isLocal)
 }
 
 // multiForwarder is a PacketForwarder that represents a set of

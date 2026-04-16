@@ -726,6 +726,8 @@ func TestForwarderRegistration(t *testing.T) {
 	s := &Server{
 		clients:     make(map[key.NodePublic]clientSet),
 		clientsMesh: map[key.NodePublic]PacketForwarder{},
+		logf:        logger.Discard,
+		limitedLogf: logger.Discard,
 	}
 	want := func(want map[key.NodePublic]PacketForwarder) {
 		t.Helper()
@@ -855,6 +857,8 @@ func TestMultiForwarder(t *testing.T) {
 	s := &Server{
 		clients:     make(map[key.NodePublic]clientSet),
 		clientsMesh: map[key.NodePublic]PacketForwarder{},
+		logf:        logger.Discard,
+		limitedLogf: logger.Discard,
 	}
 	u := pubAll(1)
 	s.AddPacketForwarder(u, channelFwd{1, ch})
