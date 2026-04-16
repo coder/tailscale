@@ -23,6 +23,7 @@ import (
 	"tailscale.com/derp/derphttp"
 	"tailscale.com/health"
 	"tailscale.com/logtail/backoff"
+	"tailscale.com/net/netcheck"
 	"tailscale.com/net/dnscache"
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/syncs"
@@ -85,6 +86,23 @@ type activeDerp struct {
 	lastWrite  *time.Time
 	createTime time.Time
 }
+
+const (
+	// frameReceiveRecordRate is how often we record that a DERP region
+	// has received a frame. This rate-limits health updates to avoid
+	// excessive lock contention. Must be less than PreferredDERPFrameTime
+	// to ensure the liveness check in netcheck works correctly.
+	frameReceiveRecordRate = 5 * time.Second
+)
+func init() {
+	// Sanity check: frameReceiveRecordRate must be less than
+	// PreferredDERPFrameTime so that the health system records a frame
+	// receipt before netcheck's stickiness window expires.
+	if frameReceiveRecordRate >= netcheck.PreferredDERPFrameTime {
+		panic("frameReceiveRecordRate must be less than PreferredDERPFrameTime")
+	}
+}
+
 
 var processStartUnixNano = time.Now().UnixNano()
 
@@ -528,7 +546,7 @@ func (c *Conn) runDerpReader(ctx context.Context, derpFakeAddr netip.AddrPort, d
 		bo.BackOff(ctx, nil) // reset
 
 		now := time.Now()
-		if lastPacketTime.IsZero() || now.Sub(lastPacketTime) > 5*time.Second {
+		if lastPacketTime.IsZero() || now.Sub(lastPacketTime) > frameReceiveRecordRate {
 			health.NoteDERPRegionReceivedFrame(regionID)
 			lastPacketTime = now
 		}

@@ -358,6 +358,19 @@ func NoteDERPRegionReceivedFrame(region int) {
 	selfCheckLocked()
 }
 
+// GetDERPRegionReceivedTime returns a function that, given a region ID,
+// returns the last time a frame was received from that region and whether
+// a time is known. This is used by netcheck to apply DERP stickiness based
+// on actual frame liveness rather than just latency probes.
+func GetDERPRegionReceivedTime() func(int) (time.Time, bool) {
+	return func(region int) (time.Time, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		t, ok := derpRegionLastFrame[region]
+		return t, ok
+	}
+}
+
 // state is an ipn.State.String() value: "Running", "Stopped", "NeedsLogin", etc.
 func SetIPNState(state string, wantRunning bool) {
 	mu.Lock()

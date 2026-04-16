@@ -464,6 +464,7 @@ func NewConn(opts Options) (*Conn, error) {
 			}
 			return h.Clone()
 		},
+		GetDERPRegionReceivedTime: health.GetDERPRegionReceivedTime,
 	}
 
 	c.ignoreSTUNPackets()

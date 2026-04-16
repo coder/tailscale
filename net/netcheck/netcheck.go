@@ -207,6 +207,13 @@ type Client struct {
 	// probes.
 	GetDERPHeaders func() http.Header
 
+	// GetDERPRegionReceivedTime, if non-nil, returns a function that
+	// reports the last time a DERP frame was received from a given region.
+	// This is used to add stickiness to the preferred DERP region when
+	// we've recently heard from it, even if latency probes are slightly
+	// worse.
+	GetDERPRegionReceivedTime func() func(int) (time.Time, bool)
+
 	// For tests
 	testEnoughRegions      int
 	testCaptivePortalDelay time.Duration
@@ -373,7 +380,7 @@ type probePlan map[string][]probe
 // sortRegions returns the regions of dm first sorted
 // from fastest to slowest (based on the 'last' report),
 // end in regions that have no data.
-func sortRegions(dm *tailcfg.DERPMap, last *Report) (prev []*tailcfg.DERPRegion) {
+func sortRegions(dm *tailcfg.DERPMap, last *Report, preferredDERP int) (prev []*tailcfg.DERPRegion) {
 	prev = make([]*tailcfg.DERPRegion, 0, len(dm.Regions))
 	for _, reg := range dm.Regions {
 		if reg.Avoid {
@@ -382,6 +389,14 @@ func sortRegions(dm *tailcfg.DERPMap, last *Report) (prev []*tailcfg.DERPRegion)
 		prev = append(prev, reg)
 	}
 	sort.Slice(prev, func(i, j int) bool {
+		// The home/preferred DERP always sorts first so it's always
+		// included in the probe plan, preventing permanent exclusion.
+		if prev[i].RegionID == preferredDERP {
+			return true
+		}
+		if prev[j].RegionID == preferredDERP {
+			return false
+		}
 		da, db := last.RegionLatency[prev[i].RegionID], last.RegionLatency[prev[j].RegionID]
 		if db == 0 && da != 0 {
 			// Non-zero sorts before zero.
@@ -403,7 +418,7 @@ const numIncrementalRegions = 3
 
 // makeProbePlan generates the probe plan for a DERPMap, given the most
 // recent report and whether IPv6 is configured on an interface.
-func makeProbePlan(dm *tailcfg.DERPMap, ifState *interfaces.State, last *Report) (plan probePlan) {
+func makeProbePlan(dm *tailcfg.DERPMap, ifState *interfaces.State, last *Report, preferredDERP int) (plan probePlan) {
 	if last == nil || len(last.RegionLatency) == 0 {
 		return makeProbePlanInitial(dm, ifState)
 	}
@@ -419,7 +434,7 @@ func makeProbePlan(dm *tailcfg.DERPMap, ifState *interfaces.State, last *Report)
 	// Coder: Some regions don't have STUN, so we need to make sure we have probed
 	// enough STUN regions
 	numSTUN := 0
-	for _, reg := range sortRegions(dm, last) {
+	for _, reg := range sortRegions(dm, last, preferredDERP) {
 		if numSTUN == numIncrementalRegions {
 			break
 		}
@@ -978,7 +993,7 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap) (_ *Report,
 		}
 	}
 
-	plan := makeProbePlan(dm, ifState, last)
+	plan := makeProbePlan(dm, ifState, last, preferredDERP)
 	if len(plan) == 0 {
 		c.logf("empty probe plan; do we have STUN regions?")
 	}
@@ -1545,6 +1560,12 @@ const (
 	// node is near region 1 @ 4ms and region 2 @ 5ms, region 1 getting
 	// 5ms slower would cause a flap).
 	preferredDERPAbsoluteDiff = 10 * time.Millisecond
+
+	// PreferredDERPFrameTime is how recently a DERP region must have
+	// received a frame for it to be considered "alive" for stickiness
+	// purposes. If the old preferred DERP has received a frame within
+	// this window, we're more reluctant to switch away from it.
+	PreferredDERPFrameTime = 8 * time.Second
 )
 
 // addReportHistoryAndSetPreferredDERP adds r to the set of recent Reports
@@ -1640,6 +1661,14 @@ func (c *Client) addReportHistoryAndSetPreferredDERP(r *Report, dm tailcfg.DERPM
 		if bestAny > oldRegionCurLatency/3*2 {
 			// Old region is about the same on a percentage basis
 			keepOld = true
+		}
+		if c.GetDERPRegionReceivedTime != nil {
+			getRecv := c.GetDERPRegionReceivedTime()
+			if t, ok := getRecv(prevDERP); ok && now.Sub(t) < PreferredDERPFrameTime {
+				// We've recently received a DERP frame from the old region,
+				// so it's actively working. Be extra sticky.
+				keepOld = true
+			}
 		}
 	}
 	if keepOld {

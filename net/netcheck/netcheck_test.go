@@ -680,7 +680,7 @@ func TestMakeProbePlan(t *testing.T) {
 				HaveV6: tt.have6if,
 				HaveV4: !tt.no4,
 			}
-			got := makeProbePlan(tt.dm, ifState, tt.last)
+			got := makeProbePlan(tt.dm, ifState, tt.last, 0)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("unexpected plan; got:\n%v\nwant:\n%v\n", got, tt.want)
 			}
@@ -871,7 +871,7 @@ func TestSortRegions(t *testing.T) {
 	report.RegionLatency[3] = time.Second * time.Duration(6)
 	report.RegionLatency[4] = time.Second * time.Duration(0)
 	report.RegionLatency[5] = time.Second * time.Duration(2)
-	sortedMap := sortRegions(unsortedMap, report)
+	sortedMap := sortRegions(unsortedMap, report, 0)
 
 	// Sorting by latency this should result in rid: 5, 2, 1, 3
 	// rid 4 with latency 0 should be at the end
@@ -1268,6 +1268,7 @@ func Test_makeProbePlan_incremental(t *testing.T) {
 				derpMapBySTUNPort(tc.stunPorts),
 				state,
 				reportLatencyAscending(len(tc.stunPorts), tc.haveV4, tc.haveV6),
+				0,
 			)
 			for _, e := range tc.expected {
 				if _, ok := plan[e]; !ok {
