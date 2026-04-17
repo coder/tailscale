@@ -208,6 +208,10 @@ type Client struct {
 	// probes.
 	GetDERPHeaders func() http.Header
 
+	// ForcePreferredDERP, if non-zero, forces this DERP region as the
+	// preferred one if it has recent activity or a latency sample.
+	ForcePreferredDERP int
+
 	// For tests
 	testEnoughRegions      int
 	testCaptivePortalDelay time.Duration
@@ -1147,7 +1151,7 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap, opts *GetRe
 		var wg sync.WaitGroup
 		var need []*tailcfg.DERPRegion
 		for rid, reg := range dm.Regions {
-			if !rs.haveRegionLatency(rid) && regionHasDERPNode(reg) && !reg.Avoid && !reg.NoMeasureNoHome {
+			if !rs.haveRegionLatency(rid) && regionHasDERPNode(reg) && !reg.Avoid {
 				need = append(need, reg)
 			}
 		}

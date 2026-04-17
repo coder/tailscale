@@ -1559,7 +1559,7 @@ func (c *sclient) onSendLoopDone() {
 func (c *sclient) sendLoop(ctx context.Context) error {
 	defer c.onSendLoopDone()
 
-	jitter := rand.N(5 * time.Second)
+	jitter := time.Duration(rand.Intn(5000)) * time.Millisecond
 	keepAliveTick, keepAliveTickChannel := c.s.clock.NewTicker(KeepAlive + jitter)
 	defer keepAliveTick.Stop()
 
