@@ -23,6 +23,7 @@ import (
 	"tailscale.com/derp"
 	"tailscale.com/derp/derphttp"
 	"tailscale.com/net/interfaces"
+	"tailscale.com/net/stun"
 	"tailscale.com/net/stun/stuntest"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tstest"
@@ -173,10 +174,6 @@ func TestBasic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	if err := c.Standalone(ctx, "127.0.0.1:0"); err != nil {
-		t.Fatal(err)
-	}
-
 	r, err := c.GetReport(ctx, stuntest.DERPMapOf(stunAddr.String()), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -268,21 +265,15 @@ func TestAddReportHistoryAndSetPreferredDERP(t *testing.T) {
 		}
 		return r
 	}
-	mkLDAFunc := func(mm map[int]time.Time) func(int) time.Time {
-		return func(region int) time.Time {
-			return mm[region]
-		}
-	}
 	type step struct {
 		after time.Duration
 		r     *Report
 	}
-	startTime := time.Unix(123, 0)
 	tests := []struct {
 		name        string
 		steps       []step
 		homeParams  *tailcfg.DERPHomeParams
-		opts        *GetReportOpts
+		regions     map[int]*tailcfg.DERPRegion
 		wantDERP    int // want PreferredDERP on final step
 		wantPrevLen int // wanted len(c.prev)
 	}{
@@ -410,146 +401,62 @@ func TestAddReportHistoryAndSetPreferredDERP(t *testing.T) {
 			wantDERP:    1,
 		},
 		{
-			name: "saw_derp_traffic",
+			name: "never_use_stun_only_region",
+			regions: map[int]*tailcfg.DERPRegion{
+				1: {
+					RegionID:   1,
+					RegionName: "d1",
+					Nodes: []*tailcfg.DERPNode{
+						{
+							Name:     "d1a",
+							RegionID: 1,
+							HostName: "derp1a.invalid",
+							IPv4:     "",
+							IPv6:     "",
+							DERPPort: 1234,
+							STUNPort: -1,
+							STUNOnly: false,
+						},
+					},
+				},
+				2: {
+					RegionID:   2,
+					RegionName: "d2",
+					Nodes: []*tailcfg.DERPNode{
+						{
+							Name:     "d2a",
+							RegionID: 2,
+							HostName: "derp2a.invalid",
+							IPv4:     "127.0.0.1",
+							IPv6:     "",
+							STUNPort: 1234,
+							STUNOnly: true,
+						},
+					},
+				},
+			},
 			steps: []step{
-				{0, report("d1", 2, "d2", 3)},               // (1) initially pick d1
-				{2 * time.Second, report("d1", 4, "d2", 3)}, // (2) still d1
-				{2 * time.Second, report("d2", 3)},          // (3) d1 gone, but have traffic
+				// Region 1 (DERP) is slower than region 2 (STUN only).
+				{0, report("d1", 4, "d2", 2)},
 			},
-			opts: &GetReportOpts{
-				GetLastDERPActivity: mkLDAFunc(map[int]time.Time{
-					1: startTime.Add(2*time.Second + PreferredDERPFrameTime/2), // within active window of step (3)
-				}),
-			},
-			wantPrevLen: 3,
-			wantDERP:    1, // still on 1 since we got traffic from it
-		},
-		{
-			name: "saw_derp_traffic_history",
-			steps: []step{
-				{0, report("d1", 2, "d2", 3)},               // (1) initially pick d1
-				{2 * time.Second, report("d1", 4, "d2", 3)}, // (2) still d1
-				{2 * time.Second, report("d2", 3)},          // (3) d1 gone, but have traffic
-			},
-			opts: &GetReportOpts{
-				GetLastDERPActivity: mkLDAFunc(map[int]time.Time{
-					1: startTime.Add(4*time.Second - PreferredDERPFrameTime - 1), // not within active window of (3)
-				}),
-			},
-			wantPrevLen: 3,
-			wantDERP:    2, // moved to d2 since d1 is gone
-		},
-		{
-			name: "preferred_derp_hysteresis_no_switch_pct",
-			steps: []step{
-				{0 * time.Second, report("d1", 34*time.Millisecond, "d2", 35*time.Millisecond)},
-				{1 * time.Second, report("d1", 34*time.Millisecond, "d2", 23*time.Millisecond)},
-			},
-			wantPrevLen: 2,
-			wantDERP:    1, // diff is 11ms, but d2 is greater than 2/3s of d1
-		},
-		{
-			name: "forced_two",
-			steps: []step{
-				{time.Second, report("d1", 2, "d2", 3)},
-				{2 * time.Second, report("d1", 4, "d2", 3)},
-			},
-			forcedDERP:  2,
-			wantPrevLen: 2,
-			wantDERP:    2,
-		},
-		{
-			name: "forced_two_unavailable",
-			steps: []step{
-				{time.Second, report("d1", 2, "d2", 1)},
-				{2 * time.Second, report("d1", 4)},
-			},
-			forcedDERP:  2,
-			wantPrevLen: 2,
-			wantDERP:    1,
-		},
-		{
-			name: "forced_two_no_probe_recent_activity",
-			steps: []step{
-				{time.Second, report("d1", 2)},
-				{2 * time.Second, report("d1", 4)},
-			},
-			opts: &GetReportOpts{
-				GetLastDERPActivity: mkLDAFunc(map[int]time.Time{
-					1: startTime,
-					2: startTime.Add(time.Second),
-				}),
-			},
-			forcedDERP:  2,
-			wantPrevLen: 2,
-			wantDERP:    2,
-		},
-		{
-			name: "forced_two_no_probe_no_recent_activity",
-			steps: []step{
-				{time.Second, report("d1", 2)},
-				{PreferredDERPFrameTime + time.Second, report("d1", 4)},
-			},
-			opts: &GetReportOpts{
-				GetLastDERPActivity: mkLDAFunc(map[int]time.Time{
-					1: startTime,
-					2: startTime,
-				}),
-			},
-			forcedDERP:  2,
-			wantPrevLen: 2,
-			wantDERP:    1,
-		},
-		{
-			name: "no_data_keep_home",
-			steps: []step{
-				{0, report("d1", 2, "d2", 3)},
-				{30 * time.Second, report()},
-				{2 * time.Second, report()},
-				{2 * time.Second, report()},
-				{2 * time.Second, report()},
-				{2 * time.Second, report()},
-			},
-			opts: &GetReportOpts{
-				GetLastDERPActivity: mkLDAFunc(map[int]time.Time{
-					1: startTime,
-				}),
-			},
-			wantPrevLen: 6,
-			wantDERP:    1,
-		},
-		{
-			name: "no_data_home_expires",
-			steps: []step{
-				{0, report("d1", 2, "d2", 3)},
-				{30 * time.Second, report()},
-				{2 * derp.KeepAlive, report()},
-			},
-			opts: &GetReportOpts{
-				GetLastDERPActivity: mkLDAFunc(map[int]time.Time{
-					1: startTime,
-				}),
-			},
-			wantPrevLen: 3,
-			wantDERP:    0,
+			wantPrevLen: 1,
+			wantDERP:    1, // region 2 is STUN only, so we should never use it
+
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fakeTime := startTime
+			fakeTime := time.Unix(123, 0)
 			c := &Client{
 				TimeNow: func() time.Time { return fakeTime },
 			}
 			dm := &tailcfg.DERPMap{HomeParams: tt.homeParams}
-			rs := &reportState{
-				c:     c,
-				start: fakeTime,
-				opts:  tt.opts,
+			if tt.regions != nil {
+				dm.Regions = tt.regions
 			}
 			for _, s := range tt.steps {
 				fakeTime = fakeTime.Add(s.after)
-				rs.start = fakeTime.Add(-100 * time.Millisecond)
-				c.addReportHistoryAndSetPreferredDERP(rs, s.r, dm.View())
+				c.addReportHistoryAndSetPreferredDERP(&reportState{start: fakeTime}, s.r, dm.View())
 			}
 			lastReport := tt.steps[len(tt.steps)-1].r
 			if got, want := len(c.prev), tt.wantPrevLen; got != want {
@@ -764,40 +671,6 @@ func TestMakeProbePlan(t *testing.T) {
 				"region-2-v4": []probe{p("2a", 4), p("2b", 4, 24*ms)},
 				"region-2-v6": []probe{p("2a", 6), p("2b", 6, 24*ms)},
 				"region-3-v4": []probe{p("3a", 4)},
-			},
-		},
-		{
-			// #13969: ensure that the prior/current home region is always included in
-			// probe plans, so that we don't flap between regions due to a single major
-			// netcheck having excluded the home region due to a spuriously high sample.
-			name:    "ensure_home_region_inclusion",
-			dm:      basicMap,
-			have6if: true,
-			last: &Report{
-				RegionLatency: map[int]time.Duration{
-					1: 50 * time.Millisecond,
-					2: 20 * time.Millisecond,
-					3: 30 * time.Millisecond,
-					4: 40 * time.Millisecond,
-				},
-				RegionV4Latency: map[int]time.Duration{
-					1: 50 * time.Millisecond,
-					2: 20 * time.Millisecond,
-				},
-				RegionV6Latency: map[int]time.Duration{
-					3: 30 * time.Millisecond,
-					4: 40 * time.Millisecond,
-				},
-				PreferredDERP: 1,
-			},
-			want: probePlan{
-				"region-1-v4": []probe{p("1a", 4), p("1a", 4, 60*ms), p("1a", 4, 220*ms), p("1a", 4, 330*ms)},
-				"region-1-v6": []probe{p("1a", 6), p("1a", 6, 60*ms), p("1a", 6, 220*ms), p("1a", 6, 330*ms)},
-				"region-2-v4": []probe{p("2a", 4), p("2b", 4, 24*ms)},
-				"region-2-v6": []probe{p("2a", 6), p("2b", 6, 24*ms)},
-				"region-3-v4": []probe{p("3a", 4), p("3b", 4, 36*ms)},
-				"region-3-v6": []probe{p("3a", 6), p("3b", 6, 36*ms)},
-				"region-4-v4": []probe{p("4a", 4)},
 			},
 		},
 	}
@@ -1048,10 +921,6 @@ func TestNoCaptivePortalWhenUDP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	if err := c.Standalone(ctx, "127.0.0.1:0"); err != nil {
-		t.Fatal(err)
-	}
-
 	r, err := c.GetReport(ctx, stuntest.DERPMapOf(stunAddr.String()), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -1232,7 +1101,7 @@ func TestProbeHeaders(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, err := c.GetReport(ctx, derpMap)
+	_, err := c.GetReport(ctx, derpMap, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1328,7 +1197,7 @@ func TestNeverPickSTUNOnlyRegionAsPreferredDERP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	r, err := c.GetReport(ctx, derpMap)
+	r, err := c.GetReport(ctx, derpMap, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1403,6 +1272,8 @@ func Test_makeProbePlan_incremental(t *testing.T) {
 				derpMapBySTUNPort(tc.stunPorts),
 				state,
 				reportLatencyAscending(len(tc.stunPorts), tc.haveV4, tc.haveV6),
+			
+				0,
 			)
 			for _, e := range tc.expected {
 				if _, ok := plan[e]; !ok {

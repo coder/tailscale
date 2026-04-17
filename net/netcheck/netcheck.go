@@ -453,9 +453,9 @@ func makeProbePlan(dm *tailcfg.DERPMap, ifState *interfaces.State, last *Report,
 	// if there is no prior home, then there's no home to additionally include.
 	planContainsHome := preferredDERP == 0
 	numSTUN := 0
-	for ri, reg := range sortRegions(dm, last, preferredDERP) {
+	for _, reg := range sortRegions(dm, last, preferredDERP) {
 		regIsHome := reg.RegionID == preferredDERP
-		if ri >= numIncrementalRegions {
+		if numSTUN >= numIncrementalRegions {
 			// planned at least numIncrementalRegions regions and that includes the
 			// last home region (or there was none), plan complete.
 			if planContainsHome {
