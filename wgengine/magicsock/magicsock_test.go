@@ -43,7 +43,6 @@ import (
 	"tailscale.com/derp"
 	"tailscale.com/derp/derphttp"
 	"tailscale.com/disco"
-	"tailscale.com/health"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/net/connstats"
 	"tailscale.com/net/netaddr"
@@ -3223,43 +3222,29 @@ func TestMaybeSetNearestDERP(t *testing.T) {
 	// Ensure that our fallback code always picks a deterministic value.
 	tstest.Replace(t, &pickDERPFallbackForTests, func() int { return 31 })
 
-	// Actually test this code path.
-	tstest.Replace(t, &checkControlHealthDuringNearestDERPInTests, true)
-
 	testCases := []struct {
-		name               string
-		old                int
-		reportDERP         int
-		connectedToControl bool
-		want               int
+		name       string
+		old        int
+		reportDERP int
+		want       int
 	}{
 		{
-			name:               "connected_with_report_derp",
-			old:                1,
-			reportDERP:         21,
-			connectedToControl: true,
-			want:               21,
+			name:       "with_report_derp",
+			old:        1,
+			reportDERP: 21,
+			want:       21,
 		},
 		{
-			name:               "not_connected_with_report_derp",
-			old:                1,
-			reportDERP:         21,
-			connectedToControl: false,
-			want:               1, // no change
+			name:       "no_derp",
+			old:        1,
+			reportDERP: 0,
+			want:       1, // no change
 		},
 		{
-			name:               "connected_no_derp",
-			old:                1,
-			reportDERP:         0,
-			connectedToControl: true,
-			want:               1, // no change
-		},
-		{
-			name:               "connected_no_derp_fallback",
-			old:                0,
-			reportDERP:         0,
-			connectedToControl: true,
-			want:               31, // deterministic fallback
+			name:       "no_derp_fallback",
+			old:        0,
+			reportDERP: 0,
+			want:       31, // deterministic fallback
 		},
 	}
 	for _, tt := range testCases {
@@ -3270,17 +3255,6 @@ func TestMaybeSetNearestDERP(t *testing.T) {
 			c.derpMap = derpMap
 
 			report := &netcheck.Report{PreferredDERP: tt.reportDERP}
-
-			oldConnected := health.GetInPollNetMap()
-			if tt.connectedToControl != oldConnected {
-				if tt.connectedToControl {
-					health.GotStreamedMapResponse()
-					t.Cleanup(func() { health.SetInPollNetMap(false) })
-				} else {
-					health.SetInPollNetMap(false)
-					t.Cleanup(health.GotStreamedMapResponse)
-				}
-			}
 
 			got := c.maybeSetNearestDERP(report)
 			if got != tt.want {

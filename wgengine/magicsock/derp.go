@@ -159,38 +159,12 @@ func (c *Conn) pickDERPFallback() int {
 	return ids[rand.New(rand.NewSource(int64(h.Sum64()))).Intn(len(ids))]
 }
 
-// This allows existing tests to pass, but allows us to still test the
-// behaviour during tests.
-var checkControlHealthDuringNearestDERPInTests = false
-
 // maybeSetNearestDERP selects and changes the nearest/preferred DERP server
 // based on the netcheck report and other heuristics. It returns the DERP
 // region that it selected and set (via setNearestDERP).
 //
 // c.mu must NOT be held.
 func (c *Conn) maybeSetNearestDERP(report *netcheck.Report) (preferredDERP int) {
-	// Don't change our PreferredDERP if we don't have a connection to
-	// control; if we don't, then we can't inform peers about a DERP home
-	// change, which breaks all connectivity. Even if this DERP region is
-	// down, changing our home DERP isn't correct since peers can't
-	// discover that change.
-	//
-	// See https://github.com/tailscale/corp/issues/18095
-	//
-	// For tests, always assume we're connected to control unless we're
-	// explicitly testing this behaviour.
-	var connectedToControl bool
-	if inTest() && !checkControlHealthDuringNearestDERPInTests {
-		connectedToControl = true
-	} else {
-		connectedToControl = health.GetInPollNetMap()
-	}
-	if !connectedToControl {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		return c.myDerp
-	}
-
 	preferredDERP = report.PreferredDERP
 	if preferredDERP == 0 {
 		// Perhaps UDP is blocked. Pick a deterministic but arbitrary
