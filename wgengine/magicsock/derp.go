@@ -12,9 +12,9 @@ import (
 	"net"
 	"net/netip"
 	"reflect"
-	"slices"
 	"sort"
 	"time"
+	"testing"
 
 	"github.com/tailscale/wireguard-go/conn"
 	"tailscale.com/control/controlclient"
@@ -30,8 +30,6 @@ import (
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 	"tailscale.com/util/mak"
-	"tailscale.com/util/rands"
-	"tailscale.com/util/testenv"
 )
 
 // frameReceiveRecordRate is the minimum time between updates to last frame
@@ -96,7 +94,7 @@ func (c *Conn) fallbackDERPRegionForPeer(peer key.NodePublic) (regionID int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if dr, ok := c.derpRoute[peer]; ok {
-		return dr.regionID
+		return dr.derpID
 	}
 	return 0
 }
@@ -182,7 +180,7 @@ func (c *Conn) maybeSetNearestDERP(report *netcheck.Report) (preferredDERP int) 
 	// For tests, always assume we're connected to control unless we're
 	// explicitly testing this behaviour.
 	var connectedToControl bool
-	if testenv.InTest() && !checkControlHealthDuringNearestDERPInTests {
+	if testing.Testing() && !checkControlHealthDuringNearestDERPInTests {
 		connectedToControl = true
 	} else {
 		connectedToControl = health.GetInPollNetMap()

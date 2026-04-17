@@ -192,6 +192,11 @@ type Client struct {
 	// It defaults to ":0".
 	UDPBindAddr string
 
+	// ForcePreferredDERP, if non-zero, forces this DERP region as the
+	// preferred DERP, for use when the caller knows the home DERP should
+	// be preserved.
+	ForcePreferredDERP int
+
 	// PortMapper, if non-nil, is used for portmap queries.
 	// If nil, portmap discovery is not done.
 	PortMapper *portmapper.Client // lazily initialized on first use
@@ -447,6 +452,7 @@ func makeProbePlan(dm *tailcfg.DERPMap, ifState *interfaces.State, last *Report,
 	// planContainsHome indicates whether the home DERP has been added to the probePlan,
 	// if there is no prior home, then there's no home to additionally include.
 	planContainsHome := preferredDERP == 0
+	numSTUN := 0
 	for ri, reg := range sortRegions(dm, last, preferredDERP) {
 		regIsHome := reg.RegionID == preferredDERP
 		if ri >= numIncrementalRegions {
@@ -1154,7 +1160,7 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap, opts *GetRe
 		var wg sync.WaitGroup
 		var need []*tailcfg.DERPRegion
 		for rid, reg := range dm.Regions {
-			if !rs.haveRegionLatency(rid) && regionHasDERPNode(reg) && !reg.Avoid && !reg.NoMeasureNoHome {
+			if !rs.haveRegionLatency(rid) && regionHasDERPNode(reg) && !reg.Avoid {
 				need = append(need, reg)
 			}
 		}

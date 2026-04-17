@@ -14,7 +14,6 @@ import (
 
 	"tailscale.com/derp"
 	"tailscale.com/derp/derphttp"
-	"tailscale.com/net/netmon"
 	"tailscale.com/types/logger"
 )
 
