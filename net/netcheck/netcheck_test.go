@@ -174,7 +174,7 @@ func TestBasic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	r, err := c.GetReport(ctx, stuntest.DERPMapOf(stunAddr.String()))
+	r, err := c.GetReport(ctx, stuntest.DERPMapOf(stunAddr.String()), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestWorksWhenUDPBlocked(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 
-	r, err := c.GetReport(ctx, dm)
+	r, err := c.GetReport(ctx, dm, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,15 +265,22 @@ func TestAddReportHistoryAndSetPreferredDERP(t *testing.T) {
 		}
 		return r
 	}
+	mkLDAFunc := func(mm map[int]time.Time) func(int) time.Time {
+		return func(region int) time.Time {
+			return mm[region]
+		}
+	}
 	type step struct {
 		after time.Duration
 		r     *Report
 	}
+	startTime := time.Unix(123, 0)
 	tests := []struct {
 		name        string
 		steps       []step
 		homeParams  *tailcfg.DERPHomeParams
 		regions     map[int]*tailcfg.DERPRegion
+		opts        *GetReportOpts
 		wantDERP    int // want PreferredDERP on final step
 		wantPrevLen int // wanted len(c.prev)
 	}{
@@ -441,12 +448,41 @@ func TestAddReportHistoryAndSetPreferredDERP(t *testing.T) {
 			},
 			wantPrevLen: 1,
 			wantDERP:    1, // region 2 is STUN only, so we should never use it
-
+			},
+			{
+			name: "saw_derp_traffic",
+			steps: []step{
+				{0, report("d1", 2, "d2", 3)},               // (1) initially pick d1
+				{2 * time.Second, report("d1", 4, "d2", 3)}, // (2) still d1
+				{2 * time.Second, report("d2", 3)},          // (3) d1 gone, but have traffic
+			},
+			opts: &GetReportOpts{
+				GetLastDERPActivity: mkLDAFunc(map[int]time.Time{
+					1: startTime.Add(2*time.Second + preferredDERPFrameTime/2), // within active window of step (3)
+				}),
+			},
+			wantPrevLen: 3,
+			wantDERP:    1, // still on 1 since we got traffic from it
+		},
+		{
+			name: "saw_derp_traffic_history",
+			steps: []step{
+				{0, report("d1", 2, "d2", 3)},               // (1) initially pick d1
+				{2 * time.Second, report("d1", 4, "d2", 3)}, // (2) still d1
+				{2 * time.Second, report("d2", 3)},          // (3) d1 gone, but have traffic
+			},
+			opts: &GetReportOpts{
+				GetLastDERPActivity: mkLDAFunc(map[int]time.Time{
+					1: startTime.Add(4*time.Second - preferredDERPFrameTime - 1), // not within active window of (3)
+				}),
+			},
+			wantPrevLen: 3,
+			wantDERP:    2, // moved to d2 since d1 is gone
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fakeTime := time.Unix(123, 0)
+			fakeTime := startTime
 			c := &Client{
 				TimeNow: func() time.Time { return fakeTime },
 			}
@@ -454,9 +490,15 @@ func TestAddReportHistoryAndSetPreferredDERP(t *testing.T) {
 			if tt.regions != nil {
 				dm.Regions = tt.regions
 			}
+			rs := &reportState{
+				c:     c,
+				start: fakeTime,
+				opts:  tt.opts,
+			}
 			for _, s := range tt.steps {
 				fakeTime = fakeTime.Add(s.after)
-				c.addReportHistoryAndSetPreferredDERP(s.r, dm.View())
+				rs.start = fakeTime.Add(-100 * time.Millisecond)
+				c.addReportHistoryAndSetPreferredDERP(rs, s.r, dm.View())
 			}
 			lastReport := tt.steps[len(tt.steps)-1].r
 			if got, want := len(c.prev), tt.wantPrevLen; got != want {
@@ -917,7 +959,7 @@ func TestNoCaptivePortalWhenUDP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	r, err := c.GetReport(ctx, stuntest.DERPMapOf(stunAddr.String()))
+	r, err := c.GetReport(ctx, stuntest.DERPMapOf(stunAddr.String()), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1097,7 +1139,7 @@ func TestProbeHeaders(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, err := c.GetReport(ctx, derpMap)
+	_, err := c.GetReport(ctx, derpMap, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1193,7 +1235,7 @@ func TestNeverPickSTUNOnlyRegionAsPreferredDERP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	r, err := c.GetReport(ctx, derpMap)
+	r, err := c.GetReport(ctx, derpMap, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
