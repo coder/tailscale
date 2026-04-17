@@ -1348,6 +1348,7 @@ func Test_makeProbePlan_incremental(t *testing.T) {
 				derpMapBySTUNPort(tc.stunPorts),
 				state,
 				reportLatencyAscending(len(tc.stunPorts), tc.haveV4, tc.haveV6),
+				0,
 			)
 			for _, e := range tc.expected {
 				if _, ok := plan[e]; !ok {
