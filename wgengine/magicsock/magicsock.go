@@ -709,17 +709,9 @@ func (c *Conn) updateNetInfo(ctx context.Context) (*netcheck.Report, error) {
 	ni.OSHasIPv6.Set(report.OSHasIPv6)
 	ni.WorkingUDP.Set(report.UDP)
 	ni.WorkingICMPv4.Set(report.ICMPv4)
-	ni.PreferredDERP = report.PreferredDERP
+	ni.PreferredDERP = c.maybeSetNearestDERP(report)
 	ni.CaptivePortal = report.CaptivePortal
 
-	if ni.PreferredDERP == 0 {
-		// Perhaps UDP is blocked. Pick a deterministic but arbitrary
-		// one.
-		ni.PreferredDERP = c.pickDERPFallback()
-	}
-	if !c.setNearestDERP(ni.PreferredDERP) {
-		ni.PreferredDERP = 0
-	}
 
 	c.callNetInfoCallback(ni)
 	return report, nil
