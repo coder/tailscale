@@ -358,6 +358,7 @@ func NewServer(privateKey key.NodePrivate, logf logger.Logf) *Server {
 		clients:              map[key.NodePublic]*clientSet{},
 		clientsMesh:          map[key.NodePublic]PacketForwarder{},
 		netConns:             map[Conn]chan struct{}{},
+		watchers:             set.Set[*sclient]{},
 		memSys0:              ms.Sys,
 		peerGoneWatchers:     map[key.NodePublic]set.HandleSet[func(key.NodePublic)]{},
 		avgQueueDuration:     new(uint64),
