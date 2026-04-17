@@ -42,3 +42,18 @@ func (s *HandleSet[T]) Add(e T) Handle {
 	(*s)[h] = e
 	return h
 }
+
+// Of returns a new set constructed from the elements in slice.
+func Of[T comparable](slice ...T) Set[T] {
+	s := make(Set[T])
+	s.AddSlice(slice)
+	return s
+}
+
+// AddSlice adds all elements of slice to the set.
+func (s Set[T]) AddSlice(slice []T) {
+	for _, e := range slice {
+		s.Add(e)
+	}
+}
+
