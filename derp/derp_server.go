@@ -81,6 +81,7 @@ const (
 	// paying the bills.  In testing, it increases DERP throughput up to 6x.
 	defaultPerClientSendQueueDepth = 512
 	DefaultTCPWiteTimeout          = 2 * time.Second
+	privilegedWriteTimeout         = 30 * time.Second // for clients with the mesh key
 )
 
 func getPerClientSendQueueDepth() int {
@@ -1684,6 +1685,9 @@ func (c *sclient) sendLoop(ctx context.Context) error {
 
 func (c *sclient) setWriteDeadline() {
 	d := c.s.tcpWriteTimeout
+	if c.canMesh {
+		d = privilegedWriteTimeout
+	}
 	if d == 0 {
 		// A zero value should disable the write deadline per
 		// --tcp-write-timeout docs.
