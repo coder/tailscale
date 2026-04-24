@@ -357,6 +357,10 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 	if tcpipErr != nil {
 		return nil, fmt.Errorf("could not set cubic congestion control: %v", tcpipErr)
 	}
+	// Coder: set max TCP retries to 5 for reasonable send timeouts (~15-30s)
+	// instead of gVisor default of 15 retries (10+ minutes).
+	maxRetries := tcpip.TCPMaxRetriesOption(5)
+	ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &maxRetries)
 	err := setTCPBufSizes(ipstack)
 	if err != nil {
 		return nil, err
