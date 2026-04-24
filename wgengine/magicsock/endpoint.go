@@ -99,6 +99,7 @@ type endpoint struct {
 	expired         bool // whether the node has expired
 	isWireguardOnly bool // whether the endpoint is WireGuard only
 	relayCapable    bool // whether the node is capable of speaking via a [tailscale.com/net/udprelay.Server]
+	blockEndpoints  bool // whether to block UDP endpoints and force DERP-only traffic
 }
 
 // udpRelayEndpointReady determines whether the given relay [addrQuality] should
@@ -567,6 +568,10 @@ func (de *endpoint) DstToBytes() []byte  { return packIPPort(de.fakeWGAddr) }
 //
 // TODO(val): Rewrite the addrFor*Locked() variations to share code.
 func (de *endpoint) addrForSendLocked(now mono.Time) (udpAddr epAddr, derpAddr netip.AddrPort, sendWGPing bool) {
+	if de.blockEndpoints {
+		return epAddr{}, de.derpAddr, false
+	}
+
 	udpAddr = de.bestAddr.epAddr
 
 	if udpAddr.ap.IsValid() && !now.After(de.trustBestAddrUntil) {
@@ -1522,7 +1527,9 @@ func (de *endpoint) updateFromNode(n tailcfg.NodeView, heartbeatDisabled bool, p
 		de.derpAddr = newDerp
 	}
 
-	de.setEndpointsLocked(n.Endpoints())
+	if !de.blockEndpoints {
+		de.setEndpointsLocked(n.Endpoints())
+	}
 
 	de.relayCapable = capVerIsRelayCapable(n.Cap())
 }
@@ -1579,6 +1586,10 @@ func (de *endpoint) addCandidateEndpoint(ep netip.AddrPort, forRxPingTxID stun.T
 	de.mu.Lock()
 	defer de.mu.Unlock()
 
+	if de.blockEndpoints {
+		return false
+	}
+
 	if st, ok := de.endpointState[ep]; ok {
 		duplicatePing = forRxPingTxID == st.lastGotPingTxID
 		if !duplicatePing {
@@ -1620,6 +1631,19 @@ func (de *endpoint) clearBestAddrLocked() {
 	de.setBestAddrLocked(addrQuality{})
 	de.bestAddrAt = 0
 	de.trustBestAddrUntil = 0
+}
+
+// setBlockEndpoints sets whether to block UDP endpoints for this peer,
+// clearing any existing direct address state when blocking.
+func (de *endpoint) setBlockEndpoints(blocked bool) {
+	de.mu.Lock()
+	defer de.mu.Unlock()
+	de.blockEndpoints = blocked
+	if blocked {
+		de.clearBestAddrLocked()
+		de.endpointState = map[netip.AddrPort]*endpointState{}
+		de.isCallMeMaybeEP = map[netip.AddrPort]bool{}
+	}
 }
 
 // noteBadEndpoint marks udpAddr as a bad endpoint that would need to be
@@ -1926,6 +1950,10 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
 	}
 	de.mu.Lock()
 	defer de.mu.Unlock()
+
+	if de.blockEndpoints {
+		return
+	}
 
 	now := time.Now()
 	for ep := range de.isCallMeMaybeEP {

@@ -406,6 +406,10 @@ type Conn struct {
 	// to the node.
 	staticEndpoints views.Slice[netip.AddrPort]
 
+	// blockEndpoints, if true, suppresses UDP endpoint advertisement,
+	// discovery, and usage, forcing all traffic through DERP relays.
+	blockEndpoints bool
+
 	// metrics contains the metrics for the magicsock instance.
 	metrics *metrics
 
@@ -423,6 +427,22 @@ type Conn struct {
 // controls which gets even printed or uploaded at any level.
 func (c *Conn) SetDebugLoggingEnabled(v bool) {
 	c.debugLogging.Store(v)
+}
+
+// SetBlockEndpoints sets whether to block UDP endpoints, forcing all traffic
+// through DERP relays.
+func (c *Conn) SetBlockEndpoints(block bool) {
+	c.mu.Lock()
+	c.blockEndpoints = block
+	var eps []*endpoint
+	c.peerMap.forEachEndpoint(func(ep *endpoint) {
+		eps = append(eps, ep)
+	})
+	c.mu.Unlock()
+	for _, ep := range eps {
+		ep.setBlockEndpoints(block)
+	}
+	c.ReSTUN("block-endpoints-changed")
 }
 
 // dlogf logs a debug message if debug logging is enabled via SetDebugLoggingEnabled.
@@ -499,6 +519,10 @@ type Options struct {
 	// DisablePortMapper, if true, disables the portmapper.
 	// This is primarily useful in tests.
 	DisablePortMapper bool
+
+	// BlockEndpoints, if true, suppresses UDP endpoint advertisement,
+	// discovery, and usage, forcing all traffic through DERP relays.
+	BlockEndpoints bool
 }
 
 func (o *Options) logf() logger.Logf {
@@ -672,6 +696,7 @@ func NewConn(opts Options) (*Conn, error) {
 	c.netMon = opts.NetMon
 	c.health = opts.HealthTracker
 	c.getPeerByKey = opts.PeerByKeyFunc
+	c.blockEndpoints = opts.BlockEndpoints
 
 	if err := c.rebind(keepCurrentPort); err != nil {
 		return nil, err
@@ -948,6 +973,10 @@ func (c *Conn) setEndpoints(endpoints []tailcfg.Endpoint) (changed bool) {
 		// tests. But a protocol rewrite might happen first.
 		c.dlogf("[v1] magicsock: ignoring pre-DERP map, STUN-less endpoint update: %v", endpoints)
 		return false
+	}
+
+	if c.blockEndpoints {
+		endpoints = nil
 	}
 
 	c.lastEndpointsTime = time.Now()
@@ -2305,6 +2334,10 @@ func (c *Conn) handleDiscoMessage(msg []byte, src epAddr, shouldBeRelayHandshake
 			c.logf("magicsock: disco: ignoring %s from %v; disable-relay-client node attr is set", msgType, sender.ShortString())
 			return
 		}
+		if c.blockEndpoints {
+			c.dlogf("[v1] magicsock: disco: ignoring %s from %v; blockEndpoints is set", msgType, sender.ShortString())
+			return
+		}
 
 		ep.mu.Lock()
 		relayCapable := ep.relayCapable
@@ -2616,6 +2649,9 @@ func (c *Conn) enqueueCallMeMaybe(derpAddr netip.AddrPort, de *endpoint) {
 	eps := make([]netip.AddrPort, 0, len(c.lastEndpoints))
 	for _, ep := range c.lastEndpoints {
 		eps = append(eps, ep.Addr)
+	}
+	if c.blockEndpoints {
+		eps = eps[:0]
 	}
 	go de.c.sendDiscoMessage(epAddr{ap: derpAddr}, de.publicKey, epDisco.key, &disco.CallMeMaybe{MyNumber: eps}, discoLog)
 	if debugSendCallMeUnknownPeer() {
@@ -3134,6 +3170,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
 			endpointState:     map[netip.AddrPort]*endpointState{},
 			heartbeatDisabled: flags.heartbeatDisabled,
 			isWireguardOnly:   n.IsWireGuardOnly(),
+			blockEndpoints:    c.blockEndpoints,
 		}
 		switch runtime.GOOS {
 		case "ios", "android":
@@ -3411,6 +3448,9 @@ func (c *Conn) goroutinesRunningLocked() bool {
 }
 
 func (c *Conn) shouldDoPeriodicReSTUNLocked() bool {
+	if c.blockEndpoints {
+		return false
+	}
 	if c.networkDown() || c.homeless {
 		return false
 	}
