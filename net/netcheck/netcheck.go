@@ -1223,7 +1223,8 @@ func (c *Client) measureAllICMPLatency(ctx context.Context, rs *reportState, nee
 	p := ping.New(ctx, c.logf, netns.Listener(c.logf, c.NetMon))
 	defer p.Close()
 
-	c.logf("UDP is blocked, trying ICMP")
+	// Coder: this log is misleading when we intentionally have no STUN nodes.
+	// c.logf("UDP is blocked, trying ICMP")
 
 	var wg sync.WaitGroup
 	wg.Add(len(need))
@@ -1589,7 +1590,11 @@ func (rs *reportState) runProbe(ctx context.Context, dm *tailcfg.DERPMap, probe 
 		panic("bad probe proto " + fmt.Sprint(probe.proto))
 	}
 
+	c.vlogf("sending STUN probe %v to %v", probe.node, addr)
 	n, err := rs.c.SendPacket(req, addr)
+	if err != nil {
+		c.vlogf("STUN probe %v to %v error: %v", probe.node, addr, err)
+	}
 	if n == len(req) && err == nil || neterror.TreatAsLostUDP(err) {
 		rs.mu.Lock()
 		switch probe.proto {
