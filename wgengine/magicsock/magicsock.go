@@ -925,7 +925,7 @@ func (c *Conn) updateEndpoints(why string) {
 		c.muCond.Broadcast()
 	}()
 	c.dlogf("[v1] magicsock: starting endpoint update (%s)", why)
-	if c.noV4Send.Load() && runtime.GOOS != "js" && !c.onlyTCP443.Load() && !hostinfo.IsInVM86() {
+	if c.noV4Send.Load() && c.derpMapHasSTUNNodes() && runtime.GOOS != "js" && !c.onlyTCP443.Load() && !hostinfo.IsInVM86() {
 		c.mu.Lock()
 		closed := c.closed
 		c.mu.Unlock()
@@ -2731,6 +2731,12 @@ func (c *Conn) SetDERPTLSConfig(cfg *tls.Config) {
 // SetDERPForceWebsockets sets whether to force WebSocket connections to DERP servers.
 func (c *Conn) SetDERPForceWebsockets(v bool) {
 	c.derpForceWebsockets.Store(v)
+}
+
+func (c *Conn) derpMapHasSTUNNodes() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.derpMap != nil && c.derpMap.HasSTUN()
 }
 
 // SetPrivateKey sets the connection's private key.
