@@ -136,6 +136,10 @@ func (c *Client) RunWatchConnectionLoop(ctx context.Context, ignoreServerKey key
 			sleep(retryInterval)
 			continue
 		}
+		c.mu.Lock()
+		lastConnGen = c.connGen
+		c.mu.Unlock()
+
 		selfConnect := c.ServerPublicKey() == ignoreServerKey
 		if f := testHookWatchLookConnectResult; f != nil && !f(err, selfConnect) {
 			return
@@ -145,6 +149,20 @@ func (c *Client) RunWatchConnectionLoop(ctx context.Context, ignoreServerKey key
 			return
 		}
 		for {
+			// If the connection changed since we last subscribed to
+			// watch changes, break out to re-send WatchConnectionChanges
+			// on the new connection. Without this, RecvDetail would call
+			// connect() and pick up the new (unsubscribed) connection,
+			// blocking forever on Recv with no watch messages coming.
+			c.mu.Lock()
+			curConnGen := c.connGen
+			c.mu.Unlock()
+			if curConnGen != lastConnGen {
+				lastConnGen = curConnGen
+				clear()
+				break
+			}
+
 			m, connGen, err := c.RecvDetail()
 			if err != nil {
 				clear()
