@@ -202,6 +202,8 @@ func (src *NetInfo) Clone() *NetInfo {
 	dst := new(NetInfo)
 	*dst = *src
 	dst.DERPLatency = maps.Clone(src.DERPLatency)
+	dst.DERPLatencyV4 = maps.Clone(src.DERPLatencyV4)
+	dst.DERPLatencyV6 = maps.Clone(src.DERPLatencyV6)
 	return dst
 }
 
@@ -219,6 +221,17 @@ var _NetInfoCloneNeedsRegeneration = NetInfo(struct {
 	PreferredDERP         int
 	LinkType              string
 	DERPLatency           map[string]float64
+	DERPLatencyV4         map[int]float64
+	DERPLatencyV6         map[int]float64
+	UDP                   bool
+	IPv6                  bool
+	IPv4                  bool
+	IPv6CanSend           bool
+	IPv4CanSend           bool
+	ICMPv4                bool
+	GlobalV4              string
+	GlobalV6              string
+	CaptivePortal         opt.Bool
 	FirewallMode          string
 }{})
 

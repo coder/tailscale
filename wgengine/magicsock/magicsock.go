@@ -1073,6 +1073,23 @@ func (c *Conn) updateNetInfo(ctx context.Context) (*netcheck.Report, error) {
 	for rid, d := range report.RegionV6Latency {
 		ni.DERPLatency[fmt.Sprintf("%d-v6", rid)] = d.Seconds()
 	}
+	ni.DERPLatencyV4 = make(map[int]float64)
+	for rid, d := range report.RegionV4Latency {
+		ni.DERPLatencyV4[rid] = d.Seconds()
+	}
+	ni.DERPLatencyV6 = make(map[int]float64)
+	for rid, d := range report.RegionV6Latency {
+		ni.DERPLatencyV6[rid] = d.Seconds()
+	}
+	ni.UDP = report.UDP
+	ni.IPv6 = report.IPv6
+	ni.IPv4 = report.IPv4
+	ni.IPv4CanSend = report.IPv4CanSend
+	ni.IPv6CanSend = report.IPv6CanSend
+	ni.ICMPv4 = report.ICMPv4
+	ni.GlobalV4 = report.GlobalV4.String()
+	ni.GlobalV6 = report.GlobalV6.String()
+	ni.CaptivePortal = report.CaptivePortal
 	ni.WorkingIPv6.Set(report.IPv6)
 	ni.OSHasIPv6.Set(report.OSHasIPv6)
 	ni.WorkingUDP.Set(report.UDP)

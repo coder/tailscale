@@ -1074,6 +1074,19 @@ type NetInfo struct {
 	// the control plane.
 	DERPLatency map[string]float64 `json:",omitempty"`
 
+	// Coder fields for extended network diagnostics
+	DERPLatencyV4 map[int]float64 `json:",omitempty"`
+	DERPLatencyV6 map[int]float64 `json:",omitempty"`
+	UDP           bool            `json:",omitempty"`
+	IPv6          bool            `json:",omitempty"`
+	IPv4          bool            `json:",omitempty"`
+	IPv6CanSend   bool            `json:",omitempty"`
+	IPv4CanSend   bool            `json:",omitempty"`
+	ICMPv4        bool
+	GlobalV4      string
+	GlobalV6      string
+	CaptivePortal opt.Bool
+
 	// FirewallMode encodes both which firewall mode was selected and why.
 	// It is Linux-specific (at least as of 2023-08-19) and is meant to help
 	// debug iptables-vs-nftables issues. The string is of the form
@@ -1143,7 +1156,16 @@ func (ni *NetInfo) BasicallyEqual(ni2 *NetInfo) bool {
 		ni.PCP == ni2.PCP &&
 		ni.PreferredDERP == ni2.PreferredDERP &&
 		ni.LinkType == ni2.LinkType &&
-		ni.FirewallMode == ni2.FirewallMode
+		ni.FirewallMode == ni2.FirewallMode &&
+		ni.UDP == ni2.UDP &&
+		ni.IPv6 == ni2.IPv6 &&
+		ni.IPv4 == ni2.IPv4 &&
+		ni.IPv6CanSend == ni2.IPv6CanSend &&
+		ni.IPv4CanSend == ni2.IPv4CanSend &&
+		ni.ICMPv4 == ni2.ICMPv4 &&
+		ni.GlobalV4 == ni2.GlobalV4 &&
+		ni.GlobalV6 == ni2.GlobalV6 &&
+		ni.CaptivePortal == ni2.CaptivePortal
 }
 
 // Equal reports whether h and h2 are equal.
