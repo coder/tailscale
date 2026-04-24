@@ -361,6 +361,9 @@ func (c *Conn) derpWriteChanForRegion(regionID int, peer key.NodePublic) chan de
 	dc.NotePreferred(c.myDerp == regionID)
 	dc.SetAddressFamilySelector(derpAddrFamSelector{c})
 	dc.DNSCache = dnscache.Get()
+	if header := c.derpHeader.Load(); header != nil {
+		dc.Header = header.Clone()
+	}
 
 	ctx, cancel := context.WithCancel(c.connCtx)
 	ch := make(chan derpWriteRequest, derpWriteQueueDepth)

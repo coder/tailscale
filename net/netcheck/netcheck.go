@@ -227,6 +227,10 @@ type Client struct {
 	// If false, the default net.Resolver will be used, with no caching.
 	UseDNSCache bool
 
+	// GetDERPHeaders optionally returns extra HTTP headers to send
+	// in DERP HTTP requests.
+	GetDERPHeaders func() http.Header
+
 	// if non-zero, force this DERP region to be preferred in all reports where
 	// the DERP is found to be reachable.
 	ForcePreferredDERP int
@@ -1116,6 +1120,9 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
 
 	dc := derphttp.NewNetcheckClient(c.logf, c.NetMon)
 	defer dc.Close()
+	if c.GetDERPHeaders != nil {
+		dc.Header = c.GetDERPHeaders()
+	}
 
 	// DialRegionTLS may dial multiple times if a node is not available, as such
 	// it does not have stable timing to measure.
@@ -1159,6 +1166,13 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
 	req, err := http.NewRequestWithContext(ctx, "GET", "https://"+node.HostName+"/derp/latency-check", nil)
 	if err != nil {
 		return 0, ip, err
+	}
+	if c.GetDERPHeaders != nil {
+		for k, vs := range c.GetDERPHeaders() {
+			for _, v := range vs {
+				req.Header.Add(k, v)
+			}
+		}
 	}
 
 	startTime := c.timeNow()

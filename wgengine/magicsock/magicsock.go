@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/netip"
 	"reflect"
 	"runtime"
@@ -251,6 +252,7 @@ type Conn struct {
 	derpMapAtomic atomic.Pointer[tailcfg.DERPMap]
 
 	lastNetCheckReport atomic.Pointer[netcheck.Report]
+	derpHeader         atomic.Pointer[http.Header]
 
 	// port is the preferred port from opts.Port; 0 means auto.
 	port atomic.Uint32
@@ -680,6 +682,13 @@ func NewConn(opts Options) (*Conn, error) {
 		SkipExternalNetwork: inTest(),
 		PortMapper:          c.portMapper,
 		UseDNSCache:         true,
+		GetDERPHeaders: func() http.Header {
+			h := c.derpHeader.Load()
+			if h == nil {
+				return nil
+			}
+			return h.Clone()
+		},
 	}
 
 	c.metrics = registerMetrics(opts.Metrics)
@@ -2668,6 +2677,11 @@ func (c *Conn) SetPreferredPort(port uint16) {
 		return
 	}
 	c.resetEndpointStates()
+}
+
+// SetDERPHeader sets extra HTTP headers to send in DERP connections.
+func (c *Conn) SetDERPHeader(header http.Header) {
+	c.derpHeader.Store(&header)
 }
 
 // SetPrivateKey sets the connection's private key.

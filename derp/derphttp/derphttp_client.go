@@ -56,6 +56,7 @@ import (
 // has been called).
 type Client struct {
 	TLSConfig     *tls.Config        // optional; nil means default
+	Header        http.Header        // optional; extra HTTP headers to send in DERP requests
 	HealthTracker *health.Tracker    // optional; used if non-nil only
 	DNSCache      *dnscache.Resolver // optional; nil means no caching
 	MeshKey       key.DERPMesh       // optional; for trusted clients
@@ -502,6 +503,11 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 	}
 	req.Header.Set("Upgrade", "DERP")
 	req.Header.Set("Connection", "Upgrade")
+	for k, vs := range c.Header {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
 	if !idealNodeInRegion && reg != nil {
 		// This is purely informative for now (2024-07-06) for stats:
 		req.Header.Set(derp.IdealNodeHeader, reg.Nodes[0].Name)
