@@ -42,6 +42,7 @@ var (
 	ula4To6Range oncePrefix
 	ulaEph6Range oncePrefix
 	serviceIPv6  oncePrefix
+	coderV6Range oncePrefix
 )
 
 // TailscaleServiceIP returns the IPv4 listen address of services
@@ -86,6 +87,18 @@ func IsTailscaleIPv4(ip netip.Addr) bool {
 func TailscaleULARange() netip.Prefix {
 	tsUlaRange.Do(func() { mustPrefix(&tsUlaRange.v, "fd7a:115c:a1e0::/48") })
 	return tsUlaRange.v
+}
+
+// CoderV6Range returns the IPv6 Unique Local Address range that
+// Coder uses for its VPN addresses.
+func CoderV6Range() netip.Prefix {
+	coderV6Range.Do(func() { mustPrefix(&coderV6Range.v, "fd60:627a:a42b::/48") })
+	return coderV6Range.v
+}
+
+// IsCoderIP reports whether ip is an IP address in Coder's VPN range.
+func IsCoderIP(ip netip.Addr) bool {
+	return CoderV6Range().Contains(ip)
 }
 
 // TailscaleViaRange returns the IPv6 Unique Local Address subset range
