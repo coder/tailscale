@@ -629,6 +629,17 @@ func TestNetInfoFields(t *testing.T) {
 		"PreferredDERP",
 		"LinkType",
 		"DERPLatency",
+		"DERPLatencyV4",
+		"DERPLatencyV6",
+		"UDP",
+		"IPv6",
+		"IPv4",
+		"IPv6CanSend",
+		"IPv4CanSend",
+		"ICMPv4",
+		"GlobalV4",
+		"GlobalV6",
+		"CaptivePortal",
 		"FirewallMode",
 	}
 	if have := fieldsOf(reflect.TypeFor[NetInfo]()); !reflect.DeepEqual(have, handled) {
