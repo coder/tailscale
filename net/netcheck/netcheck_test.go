@@ -1089,3 +1089,102 @@ func TestNeverPickSTUNOnlyRegionAsPreferredDERP(t *testing.T) {
 	}
 }
 
+func derpMapBySTUNPort(stunPort int, regionCount int) *tailcfg.DERPMap {
+	dm := &tailcfg.DERPMap{Regions: make(map[int]*tailcfg.DERPRegion)}
+	for i := 1; i <= regionCount; i++ {
+		dm.Regions[i] = &tailcfg.DERPRegion{
+			RegionID: i,
+			Nodes: []*tailcfg.DERPNode{{
+				Name:     fmt.Sprintf("derp%d", i),
+				RegionID: i,
+				HostName: fmt.Sprintf("derp%d.example.com", i),
+				IPv4:     fmt.Sprintf("1.2.3.%d", i),
+				STUNPort: stunPort,
+			}},
+		}
+	}
+	return dm
+}
+
+func reportLatencyAscending(regionCount int) *Report {
+	r := &Report{
+		RegionLatency:   make(map[int]time.Duration),
+		RegionV4Latency: make(map[int]time.Duration),
+	}
+	for i := 1; i <= regionCount; i++ {
+		d := time.Duration(i) * time.Millisecond
+		r.RegionLatency[i] = d
+		r.RegionV4Latency[i] = d
+	}
+	return r
+}
+
+func Test_makeProbePlan_incremental(t *testing.T) {
+	ifState := &netmon.State{
+		HaveV4: true,
+		HaveV6: true,
+	}
+
+	t.Run("slowSTUN", func(t *testing.T) {
+		dm := derpMapBySTUNPort(-1, 5)
+		last := reportLatencyAscending(5)
+		plan := makeProbePlan(dm, ifState, last, 0)
+		if len(plan) != 0 {
+			t.Errorf("expected empty plan for STUNPort=-1, got %d entries: %v", len(plan), plan)
+		}
+	})
+
+	t.Run("fastSTUN", func(t *testing.T) {
+		dm := derpMapBySTUNPort(3478, 5)
+		last := reportLatencyAscending(5)
+		plan := makeProbePlan(dm, ifState, last, 0)
+		if len(plan) == 0 {
+			t.Fatal("expected non-empty plan for STUNPort=3478")
+		}
+		// Fastest two regions get v4+v6 (4 entries), 3rd region gets v4 only
+		// (no prior v6 latency → do6=false for non-fastest regions) = 5 total.
+		if len(plan) != 5 {
+			t.Errorf("expected 5 plan entries, got %d: %v", len(plan), plan)
+		}
+	})
+
+	t.Run("dualStack", func(t *testing.T) {
+		// With 5 STUN-capable regions, the first 2 (fastest) get both v4+v6,
+		// and the 3rd alternates. Verify that the 3rd region gets only one protocol.
+		dm := derpMapBySTUNPort(3478, 5)
+		last := &Report{
+			RegionLatency:   make(map[int]time.Duration),
+			RegionV4Latency: make(map[int]time.Duration),
+			RegionV6Latency: make(map[int]time.Duration),
+		}
+		for i := 1; i <= 5; i++ {
+			d := time.Duration(i) * time.Millisecond
+			last.RegionLatency[i] = d
+			last.RegionV4Latency[i] = d
+			last.RegionV6Latency[i] = d
+		}
+		plan := makeProbePlan(dm, ifState, last, 0)
+		// Fastest two (regions 1,2) should have both v4 and v6.
+		// Region 3 (numSTUN=2, even) should get v4 only.
+		if _, ok := plan["region-1-v4"]; !ok {
+			t.Error("missing region-1-v4")
+		}
+		if _, ok := plan["region-1-v6"]; !ok {
+			t.Error("missing region-1-v6")
+		}
+		if _, ok := plan["region-2-v4"]; !ok {
+			t.Error("missing region-2-v4")
+		}
+		if _, ok := plan["region-2-v6"]; !ok {
+			t.Error("missing region-2-v6")
+		}
+		// Region 3 is the third sorted region; numSTUN=2 at that point (even), so v4 only.
+		if _, ok := plan["region-3-v4"]; !ok {
+			t.Error("missing region-3-v4")
+		}
+		if _, ok := plan["region-3-v6"]; ok {
+			t.Error("region-3 should not have v6 (dual-stack alternation, numSTUN=2 is even → v4 only)")
+		}
+	})
+}
+

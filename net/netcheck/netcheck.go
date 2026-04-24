@@ -465,9 +465,10 @@ func makeProbePlan(dm *tailcfg.DERPMap, ifState *netmon.State, last *Report, pre
 	// planContainsHome indicates whether the home DERP has been added to the probePlan,
 	// if there is no prior home, then there's no home to additionally include.
 	planContainsHome := preferredDERP == 0
-	for ri, reg := range sortRegions(dm, last, preferredDERP) {
+	numSTUN := 0
+	for _, reg := range sortRegions(dm, last, preferredDERP) {
 		regIsHome := reg.RegionID == preferredDERP
-		if ri >= numIncrementalRegions {
+		if numSTUN >= numIncrementalRegions {
 			// planned at least numIncrementalRegions regions and that includes the
 			// last home region (or there was none), plan complete.
 			if planContainsHome {
@@ -486,14 +487,14 @@ func makeProbePlan(dm *tailcfg.DERPMap, ifState *netmon.State, last *Report, pre
 		// By default, each node only gets one STUN packet sent,
 		// except the fastest two from the previous round.
 		tries := 1
-		isFastestTwo := ri < 2
+		isFastestTwo := numSTUN < 2
 
 		if isFastestTwo || regIsHome {
 			tries = 2
 		} else if hadBoth {
 			// For dual stack machines, make the 3rd & slower nodes alternate
 			// between.
-			if ri%2 == 0 {
+			if numSTUN%2 == 0 {
 				do4, do6 = true, false
 			} else {
 				do4, do6 = false, true
@@ -519,6 +520,9 @@ func makeProbePlan(dm *tailcfg.DERPMap, ifState *netmon.State, last *Report, pre
 				do6 = false
 			}
 			n := reg.Nodes[try%len(reg.Nodes)]
+			if n.STUNPort < 0 {
+				continue
+			}
 			prevLatency := cmp.Or(
 				last.RegionLatency[reg.RegionID]*120/100,
 				defaultActiveRetransmitTime)
@@ -538,6 +542,9 @@ func makeProbePlan(dm *tailcfg.DERPMap, ifState *netmon.State, last *Report, pre
 		}
 		if len(p6) > 0 {
 			plan[fmt.Sprintf("region-%d-v6", reg.RegionID)] = p6
+		}
+		if len(p4) > 0 || len(p6) > 0 {
+			numSTUN++
 		}
 	}
 	return plan
@@ -914,6 +921,9 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap, opts *GetRe
 	var plan probePlan
 	if opts == nil || !opts.OnlyTCP443 {
 		plan = makeProbePlan(dm, ifState, last, preferredDERP)
+		if len(plan) == 0 {
+			c.logf("empty probe plan; do we have STUN regions?")
+		}
 	}
 
 	// If we're doing a full probe, also check for a captive portal. We
