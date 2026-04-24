@@ -231,6 +231,10 @@ type Client struct {
 	// in DERP HTTP requests.
 	GetDERPHeaders func() http.Header
 
+	// DERPTLSConfig optionally specifies the TLS configuration to use
+	// when connecting to DERP servers.
+	DERPTLSConfig *tls.Config
+
 	// if non-zero, force this DERP region to be preferred in all reports where
 	// the DERP is found to be reachable.
 	ForcePreferredDERP int
@@ -1122,6 +1126,9 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
 	defer dc.Close()
 	if c.GetDERPHeaders != nil {
 		dc.Header = c.GetDERPHeaders()
+	}
+	if c.DERPTLSConfig != nil {
+		dc.TLSConfig = c.DERPTLSConfig
 	}
 
 	// DialRegionTLS may dial multiple times if a node is not available, as such
