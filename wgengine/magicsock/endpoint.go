@@ -26,6 +26,7 @@ import (
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/net/packet"
 	"tailscale.com/net/stun"
+	"tailscale.com/net/tsaddr"
 	"tailscale.com/net/tstun"
 	"tailscale.com/syncs"
 	"tailscale.com/tailcfg"
@@ -1967,6 +1968,9 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
 			// We send these out, but ignore them for now.
 			// TODO: teach the ping code to ping on all interfaces
 			// for these.
+			continue
+		}
+		if tsaddr.IsCoderIP(ep.Addr()) {
 			continue
 		}
 		mak.Set(&de.isCallMeMaybeEP, ep, true)
