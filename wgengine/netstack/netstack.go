@@ -348,15 +348,14 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 	if tcpipErr != nil {
 		return nil, fmt.Errorf("could not disable TCP RACK: %v", tcpipErr)
 	}
-	// gVisor defaults to reno at the time of writing. We explicitly set reno
-	// congestion control in order to prevent unexpected changes. Netstack
-	// has an int overflow in sender congestion window arithmetic that is more
-	// prone to trigger with cubic congestion control.
+	// Use CUBIC congestion control for better throughput. The gVisor int
+	// overflow in sender congestion window arithmetic (more prone to trigger
+	// with CUBIC) has been fixed.
 	// See https://github.com/google/gvisor/issues/11632
-	renoOpt := tcpip.CongestionControlOption("reno")
-	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &renoOpt)
+	cubicOpt := tcpip.CongestionControlOption("cubic")
+	tcpipErr = ipstack.SetTransportProtocolOption(tcp.ProtocolNumber, &cubicOpt)
 	if tcpipErr != nil {
-		return nil, fmt.Errorf("could not set reno congestion control: %v", tcpipErr)
+		return nil, fmt.Errorf("could not set cubic congestion control: %v", tcpipErr)
 	}
 	err := setTCPBufSizes(ipstack)
 	if err != nil {
