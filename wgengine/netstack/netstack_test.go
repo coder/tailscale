@@ -273,7 +273,7 @@ func TestShouldHandlePing(t *testing.T) {
 // looksLikeATailscaleSelfAddress reports whether addr looks like
 // a Tailscale self address, for tests.
 func looksLikeATailscaleSelfAddress(addr netip.Addr) bool {
-	return addr.Is4() && tsaddr.IsTailscaleIP(addr) ||
+	return addr.Is4() && tsaddr.IsCoderIP(addr) ||
 		addr.Is6() && tsaddr.Tailscale4To6Range().Contains(addr)
 }
 
