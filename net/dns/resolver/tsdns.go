@@ -50,7 +50,7 @@ const dnsSymbolicFQDN = "magicdns.localhost-tailscale-daemon."
 const maxResponseBytes = 4095
 
 // defaultTTL is the TTL of all responses from Resolver.
-const defaultTTL = 600 * time.Second
+const defaultTTL = 2 * time.Second
 
 var (
 	errNotQuery   = errors.New("not a DNS query")
