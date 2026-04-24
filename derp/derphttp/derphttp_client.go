@@ -60,7 +60,8 @@ type Client struct {
 	HealthTracker *health.Tracker    // optional; used if non-nil only
 	DNSCache      *dnscache.Resolver // optional; nil means no caching
 	MeshKey       key.DERPMesh       // optional; for trusted clients
-	IsProber      bool               // optional; for probers to optional declare themselves as such
+	IsProber        bool               // optional; for probers to optional declare themselves as such
+	ForceWebsockets bool               // optional; if true, always use WebSockets for DERP connections
 
 	// WatchConnectionChanges is whether the client wishes to subscribe to
 	// notifications about clients connecting & disconnecting.
@@ -390,7 +391,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 	var node *tailcfg.DERPNode // nil when using c.url to dial
 	var idealNodeInRegion bool
 	switch {
-	case canWebsockets && useWebsockets():
+	case canWebsockets && (useWebsockets() || c.ForceWebsockets):
 		var urlStr string
 		if c.url != nil {
 			urlStr = c.url.String()

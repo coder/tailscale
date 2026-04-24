@@ -367,6 +367,7 @@ func (c *Conn) derpWriteChanForRegion(regionID int, peer key.NodePublic) chan de
 	if tlsCfg := c.derpTLSConfig.Load(); tlsCfg != nil {
 		dc.TLSConfig = tlsCfg
 	}
+	dc.ForceWebsockets = c.derpForceWebsockets.Load()
 
 	ctx, cancel := context.WithCancel(c.connCtx)
 	ch := make(chan derpWriteRequest, derpWriteQueueDepth)

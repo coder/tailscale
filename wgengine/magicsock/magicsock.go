@@ -255,6 +255,7 @@ type Conn struct {
 	lastNetCheckReport atomic.Pointer[netcheck.Report]
 	derpHeader         atomic.Pointer[http.Header]
 	derpTLSConfig      atomic.Pointer[tls.Config]
+	derpForceWebsockets atomic.Bool
 
 	// port is the preferred port from opts.Port; 0 means auto.
 	port atomic.Uint32
@@ -2725,6 +2726,11 @@ func (c *Conn) SetDERPHeader(header http.Header) {
 // SetDERPTLSConfig sets the TLS configuration to use when connecting to DERP servers.
 func (c *Conn) SetDERPTLSConfig(cfg *tls.Config) {
 	c.derpTLSConfig.Store(cfg)
+}
+
+// SetDERPForceWebsockets sets whether to force WebSocket connections to DERP servers.
+func (c *Conn) SetDERPForceWebsockets(v bool) {
+	c.derpForceWebsockets.Store(v)
 }
 
 // SetPrivateKey sets the connection's private key.
