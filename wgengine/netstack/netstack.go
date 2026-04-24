@@ -1644,7 +1644,15 @@ func (ns *Impl) forwardTCP(getClient func(...tcpip.SettableSocketOption) *gonet.
 	// TODO: this is racy, dialing before we register our local address. See
 	// https://github.com/tailscale/tailscale/issues/1616.
 	backend, err := dialFunc(ctx, "tcp", dialAddrStr)
-	if err != nil {
+	if err != nil && dialAddr.Addr() == netip.MustParseAddr("127.0.0.1") {
+		ipv6Addr := netip.AddrPortFrom(netip.MustParseAddr("::1"), dialAddr.Port())
+		backend, err = dialFunc(ctx, "tcp", ipv6Addr.String())
+		if err != nil {
+			ns.logf("netstack: could not connect to local backend at %s or %s: %v", dialAddrStr, ipv6Addr.String(), err)
+			return
+		}
+		dialAddrStr = ipv6Addr.String()
+	} else if err != nil {
 		ns.logf("netstack: could not connect to local backend server at %s: %v", dialAddr.String(), err)
 		return
 	}
