@@ -933,6 +933,7 @@ func (s *Server) accept(ctx context.Context, nc derp.Conn, brw *bufio.ReadWriter
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	canMesh := s.isMeshPeer(clientInfo)
 	c := &sclient{
 		connNum:        connNum,
 		s:              s,
@@ -940,7 +941,7 @@ func (s *Server) accept(ctx context.Context, nc derp.Conn, brw *bufio.ReadWriter
 		nc:             nc,
 		br:             br,
 		bw:             bw,
-		logf:           logger.WithPrefix(s.logf, fmt.Sprintf("derp client %v%s: ", remoteAddr, clientKey.ShortString())),
+		logf:           logger.WithPrefix(s.logf, fmt.Sprintf("derp client %v%s (canMesh=%t): ", remoteAddr, clientKey.ShortString(), canMesh)),
 		done:           ctx.Done(),
 		remoteIPPort:   remoteIPPort,
 		connectedAt:    s.clock.Now(),
@@ -948,7 +949,7 @@ func (s *Server) accept(ctx context.Context, nc derp.Conn, brw *bufio.ReadWriter
 		discoSendQueue: make(chan pkt, s.perClientSendQueueDepth),
 		sendPongCh:     make(chan [8]byte, 1),
 		peerGone:       make(chan peerGoneMsg),
-		canMesh:        s.isMeshPeer(clientInfo),
+		canMesh:        canMesh,
 		isNotIdealConn: IdealNodeContextKey.Value(ctx) != "",
 		peerGoneLim:    rate.NewLimiter(rate.Every(time.Second), 3),
 	}
@@ -974,12 +975,27 @@ func (s *Server) accept(ctx context.Context, nc derp.Conn, brw *bufio.ReadWriter
 		return fmt.Errorf("send server info: %v", err)
 	}
 
+	c.logConnectivityf("client connected")
 	return c.run(ctx)
 }
 
 func (s *Server) debugLogf(format string, v ...any) {
 	if s.debug {
 		s.logf(format, v...)
+	}
+}
+
+// logConnectivityf logs a message at info level if the client is a mesh peer,
+// otherwise at debug level.
+//
+// Since this can result in info logging, it should only be used for sporadic
+// logging of connectivity-related events.
+func (c *sclient) logConnectivityf(format string, v ...any) {
+	const prefix = "derper connectivity: "
+	if c.canMesh {
+		c.logf(prefix+format, v...)
+	} else {
+		c.debugLogf(prefix+format, v...)
 	}
 }
 
@@ -994,12 +1010,12 @@ func (c *sclient) run(ctx context.Context) error {
 		cancelSender()
 		if err := grp.Wait(); err != nil && !c.s.isClosed() {
 			if errors.Is(err, context.Canceled) {
-				c.debugLogf("sender canceled by reader exiting")
+				c.logConnectivityf("sender canceled by reader exiting")
 			} else {
 				if errors.Is(err, os.ErrDeadlineExceeded) {
 					c.s.sclientWriteTimeouts.Add(1)
 				}
-				c.logf("sender failed: %v", err)
+				c.logConnectivityf("sender failed: %v", err)
 			}
 		}
 	}()
@@ -1010,12 +1026,12 @@ func (c *sclient) run(ctx context.Context) error {
 		ft, fl, err := derp.ReadFrameHeader(c.br)
 		c.debugLogf("read frame type %d len %d err %v", ft, fl, err)
 		if err != nil {
+			c.logConnectivityf("read frame header err %v", err)
 			if errors.Is(err, io.EOF) {
-				c.debugLogf("read EOF")
 				return nil
 			}
 			if c.s.isClosed() {
-				c.logf("closing; server closed")
+				c.logConnectivityf("closing; server closed")
 				return nil
 			}
 			return fmt.Errorf("client %s: readFrameHeader: %w", c.key.ShortString(), err)
@@ -1038,6 +1054,7 @@ func (c *sclient) run(ctx context.Context) error {
 			err = c.handleUnknownFrame(ft, fl)
 		}
 		if err != nil {
+			c.logConnectivityf("handle frame type %d len %d err %v", ft, fl, err)
 			return err
 		}
 	}
