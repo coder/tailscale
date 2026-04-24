@@ -142,7 +142,7 @@ func (m *winMon) unicastAddressChanged(_ winipcfg.MibNotificationType, row *wini
 	}
 
 	what := "addr"
-	if ip := row.Address.Addr(); ip.IsValid() && tsaddr.IsTailscaleIP(ip.Unmap()) {
+	if ip := row.Address.Addr(); ip.IsValid() && tsaddr.IsCoderIP(ip.Unmap()) {
 		what = "tsaddr"
 	}
 
@@ -164,7 +164,7 @@ func (m *winMon) routeChanged(_ winipcfg.MibNotificationType, row *winipcfg.MibI
 
 	what := "route"
 	ip := row.DestinationPrefix.Prefix().Addr().Unmap()
-	if ip.IsValid() && tsaddr.IsTailscaleIP(ip) {
+	if ip.IsValid() && tsaddr.IsCoderIP(ip) {
 		what = "tsroute"
 	}
 	// start a goroutine to finish our work, to return to Windows out of this callback

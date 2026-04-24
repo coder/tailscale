@@ -395,7 +395,7 @@ func configureInterface(cfg *router.Config, tun *tun.NativeTun, ht *health.Track
 			// add the route unless NextHop is set, but
 			// then the interface's IP won't be pingable.
 			continue
-		case route.IsSingleIP() && (destAddr == gateway || tsaddr.IsTailscaleIP(destAddr)):
+		case route.IsSingleIP() && (destAddr == gateway || tsaddr.IsCoderIP(destAddr)):
 			// add an on-link route if the destination
 			// is the nexthop itself or a single Tailscale IP.
 			gateway = localAddr

@@ -603,10 +603,10 @@ func (c *conn) setInfo(cm gossh.ConnMetadata) error {
 		src:     toIPPort(cm.RemoteAddr()),
 		dst:     toIPPort(cm.LocalAddr()),
 	}
-	if !tsaddr.IsTailscaleIP(ci.dst.Addr()) {
+	if !tsaddr.IsCoderIP(ci.dst.Addr()) {
 		return fmt.Errorf("tailssh: rejecting non-Tailscale local address %v", ci.dst)
 	}
-	if !tsaddr.IsTailscaleIP(ci.src.Addr()) {
+	if !tsaddr.IsCoderIP(ci.src.Addr()) {
 		return fmt.Errorf("tailssh: rejecting non-Tailscale remote address %v", ci.src)
 	}
 	node, uprof, ok := c.srv.lb.WhoIs("tcp", ci.src)

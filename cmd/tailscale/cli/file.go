@@ -306,7 +306,7 @@ peerLoop:
 
 	// If we didn’t find a matching peer at all:
 	if foundPeer == nil {
-		if !tsaddr.IsTailscaleIP(ip) {
+		if !tsaddr.IsCoderIP(ip) {
 			return "", false, fmt.Errorf("unknown target; %v is not a Tailscale IP address", ip)
 		}
 		return "", false, errors.New("unknown target; not in your Tailnet")

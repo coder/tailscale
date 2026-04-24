@@ -507,7 +507,7 @@ func (d *Dialer) UserDial(ctx context.Context, network, addr string) (net.Conn, 
 	// etc. This is a temporary partial for macOS. We need to plumb ART tables &
 	// prefs & host routing table updates around in more places. We just don't
 	// know from the limited context here how to dial properly.
-	if version.IsMacGUIVariant() && tsaddr.IsTailscaleIP(ipp.Addr()) {
+	if version.IsMacGUIVariant() && tsaddr.IsCoderIP(ipp.Addr()) {
 		return d.getPeerDialer().DialContext(ctx, network, ipp.String())
 	}
 	// TODO(bradfitz): netns, etc

@@ -1388,7 +1388,7 @@ func (b *LocalBackend) populatePeerStatusLocked(sb *ipnstate.StatusBuilder) {
 		tailscaleIPs := make([]netip.Addr, 0, p.Addresses().Len())
 		for i := range p.Addresses().Len() {
 			addr := p.Addresses().At(i)
-			if addr.IsSingleIP() && tsaddr.IsTailscaleIP(addr.Addr()) {
+			if addr.IsSingleIP() && tsaddr.IsCoderIP(addr.Addr()) {
 				tailscaleIPs = append(tailscaleIPs, addr.Addr())
 			}
 		}
@@ -2986,7 +2986,7 @@ func internalAndExternalInterfacesFrom(il netmon.InterfaceList, goos string) (in
 	// and to remove any duplicate entries.
 	var internalBuilder, externalBuilder netipx.IPSetBuilder
 	if err := il.ForeachInterfaceAddress(func(iface netmon.Interface, pfx netip.Prefix) {
-		if tsaddr.IsTailscaleIP(pfx.Addr()) {
+		if tsaddr.IsCoderIP(pfx.Addr()) {
 			return
 		}
 		if pfx.IsSingleIP() {
@@ -3030,7 +3030,7 @@ func internalAndExternalInterfacesFrom(il netmon.InterfaceList, goos string) (in
 func interfaceRoutes() (ips *netipx.IPSet, hostIPs []netip.Addr, err error) {
 	var b netipx.IPSetBuilder
 	if err := netmon.ForeachInterfaceAddress(func(_ netmon.Interface, pfx netip.Prefix) {
-		if tsaddr.IsTailscaleIP(pfx.Addr()) {
+		if tsaddr.IsCoderIP(pfx.Addr()) {
 			return
 		}
 		if pfx.IsSingleIP() {

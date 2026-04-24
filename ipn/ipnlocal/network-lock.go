@@ -609,7 +609,7 @@ func tkaStateFromPeer(p tailcfg.NodeView) ipnstate.TKAPeer {
 		NodeKey:      p.Key(),
 	}
 	for _, addr := range p.Addresses().All() {
-		if addr.IsSingleIP() && tsaddr.IsTailscaleIP(addr.Addr()) {
+		if addr.IsSingleIP() && tsaddr.IsCoderIP(addr.Addr()) {
 			fp.TailscaleIPs = append(fp.TailscaleIPs, addr.Addr())
 		}
 	}

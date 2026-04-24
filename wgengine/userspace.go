@@ -1698,14 +1698,14 @@ func (e *userspaceEngine) PeerForIP(ip netip.Addr) (ret PeerForIP, ok bool) {
 	for _, p := range nm.Peers {
 		for i := range p.Addresses().Len() {
 			a := p.Addresses().At(i)
-			if a.Addr() == ip && a.IsSingleIP() && tsaddr.IsTailscaleIP(ip) {
+			if a.Addr() == ip && a.IsSingleIP() && tsaddr.IsCoderIP(ip) {
 				return PeerForIP{Node: p, Route: a}, true
 			}
 		}
 	}
 	addrs := nm.GetAddresses()
 	for i := range addrs.Len() {
-		if a := addrs.At(i); a.Addr() == ip && a.IsSingleIP() && tsaddr.IsTailscaleIP(ip) {
+		if a := addrs.At(i); a.Addr() == ip && a.IsSingleIP() && tsaddr.IsCoderIP(ip) {
 			return PeerForIP{Node: nm.SelfNode, IsSelf: true, Route: a}, true
 		}
 	}

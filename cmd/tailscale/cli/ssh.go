@@ -283,5 +283,5 @@ func isSSHOverTailscale() bool {
 	if err != nil {
 		return false
 	}
-	return tsaddr.IsTailscaleIP(ip)
+	return tsaddr.IsCoderIP(ip)
 }

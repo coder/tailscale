@@ -70,13 +70,13 @@ func visitDoctor(ctx context.Context, b *ipnlocal.LocalBackend, logf logger.Logf
 
 		for i, resolver := range nm.DNS.Resolvers {
 			ipp, ok := resolver.IPPort()
-			if ok && tsaddr.IsTailscaleIP(ipp.Addr()) {
+			if ok && tsaddr.IsCoderIP(ipp.Addr()) {
 				logf("resolver %d is a Tailscale address: %v", i, resolver)
 			}
 		}
 		for i, resolver := range nm.DNS.FallbackResolvers {
 			ipp, ok := resolver.IPPort()
-			if ok && tsaddr.IsTailscaleIP(ipp.Addr()) {
+			if ok && tsaddr.IsCoderIP(ipp.Addr()) {
 				logf("fallback resolver %d is a Tailscale address: %v", i, resolver)
 			}
 		}

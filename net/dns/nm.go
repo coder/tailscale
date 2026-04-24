@@ -154,7 +154,7 @@ func (m *nmManager) trySet(ctx context.Context, config OSConfig) error {
 			if ipnet, ok := a.(*net.IPNet); ok {
 				nip, ok := netip.AddrFromSlice(ipnet.IP)
 				nip = nip.Unmap()
-				if ok && tsaddr.IsTailscaleIP(nip) && nip.Is6() {
+				if ok && tsaddr.IsCoderIP(nip) && nip.Is6() {
 					addrs6 = append(addrs6, map[string]any{
 						"address": nip.String(),
 						"prefix":  uint32(128),

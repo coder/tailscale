@@ -549,7 +549,7 @@ func (pc *peerConfigTable) dnat(p *packet.Parsed) {
 func findV4(addrs []netip.Prefix) netip.Addr {
 	for _, ap := range addrs {
 		a := ap.Addr()
-		if a.Is4() && tsaddr.IsTailscaleIP(a) {
+		if a.Is4() && tsaddr.IsCoderIP(a) {
 			return a
 		}
 	}
@@ -560,7 +560,7 @@ func findV4(addrs []netip.Prefix) netip.Addr {
 func findV6(addrs []netip.Prefix) netip.Addr {
 	for _, ap := range addrs {
 		a := ap.Addr()
-		if a.Is6() && tsaddr.IsTailscaleIP(a) {
+		if a.Is6() && tsaddr.IsCoderIP(a) {
 			return a
 		}
 	}
