@@ -15,6 +15,7 @@ package netns
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"runtime"
@@ -22,6 +23,7 @@ import (
 
 	"tailscale.com/net/netknob"
 	"tailscale.com/net/netmon"
+	"tailscale.com/net/tsaddr"
 	"tailscale.com/types/logger"
 )
 
@@ -70,6 +72,47 @@ func SetDisableBindConnToInterfaceAppleExt(logf logger.Logf, v bool) {
 	if runtime.GOOS == "darwin" && disableBindConnToInterfaceAppleExt.Swap(v) != v {
 		logf("netns: disableBindConnToInterfaceAppleExt changed to %v", v)
 	}
+}
+
+var coderSoftIsolation atomic.Bool
+
+// SetCoderSoftIsolation enables or disables soft network isolation for Coder.
+// When enabled, connections will only be bound to the default interface when
+// the destination is a Coder IP address.
+func SetCoderSoftIsolation(v bool) {
+	coderSoftIsolation.Store(v)
+}
+
+// getAddr parses the address portion of a host:port string into a netip.Addr.
+func getAddr(address string) (netip.Addr, error) {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("failed to split host and port: %w", err)
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("failed to parse addr: %w", err)
+	}
+	return addr, nil
+}
+
+// shouldBindToDefaultInterface reports whether a connection to the given
+// address should be bound to the default network interface.
+// Returns false for localhost addresses. When soft isolation is enabled,
+// returns true only for Coder IP addresses.
+func shouldBindToDefaultInterface(logf logger.Logf, address string) bool {
+	if isLocalhost(address) {
+		return false
+	}
+	if !coderSoftIsolation.Load() {
+		return true
+	}
+	addr, err := getAddr(address)
+	if err != nil {
+		logf("[unexpected] shouldBindToDefaultInterface: %v", err)
+		return false
+	}
+	return tsaddr.IsCoderIP(addr)
 }
 
 // Listener returns a new net.Listener with its Control hook func

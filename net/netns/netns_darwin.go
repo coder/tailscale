@@ -41,7 +41,7 @@ func controlLogf(logf logger.Logf, netMon *netmon.Monitor, network, address stri
 		return nil
 	}
 
-	if isLocalhost(address) {
+	if !shouldBindToDefaultInterface(logf, address) {
 		return nil
 	}
 
@@ -162,7 +162,7 @@ func tailscaleInterface() (*net.Interface, error) {
 		for _, a := range addrs {
 			if ipnet, ok := a.(*net.IPNet); ok {
 				nip, ok := netip.AddrFromSlice(ipnet.IP)
-				if ok && tsaddr.IsTailscaleIP(nip.Unmap()) {
+				if ok && tsaddr.IsCoderIP(nip.Unmap()) {
 					return &iface, nil
 				}
 			}

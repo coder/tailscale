@@ -50,7 +50,7 @@ var bindToInterfaceByRouteEnv = envknob.RegisterBool("TS_BIND_TO_INTERFACE_BY_RO
 // controlC binds c to the Windows interface that holds a default
 // route, and is not the Tailscale WinTun interface.
 func controlC(logf logger.Logf, network, address string, c syscall.RawConn) (err error) {
-	if isLocalhost(address) {
+	if !shouldBindToDefaultInterface(logf, address) {
 		// Don't bind to an interface for localhost connections,
 		// otherwise we get:
 		//   connectex: The requested address is not valid in its context
