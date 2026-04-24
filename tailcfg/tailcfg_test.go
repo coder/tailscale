@@ -1034,3 +1034,68 @@ func TestDisplayMessageEqual(t *testing.T) {
 		})
 	}
 }
+
+func TestDERPMapHasSTUN(t *testing.T) {
+	tests := []struct {
+		name string
+		dm   *DERPMap
+		want bool
+	}{
+		{
+			name: "None",
+			dm: &DERPMap{
+				Regions: map[int]*DERPRegion{
+					1: {Nodes: []*DERPNode{{STUNPort: -1}}},
+					2: {Nodes: []*DERPNode{{STUNPort: -1}}},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "One",
+			dm: &DERPMap{
+				Regions: map[int]*DERPRegion{
+					1: {Nodes: []*DERPNode{{STUNPort: 0}}},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "Some",
+			dm: &DERPMap{
+				Regions: map[int]*DERPRegion{
+					1: {Nodes: []*DERPNode{{STUNPort: -1}}},
+					2: {Nodes: []*DERPNode{{STUNPort: 3478}}},
+				},
+			},
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.dm.HasSTUN(); got != tt.want {
+				t.Errorf("HasSTUN() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDERPMapRegionIDsNoSTUNOnly(t *testing.T) {
+	dm := &DERPMap{
+		Regions: map[int]*DERPRegion{
+			1: {Nodes: []*DERPNode{{STUNOnly: true}}},
+			2: {Nodes: []*DERPNode{{STUNOnly: false}}},
+			3: {Nodes: []*DERPNode{{STUNOnly: true}, {STUNOnly: false}}},
+		},
+	}
+	got := dm.RegionIDsNoSTUNOnly()
+	want := []int{2, 3}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
