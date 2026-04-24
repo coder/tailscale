@@ -3665,6 +3665,12 @@ func (c *Conn) rebind(curPortFate currentPortFate) error {
 // It should be followed by a call to ReSTUN.
 func (c *Conn) Rebind() {
 	metricRebindCalls.Add(1)
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return
+	}
+	c.mu.Unlock()
 	if err := c.rebind(keepCurrentPort); err != nil {
 		c.logf("%v", err)
 		return
