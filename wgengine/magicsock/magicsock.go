@@ -4036,10 +4036,6 @@ var (
 	// changed from non-zero to a different non-zero.
 	metricDERPHomeChange = clientmetric.NewCounter("derp_home_change")
 
-	// metricDERPHomeNoChangeNoControl is how many times our DERP home
-	// region did not change because we didn't have an active connection to
-	// the control server.
-	metricDERPHomeNoChangeNoControl = clientmetric.NewCounter("derp_home_no_change_no_control")
 
 	// metricDERPHomeFallback is how many times we picked a DERP fallback.
 	metricDERPHomeFallback = clientmetric.NewCounter("derp_home_fallback")

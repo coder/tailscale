@@ -30,7 +30,6 @@ import (
 	"tailscale.com/util/backoff"
 	"tailscale.com/util/mak"
 	"tailscale.com/util/rands"
-	"tailscale.com/util/testenv"
 )
 
 // frameReceiveRecordRate is the minimum time between updates to last frame
@@ -145,56 +144,21 @@ func (c *Conn) pickDERPFallback() int {
 	return ids[rands.IntN(uint64(uintptr(unsafe.Pointer(c))), len(ids))]
 }
 
-// This allows existing tests to pass, but allows us to still test the
-// behaviour during tests.
-var checkControlHealthDuringNearestDERPInTests = false
-
 // maybeSetNearestDERP selects and changes the nearest/preferred DERP server
 // based on the netcheck report and other heuristics. It returns the DERP
 // region that it selected and set (via setNearestDERP).
 //
 // c.mu must NOT be held.
 func (c *Conn) maybeSetNearestDERP(report *netcheck.Report) (preferredDERP int) {
-	// Don't change our PreferredDERP if we don't have a connection to
-	// control; if we don't, then we can't inform peers about a DERP home
-	// change, which breaks all connectivity. Even if this DERP region is
-	// down, changing our home DERP isn't correct since peers can't
-	// discover that change.
-	//
-	// See https://github.com/tailscale/corp/issues/18095
-	//
-	// For tests, always assume we're connected to control unless we're
-	// explicitly testing this behaviour.
-	//
-	// Despite the above behaviour, ensure that we set the nearest DERP if
-	// we don't currently have one set; any DERP server is better than
-	// none, even if not connected to control.
-	var connectedToControl bool
-	if testenv.InTest() && !checkControlHealthDuringNearestDERPInTests {
-		connectedToControl = true
-	} else {
-		connectedToControl = c.health.GetInPollNetMap()
-	}
-	c.mu.Lock()
-	myDerp := c.myDerp
-	c.mu.Unlock()
-	if !connectedToControl {
-		if myDerp != 0 {
-			metricDERPHomeNoChangeNoControl.Add(1)
-			return myDerp
-		}
-
-		// Intentionally fall through; we don't have a current DERP, so
-		// as mentioned above selecting one even if not connected is
-		// strictly better than doing nothing.
-	}
-
 	preferredDERP = report.PreferredDERP
 	if preferredDERP == 0 {
 		// Perhaps UDP is blocked. Pick a deterministic but arbitrary
 		// one.
 		preferredDERP = c.pickDERPFallback()
 	}
+	c.mu.Lock()
+	myDerp := c.myDerp
+	c.mu.Unlock()
 	if preferredDERP != myDerp {
 		c.logf(
 			"magicsock: home DERP changing from derp-%d [%dms] to derp-%d [%dms]",

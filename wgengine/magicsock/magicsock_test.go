@@ -3002,79 +3002,38 @@ func TestMaybeSetNearestDERP(t *testing.T) {
 	// Ensure that our fallback code always picks a deterministic value.
 	tstest.Replace(t, &pickDERPFallbackForTests, func() int { return 31 })
 
-	// Actually test this code path.
-	tstest.Replace(t, &checkControlHealthDuringNearestDERPInTests, true)
-
 	testCases := []struct {
-		name               string
-		old                int
-		reportDERP         int
-		connectedToControl bool
-		want               int
+		name       string
+		old        int
+		reportDERP int
+		want       int
 	}{
 		{
-			name:               "connected_with_report_derp",
-			old:                1,
-			reportDERP:         21,
-			connectedToControl: true,
-			want:               21,
+			name:       "with_report_derp",
+			old:        1,
+			reportDERP: 21,
+			want:       21,
 		},
 		{
-			name:               "not_connected_with_report_derp",
-			old:                1,
-			reportDERP:         21,
-			connectedToControl: false,
-			want:               1, // no change
+			name:       "no_derp",
+			old:        1,
+			reportDERP: 0,
+			want:       1, // no change
 		},
 		{
-			name:               "not_connected_with_report_derp_and_no_current",
-			old:                0,     // no current DERP
-			reportDERP:         21,    // have new DERP
-			connectedToControl: false, // not connected...
-			want:               21,    // ... but want to change to new DERP
-		},
-		{
-			name:               "not_connected_with_fallback_and_no_current",
-			old:                0,     // no current DERP
-			reportDERP:         0,     // no new DERP
-			connectedToControl: false, // not connected...
-			want:               31,    // ... but we fallback to deterministic value
-		},
-		{
-			name:               "connected_no_derp",
-			old:                1,
-			reportDERP:         0,
-			connectedToControl: true,
-			want:               1, // no change
-		},
-		{
-			name:               "connected_no_derp_fallback",
-			old:                0,
-			reportDERP:         0,
-			connectedToControl: true,
-			want:               31, // deterministic fallback
+			name:       "no_derp_fallback",
+			old:        0,
+			reportDERP: 0,
+			want:       31, // deterministic fallback
 		},
 	}
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
-			ht := health.NewTracker(eventbustest.NewBus(t))
 			c := newConn(t.Logf)
 			c.myDerp = tt.old
 			c.derpMap = derpMap
-			c.health = ht
 
 			report := &netcheck.Report{PreferredDERP: tt.reportDERP}
-
-			oldConnected := ht.GetInPollNetMap()
-			if tt.connectedToControl != oldConnected {
-				if tt.connectedToControl {
-					ht.GotStreamedMapResponse()
-					t.Cleanup(ht.SetOutOfPollNetMap)
-				} else {
-					ht.SetOutOfPollNetMap()
-					t.Cleanup(ht.GotStreamedMapResponse)
-				}
-			}
 
 			got := c.maybeSetNearestDERP(report)
 			if got != tt.want {
