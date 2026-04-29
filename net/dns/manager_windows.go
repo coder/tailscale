@@ -169,15 +169,25 @@ func (m *windowsManager) setHosts(hosts []*HostEntry) error {
 	}
 	const fileMode = 0 // ignored on windows.
 
-	// This can fail spuriously with an access denied error, so retry it a
-	// few times.
-	for i := 0; i < 5; i++ {
+	// The hosts file can be locked by antivirus, endpoint security
+	// (e.g., GlobalProtect, CrowdStrike), or Windows Defender for
+	// several seconds. Use exponential backoff to tolerate this.
+	backoff := 50 * time.Millisecond
+	const maxBackoff = 5 * time.Second
+	deadline := time.Now().Add(30 * time.Second)
+	for attempt := 0; ; attempt++ {
 		if err = atomicfile.WriteFile(hostsFile, outB, fileMode); err == nil {
 			return nil
 		}
-		time.Sleep(10 * time.Millisecond)
+		if time.Now().After(deadline) {
+			return fmt.Errorf("setHosts: failed after %d attempts over 30s: %w", attempt+1, err)
+		}
+		m.logf("setHosts: attempt %d failed, retrying in %v: %v", attempt+1, backoff, err)
+		time.Sleep(backoff)
+		if backoff *= 2; backoff > maxBackoff {
+			backoff = maxBackoff
+		}
 	}
-	return err
 }
 
 // setPrimaryDNS sets the given resolvers and domains as the Tailscale

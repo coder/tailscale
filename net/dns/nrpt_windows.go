@@ -67,6 +67,7 @@ type nrptRuleDatabase struct {
 	isGPRefreshPending atomic.Bool
 	mu                 sync.Mutex // protects the fields below
 	ruleIDs            []string
+	staleRuleIDs       []string // rule IDs inherited from a previous run, cleaned up on first WriteSplitDNSConfig
 	isGPDirty          bool
 	writeAsGP          bool
 }
@@ -76,13 +77,17 @@ func newNRPTRuleDatabase(logf logger.Logf) *nrptRuleDatabase {
 	ret.loadRuleSubkeyNames()
 	ret.detectWriteAsGP()
 	ret.watchForGPChanges()
-	// Best-effort: if our NRPT rule exists, try to delete it. Unlike
-	// per-interface configuration, NRPT rules survive the unclean
-	// termination of the Tailscale process, and depending on the
-	// rule, it may prevent us from reaching login.tailscale.com to
-	// boot up. The bootstrap resolver logic will save us, but it
-	// slows down start-up a bunch.
-	ret.DelAllRuleKeys()
+	// Track existing NRPT rules as stale rather than deleting them
+	// immediately. This preserves DNS routing for .coder queries
+	// during the gap between engine startup and the first successful
+	// DNS configuration. Stale rules are cleaned up in the first
+	// call to WriteSplitDNSConfig, after replacement rules are
+	// confirmed written.
+	if len(ret.ruleIDs) > 0 {
+		ret.staleRuleIDs = make([]string, len(ret.ruleIDs))
+		copy(ret.staleRuleIDs, ret.ruleIDs)
+		logf("preserved %d existing NRPT rule(s) as stale, will clean up on first config", len(ret.staleRuleIDs))
+	}
 	return ret
 }
 
@@ -180,6 +185,12 @@ func (db *nrptRuleDatabase) DelAllRuleKeys() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
+	// Also clean up any stale rules from a previous instance.
+	if len(db.staleRuleIDs) > 0 {
+		db.delRuleKeys(db.staleRuleIDs)
+		db.staleRuleIDs = nil
+	}
+
 	if err := db.delRuleKeys(db.ruleIDs); err != nil {
 		return err
 	}
@@ -250,6 +261,14 @@ func isPolicyConfigSubkeyEmpty() (bool, error) {
 func (db *nrptRuleDatabase) WriteSplitDNSConfig(servers []string, domains []dnsname.FQDN) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
+
+	// Clean up stale rules from a previous engine instance, now that
+	// we have new rules to replace them.
+	if len(db.staleRuleIDs) > 0 {
+		db.logf("cleaning up %d stale NRPT rule(s) from previous session", len(db.staleRuleIDs))
+		db.delRuleKeys(db.staleRuleIDs)
+		db.staleRuleIDs = nil
+	}
 
 	// NRPT has an undocumented restriction that each rule may only be associated
 	// with a maximum of 50 domains. If we are setting rules for more domains
