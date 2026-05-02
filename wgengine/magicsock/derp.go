@@ -354,6 +354,9 @@ func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) cha
 	if header != nil {
 		dc.Header = header.Clone()
 	}
+	if getHeaders := c.derpGetHeaders.Load(); getHeaders != nil {
+		dc.GetHeaders = *getHeaders
+	}
 	dc.ForceWebsockets = c.derpForceWebsockets.Load()
 	dialer := c.derpRegionDialer.Load()
 	if dialer != nil {

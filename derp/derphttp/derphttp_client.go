@@ -52,7 +52,31 @@ import (
 // Send/Recv will completely re-establish the connection (unless Close
 // has been called).
 type Client struct {
-	Header    http.Header
+	Header http.Header
+
+	// GetHeaders, if non-nil, returns a fresh set of HTTP headers to send
+	// on every (re)connect to the DERP server. When non-nil it takes
+	// precedence over Header. This is useful when a caller needs to inject
+	// short-lived authentication tokens (e.g. for an authenticating
+	// reverse proxy in front of DERP) that must be refreshed on each
+	// reconnect, rather than captured once at startup. The same pattern
+	// is already used by netcheck.Client.GetDERPHeaders.
+	//
+	// Implementations must be cheap and non-blocking: GetHeaders is invoked
+	// from connect() while the Client's internal mutex is held, so it must
+	// not call back into this Client (Send, Close, etc.) or acquire the
+	// lock of any caller that may, in turn, call into this Client (notably
+	// magicsock.Conn.mu). It should also avoid blocking I/O on the hot
+	// reconnect path; cache and refresh in the background where possible.
+	//
+	// Returning a nil http.Header is treated the same as a missing static
+	// Header: the connect request goes out without those caller-supplied
+	// headers (i.e. without auth). Implementations that fail to obtain
+	// fresh credentials should generally return the most recent known-good
+	// value rather than nil, so the server can return a clear 401 instead
+	// of a generic auth failure.
+	GetHeaders func() http.Header
+
 	TLSConfig *tls.Config        // optional; nil means default
 	DNSCache  *dnscache.Resolver // optional; nil means no caching
 	MeshKey   string             // optional; for trusted clients
@@ -111,6 +135,17 @@ type Client struct {
 
 func (c *Client) String() string {
 	return fmt.Sprintf("<derphttp_client.Client %s url=%s>", c.serverPubKey.ShortString(), c.url)
+}
+
+// headers returns the HTTP headers to send on the next DERP connection
+// attempt. If GetHeaders is set, it is invoked on every call (so callers can
+// refresh short-lived tokens). Otherwise the static Header field is used.
+// Either may be nil.
+func (c *Client) headers() http.Header {
+	if c.GetHeaders != nil {
+		return c.GetHeaders()
+	}
+	return c.Header
 }
 
 // NewRegionClient returns a new DERP-over-HTTP client. It connects lazily.
@@ -430,7 +465,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 			tlsConfig = c.tlsConfig(nil)
 		}
 		c.logf("%s: connecting websocket to %v", caller, urlStr)
-		conn, err := dialWebsocketFunc(ctx, urlStr, tlsConfig, c.Header)
+		conn, err := dialWebsocketFunc(ctx, urlStr, tlsConfig, c.headers())
 		if err != nil {
 			c.logf("%s: websocket to %v error: %v", caller, urlStr, err)
 			return nil, 0, err
@@ -533,8 +568,8 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 	if err != nil {
 		return nil, 0, err
 	}
-	if c.Header != nil {
-		req.Header = c.Header.Clone()
+	if h := c.headers(); h != nil {
+		req.Header = h.Clone()
 	}
 	req.Header.Set("Upgrade", "DERP")
 	req.Header.Set("Connection", "Upgrade")

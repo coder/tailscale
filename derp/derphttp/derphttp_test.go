@@ -324,3 +324,36 @@ func TestForceWebsockets(t *testing.T) {
 
 	c.Close()
 }
+
+func TestClientHeaders(t *testing.T) {
+	t.Run("nil when neither set", func(t *testing.T) {
+		c := &Client{}
+		if got := c.headers(); got != nil {
+			t.Fatalf("expected nil headers, got %v", got)
+		}
+	})
+	t.Run("returns Header when GetHeaders is nil", func(t *testing.T) {
+		want := http.Header{"X-Test": []string{"static"}}
+		c := &Client{Header: want}
+		if got := c.headers().Get("X-Test"); got != "static" {
+			t.Fatalf("expected static header, got %q", got)
+		}
+	})
+	t.Run("GetHeaders takes precedence and is invoked on every call", func(t *testing.T) {
+		var calls int
+		c := &Client{
+			Header: http.Header{"X-Test": []string{"static"}},
+			GetHeaders: func() http.Header {
+				calls++
+				return http.Header{"X-Test": []string{"dynamic"}}
+			},
+		}
+		if got := c.headers().Get("X-Test"); got != "dynamic" {
+			t.Fatalf("expected dynamic header, got %q", got)
+		}
+		_ = c.headers()
+		if calls != 2 {
+			t.Fatalf("expected GetHeaders to be invoked on every call, got %d calls", calls)
+		}
+	})
+}
