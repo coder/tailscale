@@ -208,8 +208,23 @@ type Client struct {
 	// probes.
 	GetDERPHeaders func() http.Header
 
+	// GetDERPTLSConfig, if non-nil, returns the TLS config and bypass-tlsdial
+	// setting to use for the next DERP probe. When set, it takes precedence
+	// over DERPTLSConfig and DERPTLSConfigBypassesTLSDial. This is useful when
+	// the DERP TLS config can be updated after the Client is constructed.
+	GetDERPTLSConfig func() (*tls.Config, bool)
+
 	// DERPTLSConfig is an optional TLS config for DERP connections.
 	DERPTLSConfig *tls.Config
+
+	// DERPTLSConfigBypassesTLSDial mirrors
+	// derphttp.Client.TLSConfigBypassesTLSDial: when true (and
+	// DERPTLSConfig is non-nil), the netcheck DERP client uses the
+	// supplied TLS config as-is instead of wrapping it via tlsdial.Config.
+	// Use this when DERPTLSConfig performs its own server verification
+	// (e.g. mTLS frameworks with custom CAs / SPIFFE-style identity), as
+	// such configs cause tlsdial.Config to panic.
+	DERPTLSConfigBypassesTLSDial bool
 
 	// For tests
 	testEnoughRegions      int
@@ -1305,8 +1320,14 @@ func (c *Client) measureHTTPLatency(ctx context.Context, reg *tailcfg.DERPRegion
 
 	dc := derphttp.NewNetcheckClient(c.logf)
 	dc.Header = derpHeaders
-	if c.DERPTLSConfig != nil {
-		dc.TLSConfig = c.DERPTLSConfig
+	derpTLSConfig := c.DERPTLSConfig
+	derpTLSConfigBypassesTLSDial := c.DERPTLSConfigBypassesTLSDial
+	if c.GetDERPTLSConfig != nil {
+		derpTLSConfig, derpTLSConfigBypassesTLSDial = c.GetDERPTLSConfig()
+	}
+	if derpTLSConfig != nil {
+		dc.TLSConfig = derpTLSConfig
+		dc.TLSConfigBypassesTLSDial = derpTLSConfigBypassesTLSDial
 	}
 	defer dc.Close()
 

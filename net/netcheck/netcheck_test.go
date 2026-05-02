@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/http"
@@ -1102,6 +1103,95 @@ func TestProbeHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if !called.Load() {
+		t.Error("didn't call test handler")
+	}
+}
+
+func TestProbeTLSConfigBypass(t *testing.T) {
+	logf, closeLogf := logger.LogfCloser(t.Logf)
+	defer closeLogf()
+
+	// Create a DERP server manually, without a STUN server and with a custom
+	// handler.
+	derpServer := derp.NewServer(key.NewNode(), logf)
+	derpHandler := derphttp.Handler(derpServer)
+
+	var called atomic.Bool
+	httpsrv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called.Store(true)
+		if r.URL.Path == "/derp/latency-check" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Path == "/derp" {
+			derpHandler.ServeHTTP(w, r)
+			return
+		}
+
+		t.Errorf("unexpected request: %v", r.URL)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	httpsrv.Config.ErrorLog = logger.StdLogger(logf)
+	httpsrv.Config.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
+	httpsrv.StartTLS()
+	t.Cleanup(func() {
+		httpsrv.CloseClientConnections()
+		httpsrv.Close()
+		derpServer.Close()
+	})
+
+	derpMap := &tailcfg.DERPMap{
+		Regions: map[int]*tailcfg.DERPRegion{
+			1: {
+				RegionID:   1,
+				RegionCode: "derpy",
+				Nodes: []*tailcfg.DERPNode{
+					{
+						Name:     "d1",
+						RegionID: 1,
+						HostName: "localhost",
+						// Don't specify an IP address to avoid ICMP pinging,
+						// which will bypass the artificial latency.
+						IPv4:             "",
+						IPv6:             "",
+						STUNPort:         -1,
+						DERPPort:         httpsrv.Listener.Addr().(*net.TCPAddr).Port,
+						InsecureForTests: true,
+					},
+				},
+			},
+		},
+	}
+
+	var getterCalled atomic.Bool
+	c := &Client{
+		Logf:        t.Logf,
+		UDPBindAddr: "127.0.0.1:0",
+		GetDERPTLSConfig: func() (*tls.Config, bool) {
+			getterCalled.Store(true)
+			return &tls.Config{
+				// This would panic inside tlsdial.Config if the bypass flag
+				// returned alongside it were not propagated to derphttp.Client.
+				InsecureSkipVerify: true,
+				VerifyPeerCertificate: func(_ [][]byte, _ [][]*x509.Certificate) error {
+					return nil
+				},
+			}, true
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	_, err := c.GetReport(ctx, derpMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !getterCalled.Load() {
+		t.Error("didn't call GetDERPTLSConfig")
+	}
 	if !called.Load() {
 		t.Error("didn't call test handler")
 	}

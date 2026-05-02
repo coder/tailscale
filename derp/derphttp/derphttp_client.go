@@ -77,10 +77,42 @@ type Client struct {
 	// of a generic auth failure.
 	GetHeaders func() http.Header
 
-	TLSConfig *tls.Config        // optional; nil means default
-	DNSCache  *dnscache.Resolver // optional; nil means no caching
-	MeshKey   string             // optional; for trusted clients
-	IsProber  bool               // optional; for probers to optional declare themselves as such
+	TLSConfig *tls.Config // optional; nil means default
+
+	// TLSConfigBypassesTLSDial, if true, causes TLSConfig to be used as-is
+	// (after a Clone and ServerName housekeeping) instead of being passed
+	// through tlsdial.Config. The default behavior wraps TLSConfig in
+	// Tailscale's hosted-DERP verification helper, which installs a
+	// VerifyConnection hook with a baked-in Let's Encrypt fallback and
+	// rejects (panics on) base configs that already set InsecureSkipVerify
+	// or VerifyConnection.
+	//
+	// Set this to true when the caller is responsible for server
+	// verification — e.g. when DERP is fronted by a reverse proxy that
+	// presents a non-publicly-trusted certificate, when using an mTLS
+	// framework that performs its own peer verification (custom CAs,
+	// SPIFFE-style identity), or any case in which the caller has supplied
+	// VerifyPeerCertificate / VerifyConnection on TLSConfig and does not
+	// want the bake-in fallback.
+	//
+	// SECURITY: when this flag is true, the supplied TLSConfig is the
+	// SOLE source of server verification. A TLSConfig with
+	// InsecureSkipVerify=true and no VerifyPeerCertificate /
+	// VerifyConnection callback will result in a TLS handshake that
+	// performs no server identity check at all. Callers MUST either rely
+	// on stock RootCAs + hostname matching (i.e. leave InsecureSkipVerify
+	// false), or provide a VerifyPeerCertificate / VerifyConnection that
+	// implements an equivalent check.
+	//
+	// When true, TLSConfig must be non-nil; the flag is ignored otherwise.
+	// Per-DERPNode overrides are still honored: InsecureForTests still
+	// disables verification (intentionally), but CertName (which is
+	// implemented by tlsdial) is ignored.
+	TLSConfigBypassesTLSDial bool
+
+	DNSCache *dnscache.Resolver // optional; nil means no caching
+	MeshKey  string             // optional; for trusted clients
+	IsProber bool               // optional; for probers to optional declare themselves as such
 
 	// Allow forcing WebSocket fallback for situations where proxies do not
 	// play well with `Upgrade: derp`. Turning this on will cause the client to
@@ -739,14 +771,34 @@ func (c *Client) DialRegion(ctx context.Context, reg *tailcfg.DERPRegion) (net.C
 }
 
 func (c *Client) tlsConfig(node *tailcfg.DERPNode) *tls.Config {
-	tlsConf := tlsdial.Config(c.tlsServerName(node), c.TLSConfig)
-	if node != nil {
-		if node.InsecureForTests {
+	var tlsConf *tls.Config
+	if c.TLSConfigBypassesTLSDial && c.TLSConfig != nil {
+		// Caller has opted to bring their own server verification (custom
+		// CAs / mTLS / SPIFFE-style identity / non-publicly-trusted PKI).
+		// Use the supplied config as-is, only filling in ServerName when
+		// the caller didn't pin one. node.CertName (a tlsdial-specific
+		// domain-fronting hook) is intentionally not applied here; callers
+		// using bypass are expected to encode any cert-pinning in their
+		// own VerifyPeerCertificate / VerifyConnection.
+		tlsConf = c.TLSConfig.Clone()
+		if tlsConf.ServerName == "" {
+			tlsConf.ServerName = c.tlsServerName(node)
+		}
+		if node != nil && node.InsecureForTests {
 			tlsConf.InsecureSkipVerify = true
 			tlsConf.VerifyConnection = nil
+			tlsConf.VerifyPeerCertificate = nil
 		}
-		if node.CertName != "" {
-			tlsdial.SetConfigExpectedCert(tlsConf, node.CertName)
+	} else {
+		tlsConf = tlsdial.Config(c.tlsServerName(node), c.TLSConfig)
+		if node != nil {
+			if node.InsecureForTests {
+				tlsConf.InsecureSkipVerify = true
+				tlsConf.VerifyConnection = nil
+			}
+			if node.CertName != "" {
+				tlsdial.SetConfigExpectedCert(tlsConf, node.CertName)
+			}
 		}
 	}
 	tlsConf.NextProtos = []string{"http/1.1"}
