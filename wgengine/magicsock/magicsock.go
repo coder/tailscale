@@ -171,6 +171,11 @@ type Conn struct {
 	// headers that are passed to the DERP HTTP client
 	derpHeader atomic.Pointer[http.Header]
 
+	// derpGetHeaders, if non-nil, is called by the DERP HTTP client on every
+	// (re)connect to obtain a fresh set of HTTP headers. When non-nil it
+	// takes precedence over derpHeader. See derphttp.Client.GetHeaders.
+	derpGetHeaders atomic.Pointer[func() http.Header]
+
 	// whether websocket is always used by the DERP HTTP client
 	derpForceWebsockets atomic.Bool
 
@@ -462,6 +467,9 @@ func NewConn(opts Options) (*Conn, error) {
 		PortMapper:          c.portMapper,
 		UseDNSCache:         true,
 		GetDERPHeaders: func() http.Header {
+			if getHeaders := c.derpGetHeaders.Load(); getHeaders != nil {
+				return (*getHeaders)()
+			}
 			h := c.derpHeader.Load()
 			if h == nil {
 				return nil
@@ -1757,6 +1765,17 @@ func (c *Conn) discoInfoLocked(k key.DiscoPublic) *discoInfo {
 
 func (c *Conn) SetDERPHeader(header http.Header) {
 	c.derpHeader.Store(&header)
+}
+
+// SetDERPGetHeaders sets a callback invoked by the DERP HTTP client on every
+// (re)connect to obtain a fresh set of HTTP headers. When non-nil it takes
+// precedence over the value set with SetDERPHeader. Pass nil to clear.
+func (c *Conn) SetDERPGetHeaders(getHeaders func() http.Header) {
+	if getHeaders == nil {
+		c.derpGetHeaders.Store(nil)
+		return
+	}
+	c.derpGetHeaders.Store(&getHeaders)
 }
 
 func (c *Conn) SetDERPForceWebsockets(v bool) {
