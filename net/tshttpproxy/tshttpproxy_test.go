@@ -4,6 +4,7 @@
 package tshttpproxy
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"os"
@@ -203,5 +204,80 @@ func TestSetSelfProxy(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestProxyFromEnvironment_sysProxyError verifies that when the
+// platform-specific proxy lookup (e.g. Windows WPAD via WinHTTP) returns
+// an error, ProxyFromEnvironment surfaces (nil, nil) to the caller so
+// http.Transport falls back to a direct connection rather than failing
+// the request. This is the cross-platform glue side of the
+// coder/tailscale fix for tailscale/tailscale#17055 / #10215.
+func TestProxyFromEnvironment_sysProxyError(t *testing.T) {
+	// Make sure no env-var proxy interferes with the fallthrough.
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"} {
+		if v, ok := os.LookupEnv(k); ok {
+			os.Unsetenv(k)
+			t.Cleanup(func() { os.Setenv(k, v) })
+		}
+	}
+	// Reset the package-level config/proxyFunc cache so the env-var
+	// changes above take effect.
+	mu.Lock()
+	config = nil
+	proxyFunc = nil
+	noProxyUntil = time.Time{}
+	mu.Unlock()
+	t.Cleanup(func() {
+		mu.Lock()
+		config = nil
+		proxyFunc = nil
+		noProxyUntil = time.Time{}
+		mu.Unlock()
+	})
+
+	prev := sysProxyFromEnv
+	t.Cleanup(func() { sysProxyFromEnv = prev })
+
+	var calls int
+	wantErr := errors.New("synthetic WPAD failure")
+	sysProxyFromEnv = func(*http.Request) (*url.URL, error) {
+		calls++
+		return nil, wantErr
+	}
+
+	req := &http.Request{URL: must.Get(url.Parse("https://example.com/"))}
+	got, err := ProxyFromEnvironment(req)
+	if err != nil {
+		t.Fatalf("ProxyFromEnvironment returned error %v; want nil so transport dials direct", err)
+	}
+	if got != nil {
+		t.Fatalf("ProxyFromEnvironment = %v; want nil", got)
+	}
+	if calls != 1 {
+		t.Fatalf("sysProxyFromEnv was called %d times; want 1", calls)
+	}
+
+	// Simulate the platform layer applying a backoff after a failure.
+	// While the backoff is active, ProxyFromEnvironment must not
+	// re-invoke the platform hook.
+	setNoProxyUntil(time.Minute)
+	got, err = ProxyFromEnvironment(req)
+	if err != nil || got != nil {
+		t.Fatalf("during backoff: got (%v, %v); want (nil, nil)", got, err)
+	}
+	if calls != 1 {
+		t.Fatalf("sysProxyFromEnv was called %d times during backoff; want 1", calls)
+	}
+
+	// InvalidateCache (e.g. on a netmon link change) must clear the
+	// backoff and allow a fresh platform lookup.
+	InvalidateCache()
+	got, err = ProxyFromEnvironment(req)
+	if err != nil || got != nil {
+		t.Fatalf("after InvalidateCache: got (%v, %v); want (nil, nil)", got, err)
+	}
+	if calls != 2 {
+		t.Fatalf("after InvalidateCache: sysProxyFromEnv calls = %d; want 2", calls)
 	}
 }
