@@ -28,11 +28,25 @@ func InvalidateCache() {
 	mu.Lock()
 	defer mu.Unlock()
 	noProxyUntil = time.Time{}
+	epoch++
+}
+
+// CurrentEpoch returns a counter that increments on every InvalidateCache
+// call. Platform-specific sysProxyFromEnv implementations can snapshot the
+// epoch at the start of an in-flight probe and check it again before
+// committing state derived from that probe (e.g. a negative-cache backoff),
+// so that a probe issued on one network does not stomp the next network's
+// state after a link change.
+func CurrentEpoch() uint64 {
+	mu.Lock()
+	defer mu.Unlock()
+	return epoch
 }
 
 var (
 	mu           sync.Mutex
 	noProxyUntil time.Time         // if non-zero, time at which ProxyFromEnvironment should check again
+	epoch        uint64            // incremented on every InvalidateCache
 	config       *httpproxy.Config // used to create proxyFunc
 	proxyFunc    func(*url.URL) (*url.URL, error)
 )
@@ -120,6 +134,11 @@ var sysProxyFromEnv func(*http.Request) (*url.URL, error)
 // ProxyFromEnvironment is like the standard library's http.ProxyFromEnvironment
 // but additionally does OS-specific proxy lookups if the environment variables
 // alone don't specify a proxy.
+//
+// Errors from the platform-specific sysProxyFromEnv hook (e.g. WinHTTP/WPAD
+// on Windows) are intentionally dropped: a failed system-proxy lookup must
+// degrade to "no proxy, dial direct" rather than fail the outbound request.
+// Errors from the env-var-derived proxy are propagated as before.
 func ProxyFromEnvironment(req *http.Request) (*url.URL, error) {
 	localProxyFunc := getProxyFunc()
 	u, err := localProxyFunc(req.URL)
@@ -135,9 +154,9 @@ func ProxyFromEnvironment(req *http.Request) (*url.URL, error) {
 	}
 
 	if sysProxyFromEnv != nil {
-		u, err := sysProxyFromEnv(req)
-		if u != nil && err == nil {
-			return u, nil
+		// Drop the sys error explicitly; see func docs.
+		if su, serr := sysProxyFromEnv(req); su != nil && serr == nil {
+			return su, nil
 		}
 	}
 

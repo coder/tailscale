@@ -31,9 +31,16 @@ func init() {
 	sysAuthHeader = sysAuthHeaderWindows
 }
 
+// cachedProxy holds the most recent successful WPAD result and the
+// InvalidateCache epoch it was discovered under. The timeout branch of
+// proxyFromWinHTTPOrCache reads val as a fallback when an in-flight
+// probe blows past the per-request deadline, but only when epoch
+// matches the current one so we never strand the client on a proxy
+// from a previous network.
 var cachedProxy struct {
 	sync.Mutex
-	val *url.URL
+	val   *url.URL
+	epoch uint64
 }
 
 // proxyErrorf is a rate-limited logger specifically for errors asking
@@ -52,30 +59,44 @@ var (
 	metricErrOther             = clientmetric.NewCounter("winhttp_proxy_err_other")
 )
 
-// WPAD backoffs.
+// WPAD negative-cache backoffs.
 //
 // Coder fork: previously these were 10s, which combined with
 // InvalidateCache() being called on every netmon link change meant a
 // host with no WPAD server (DHCP option 252 unset, no wpad.<domain> A
 // record) would re-issue a 5-second blocking WinHttpGetProxyForUrl call
 // for nearly every outbound HTTP request. Bumping the negative-cache
-// duration to several minutes lets normal traffic flow while still
-// re-trying WPAD periodically and on every link change (the latter via
-// InvalidateCache, which zeros noProxyUntil).
+// duration lets normal traffic flow while still re-trying WPAD on
+// every link change (via InvalidateCache, which zeros noProxyUntil).
 //
 // See tailscale/tailscale#17055 and tailscale/tailscale#10215.
 const (
-	wpadAutodetectFailedBackoff = 5 * time.Minute
-	wpadDownloadFailedBackoff   = 5 * time.Minute
-	wpadTimeoutBackoff          = 30 * time.Second
-	wpadUnknownErrorBackoff     = 5 * time.Minute
+	wpadAutodetectFailedBackoff   = 5 * time.Minute
+	wpadDownloadFailedBackoff     = 5 * time.Minute
+	wpadTimeoutFailedBackoff      = 30 * time.Second
+	wpadUnknownErrorFailedBackoff = 1 * time.Minute
+	// wpadInvalidParameterFailedBackoff is intentionally long: this
+	// error is only seen on Windows 8.1 and is not transient. See
+	// tailscale/tailscale#879.
+	wpadInvalidParameterFailedBackoff = 1 * time.Hour
 )
+
+// winHTTPLookup performs the underlying WPAD lookup. It is a package
+// variable so tests can swap in a fake without exercising winhttp.dll.
+var winHTTPLookup = proxyFromWinHTTP
 
 func proxyFromWinHTTPOrCache(req *http.Request) (*url.URL, error) {
 	if req.URL == nil {
 		return nil, nil
 	}
 	urlStr := req.URL.String()
+
+	// Snapshot the InvalidateCache epoch before launching the probe.
+	// If a netmon link change increments the epoch while the probe is
+	// in flight, we must not commit any state derived from this probe
+	// (negative-cache backoff, cached-proxy fallback) onto the new
+	// network — that probe's answer is for the old network only.
+	startEpoch := CurrentEpoch()
 
 	ctx, cancel := context.WithTimeout(req.Context(), 5*time.Second)
 	defer cancel()
@@ -86,9 +107,20 @@ func proxyFromWinHTTPOrCache(req *http.Request) (*url.URL, error) {
 	}
 	resc := make(chan result, 1)
 	go func() {
-		proxy, err := proxyFromWinHTTP(ctx, urlStr)
+		proxy, err := winHTTPLookup(ctx, urlStr)
 		resc <- result{proxy, err}
 	}()
+
+	// setBackoff applies a negative-cache backoff only if the
+	// InvalidateCache epoch hasn't advanced since the probe started.
+	// Stale probes from a previous network must not gate fresh
+	// lookups on the current one.
+	setBackoff := func(d time.Duration) {
+		if CurrentEpoch() != startEpoch {
+			return
+		}
+		setNoProxyUntil(d)
+	}
 
 	select {
 	case res := <-resc:
@@ -101,60 +133,56 @@ func proxyFromWinHTTPOrCache(req *http.Request) (*url.URL, error) {
 				log.Printf("tshttpproxy: winhttp: updating cached proxy setting from %v to %v", was, now)
 			}
 			cachedProxy.val = res.proxy
+			cachedProxy.epoch = startEpoch
 			return res.proxy, nil
 		}
 
 		// See https://docs.microsoft.com/en-us/windows/win32/winhttp/error-messages
-		//
-		// Coder fork: every error path below now returns (nil, nil) and
-		// applies a longer negative-cache backoff. The package-level
-		// ProxyFromEnvironment already discards sysProxyFromEnv errors,
-		// so propagating one here was effectively dead code — but
-		// returning nil explicitly documents the contract and keeps us
-		// honest if that wrapper ever changes. The real bug being fixed
-		// is the backoff durations being far too short: with the
-		// previous 10s, a host with no WPAD server (DHCP option 252
-		// unset, no wpad.<domain> A record) would re-issue a 5s blocking
-		// WinHttpGetProxyForUrl on nearly every outbound HTTP request,
-		// because netmon link changes call InvalidateCache() and reset
-		// the shield constantly. See tailscale/tailscale#17055 and
-		// tailscale/tailscale#10215.
 		const (
 			ERROR_WINHTTP_AUTODETECTION_FAILED      = 12180
 			ERROR_WINHTTP_UNABLE_TO_DOWNLOAD_SCRIPT = 12167
 		)
 		if err == syscall.Errno(ERROR_WINHTTP_AUTODETECTION_FAILED) {
 			metricErrDetectionFailed.Add(1)
-			setNoProxyUntil(wpadAutodetectFailedBackoff)
+			setBackoff(wpadAutodetectFailedBackoff)
 			return nil, nil
 		}
 		if err == windows.ERROR_INVALID_PARAMETER {
 			metricErrInvalidParameters.Add(1)
-			// Seen on Windows 8.1. (https://github.com/tailscale/tailscale/issues/879)
-			// TODO(bradfitz): figure this out.
-			setNoProxyUntil(time.Hour)
+			setBackoff(wpadInvalidParameterFailedBackoff)
 			proxyErrorf("tshttpproxy: winhttp: GetProxyForURL(%q): ERROR_INVALID_PARAMETER [unexpected]", urlStr)
 			return nil, nil
 		}
 		proxyErrorf("tshttpproxy: winhttp: GetProxyForURL(%q): %v/%#v", urlStr, err, err)
 		if err == syscall.Errno(ERROR_WINHTTP_UNABLE_TO_DOWNLOAD_SCRIPT) {
 			metricErrDownloadScript.Add(1)
-			setNoProxyUntil(wpadDownloadFailedBackoff)
+			setBackoff(wpadDownloadFailedBackoff)
 			return nil, nil
 		}
 		metricErrOther.Add(1)
-		// Coder fork: do not propagate unmapped WinHTTP errors. Treat
-		// them as "no proxy discovered" so the caller dials direct.
-		setNoProxyUntil(wpadUnknownErrorBackoff)
+		// Coder fork: every error path here returns (nil, nil) so the
+		// caller dials direct rather than failing the request. See the
+		// package-level ProxyFromEnvironment doc and the const block
+		// rationale above.
+		setBackoff(wpadUnknownErrorFailedBackoff)
 		return nil, nil
 	case <-ctx.Done():
 		metricErrTimeout.Add(1)
-		// Coder fork: previously returned cachedProxy.val, which
-		// stranded the client on a stale proxy from a previous
-		// network. Return no-proxy and apply a short backoff so
-		// in-flight WinHTTP probes don't pile up on every request
-		// while WPAD is slow.
-		setNoProxyUntil(wpadTimeoutBackoff)
+		// Coder fork: prefer the most recent successful WPAD result,
+		// but only if it was discovered under the current epoch. A
+		// cached proxy from a previous network would route this
+		// request through a now-unreachable host. When the cache is
+		// stale or empty, fall through to direct and apply a short
+		// backoff so in-flight WinHTTP probes don't pile up.
+		cachedProxy.Lock()
+		fallback := cachedProxy.val
+		fallbackEpoch := cachedProxy.epoch
+		cachedProxy.Unlock()
+		if fallback != nil && fallbackEpoch == startEpoch {
+			proxyErrorf("tshttpproxy: winhttp: GetProxyForURL(%q): timeout; using cached proxy %v", urlStr, fallback)
+			return fallback, nil
+		}
+		setBackoff(wpadTimeoutFailedBackoff)
 		proxyErrorf("tshttpproxy: winhttp: GetProxyForURL(%q): timeout; falling back to direct", urlStr)
 		return nil, nil
 	}

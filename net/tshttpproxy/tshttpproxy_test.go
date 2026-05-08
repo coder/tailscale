@@ -240,10 +240,10 @@ func TestProxyFromEnvironment_sysProxyError(t *testing.T) {
 	t.Cleanup(func() { sysProxyFromEnv = prev })
 
 	var calls int
-	wantErr := errors.New("synthetic WPAD failure")
+	syntheticErr := errors.New("synthetic WPAD failure")
 	sysProxyFromEnv = func(*http.Request) (*url.URL, error) {
 		calls++
-		return nil, wantErr
+		return nil, syntheticErr
 	}
 
 	req := &http.Request{URL: must.Get(url.Parse("https://example.com/"))}
