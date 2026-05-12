@@ -25,8 +25,9 @@ const _dropReason_name = "UnknownDestUnknownDestOnFwdGoneDisconnectedQueueHeadQu
 var _dropReason_index = [...]uint8{0, 11, 27, 43, 52, 61, 71, 80}
 
 func (i dropReason) String() string {
-	if i < 0 || i >= dropReason(len(_dropReason_index)-1) {
+	idx := int(i) - 0
+	if i < 0 || idx >= len(_dropReason_index)-1 {
 		return "dropReason(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _dropReason_name[_dropReason_index[i]:_dropReason_index[i+1]]
+	return _dropReason_name[_dropReason_index[idx]:_dropReason_index[idx+1]]
 }
