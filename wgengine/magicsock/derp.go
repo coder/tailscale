@@ -347,8 +347,14 @@ func (c *Conn) derpWriteChanOfAddr(addr netip.AddrPort, peer key.NodePublic) cha
 	dc.SetAddressFamilySelector(derpAddrFamSelector{c})
 	dc.SetForcedWebsocketCallback(c.derpForcedWebsocketFunc)
 	dc.DNSCache = dnscache.Get()
-	if tlsCfg := c.derpTLSConfig.Load(); tlsCfg != nil {
-		dc.TLSConfig = tlsCfg
+	// Read the (TLS config, bypass-tlsdial) pair atomically so we never
+	// observe a new custom-verifier TLS config paired with a stale
+	// bypass=false (which would panic in tlsdial.Config) nor a new
+	// publicly-trusted config paired with a stale bypass=true (which would
+	// silently skip server verification). See Conn.derpTLSConfig.
+	if pair := c.derpTLSConfig.Load(); pair != nil && pair.cfg != nil {
+		dc.TLSConfig = pair.cfg
+		dc.TLSConfigBypassesTLSDial = pair.bypassTLSDial
 	}
 	header := c.derpHeader.Load()
 	if header != nil {
