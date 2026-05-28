@@ -1370,6 +1370,7 @@ func (c *Client) measureHTTPLatency(ctx context.Context, reg *tailcfg.DERPRegion
 	connc <- conn
 
 	tr := &http.Transport{
+		DisableKeepAlives: true,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			if !hasForceHTTPNode {
 				return nil, errors.New("unexpected DialContext dial")
