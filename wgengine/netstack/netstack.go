@@ -148,6 +148,15 @@ const nicID = 1
 // one day making the MTU more dynamic.
 const maxUDPPacketSize = 1500
 
+// minimumIPv6LinkMTU is the minimum link MTU permitted by RFC 8200.
+// Netstack always enables IPv6, so its link endpoint must not inherit a lower
+// TS_DEBUG_MTU value from the underlying TUN configuration.
+const minimumIPv6LinkMTU = 1280
+
+func netstackLinkMTU() uint32 {
+	return max(tstun.DefaultMTU(), minimumIPv6LinkMTU)
+}
+
 const (
 	megabytes = 1024 * 1024
 	// recvBufSize is the size in bytes for TCP receive buffers.  6MiB is the usual maximum in
@@ -241,7 +250,7 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 		return nil, fmt.Errorf("could not set max retries: %v", tcpipErr)
 	}
 
-	linkEP := NewEndpoint(512, tstun.DefaultMTU(), "")
+	linkEP := NewEndpoint(512, netstackLinkMTU(), "")
 	if tcpipProblem := ipstack.CreateNIC(nicID, linkEP); tcpipProblem != nil {
 		return nil, fmt.Errorf("could not create netstack NIC: %v", tcpipProblem)
 	}
