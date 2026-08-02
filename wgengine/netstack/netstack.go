@@ -551,6 +551,8 @@ func (ns *Impl) inject() {
 			continue
 		}
 
+		clampDebugTCPMSS(pkt)
+
 		if debugPackets {
 			ns.logf("[v2] packet Write out: % x", stack.PayloadSince(pkt.NetworkHeader()))
 		}

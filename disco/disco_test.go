@@ -76,8 +76,8 @@ func TestMarshalAndParse(t *testing.T) {
 			if !ok {
 				t.Fatalf("didn't start with foo: got %q", got)
 			}
-			// CODER: 1310 is max size of a Wireguard packet we will send.
-			expectedLen := 1310 - len(Magic) - keyLen - NonceLen - box.Overhead
+			// CODER: probe size follows the configured inner MTU.
+			expectedLen := paddedPayloadLen() + 2
 			switch tt.m.(type) {
 			case *Ping:
 				if len(got) != expectedLen {
@@ -101,6 +101,31 @@ func TestMarshalAndParse(t *testing.T) {
 			}
 			if !reflect.DeepEqual(back, tt.m) {
 				t.Errorf("message in %+v doesn't match Parse back result %+v", tt.m, back)
+			}
+		})
+	}
+}
+
+func TestPaddedPayloadLenFollowsDebugMTU(t *testing.T) {
+	const (
+		wireGuardOverhead = 30
+		wrapperLen        = len(Magic) + keyLen + NonceLen + box.Overhead + 2
+	)
+	tests := []struct {
+		name string
+		mtu  string
+		want int
+	}{
+		{name: "default", want: 1280 + wireGuardOverhead},
+		{name: "nested path", mtu: "1182", want: 1182 + wireGuardOverhead},
+		{name: "larger MTU", mtu: "1420", want: 1420 + wireGuardOverhead},
+		{name: "cap at maximum UDP payload", mtu: "65536", want: 65507},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("TS_DEBUG_MTU", tt.mtu)
+			if got := paddedPayloadLen() + wrapperLen; got != tt.want {
+				t.Fatalf("padded packet length = %d, want %d", got, tt.want)
 			}
 		})
 	}
