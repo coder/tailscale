@@ -28,6 +28,7 @@ import (
 
 	"go4.org/mem"
 	"golang.org/x/crypto/nacl/box"
+	"tailscale.com/envknob"
 	"tailscale.com/types/key"
 )
 
@@ -52,15 +53,26 @@ const v0 = byte(0)
 // v1 Ping and Pong are padded as follows. CallMeMaybe is still on v0 and unpadded.
 const v1 = byte(1)
 
-// paddedPayloadLen is the desired length we want to pad Ping and Pong payloads
-// to so that they are the maximum size of a Wireguard packet we would
-// subsequently send. This ensures that any UDP paths we discover will actually
-// support the packet sizes the net stack will send over those paths. Any peers
-// behind a small-MTU link will have to depend on DERP.
+// paddedPayloadLen returns the desired Ping/Pong payload size. The probe is
+// padded to the largest WireGuard packet the configured inner MTU can produce,
+// so a discovered UDP path can also carry subsequent tailnet traffic.
 // c.f. https://github.com/coder/coder/issues/15523
-// Our inner IP packets can be up to 1280 bytes, with the Wireguard header of
-// 30 bytes, that is 1310. The final 2 is the inner payload header's type and version.
-const paddedPayloadLen = 1310 - len(Magic) - keyLen - NonceLen - box.Overhead - 2
+func paddedPayloadLen() int {
+	const (
+		defaultInnerMTU   = 1280
+		wireGuardOverhead = 30
+		wrapperLen        = len(Magic) + keyLen + NonceLen + box.Overhead + 2
+		minPayloadLen     = 12 + keyLen // Ping TxID plus optional node key.
+		maxUDPPayloadLen  = 65507
+	)
+
+	innerMTU := uint(defaultInnerMTU)
+	if configuredMTU, ok := envknob.LookupUintSized("TS_DEBUG_MTU", 10, 32); ok {
+		innerMTU = configuredMTU
+	}
+	packetLen := min(int(innerMTU)+wireGuardOverhead, maxUDPPayloadLen)
+	return max(packetLen-wrapperLen, minPayloadLen)
+}
 
 var errShort = errors.New("short message")
 
@@ -135,7 +147,7 @@ type Ping struct {
 
 func (m *Ping) AppendMarshal(b []byte) []byte {
 	hasKey := !m.NodeKey.IsZero()
-	ret, d := appendMsgHeader(b, TypePing, v1, paddedPayloadLen)
+	ret, d := appendMsgHeader(b, TypePing, v1, paddedPayloadLen())
 	n := copy(d, m.TxID[:])
 	if hasKey {
 		m.NodeKey.AppendTo(d[:n])
@@ -227,7 +239,7 @@ type Pong struct {
 const pongLen = 12 + 16 + 2
 
 func (m *Pong) AppendMarshal(b []byte) []byte {
-	ret, d := appendMsgHeader(b, TypePong, v1, paddedPayloadLen)
+	ret, d := appendMsgHeader(b, TypePong, v1, paddedPayloadLen())
 	d = d[copy(d, m.TxID[:]):]
 	ip16 := m.Src.Addr().As16()
 	d = d[copy(d, ip16[:]):]
