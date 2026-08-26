@@ -66,9 +66,6 @@ const (
 	// icmpProbeTimeout is the maximum amount of time netcheck will spend
 	// probing with ICMP packets.
 	icmpProbeTimeout = 1 * time.Second
-	// hairpinCheckTimeout is the amount of time we wait for a
-	// hairpinned packet to come back.
-	hairpinCheckTimeout = 100 * time.Millisecond
 	// defaultActiveRetransmitTime is the retransmit interval we use
 	// for STUN probes when we're in steady state (not in start-up),
 	// but don't have previous latency information for a DERP
@@ -97,11 +94,6 @@ type Report struct {
 	// MappingVariesByDestIP is whether STUN results depend which
 	// STUN server you're talking to (on IPv4).
 	MappingVariesByDestIP opt.Bool
-
-	// HairPinning is whether the router supports communicating
-	// between two local devices through the NATted public IP address
-	// (on IPv4).
-	HairPinning opt.Bool
 
 	// UPnP is whether UPnP appears present on the LAN.
 	// Empty means not checked.
@@ -280,23 +272,6 @@ func (c *Client) vlogf(format string, a ...any) {
 	}
 }
 
-// handleHairSTUN reports whether pkt (from src) was our magic hairpin
-// probe packet that we sent to ourselves.
-func (c *Client) handleHairSTUNLocked(pkt []byte, src netip.AddrPort) bool {
-	rs := c.curState
-	if rs == nil {
-		return false
-	}
-	if tx, err := stun.ParseBindingRequest(pkt); err == nil && tx == rs.hairTX {
-		select {
-		case rs.gotHairSTUN <- src:
-		default:
-		}
-		return true
-	}
-	return false
-}
-
 // MakeNextReportFull forces the next GetReport call to be a full
 // (non-incremental) probe of all DERP regions.
 func (c *Client) MakeNextReportFull() {
@@ -315,10 +290,6 @@ func (c *Client) ReceiveSTUNPacket(pkt []byte, src netip.AddrPort) {
 	}
 
 	c.mu.Lock()
-	if c.handleHairSTUNLocked(pkt, src) {
-		c.mu.Unlock()
-		return
-	}
 	rs := c.curState
 	c.mu.Unlock()
 
@@ -329,6 +300,8 @@ func (c *Client) ReceiveSTUNPacket(pkt []byte, src netip.AddrPort) {
 	tx, addrPort, err := stun.ParseResponse(pkt)
 	if err != nil {
 		if _, err := stun.ParseBindingRequest(pkt); err == nil {
+			// We no longer send hairpin checks, but perhaps we might catch a
+			// stray from earlier versions.
 			// This was probably our own netcheck hairpin
 			// check probe coming in late. Ignore.
 			return
@@ -605,22 +578,17 @@ func (c *Client) readPackets(ctx context.Context, pc packetReaderFromCloser) {
 // reportState holds the state for a single invocation of Client.GetReport.
 type reportState struct {
 	c           *Client
-	hairTX      stun.TxID
-	gotHairSTUN chan netip.AddrPort
-	hairTimeout chan struct{} // closed on timeout
 	pc4         STUNConn
 	pc6         STUNConn
-	pc4Hair     nettype.PacketConn
 	incremental bool // doing a lite, follow-up netcheck
 	stopProbeCh chan struct{}
 	waitPortMap sync.WaitGroup
 
-	mu            sync.Mutex
-	sentHairCheck bool
-	report        *Report                            // to be returned by GetReport
-	inFlight      map[stun.TxID]func(netip.AddrPort) // called without c.mu held
-	gotEP4        string
-	timers        []*time.Timer
+	mu       sync.Mutex
+	report   *Report                            // to be returned by GetReport
+	inFlight map[stun.TxID]func(netip.AddrPort) // called without c.mu held
+	gotEP4   string
+	timers   []*time.Timer
 }
 
 func (rs *reportState) anyUDP() bool {
@@ -668,50 +636,6 @@ func (rs *reportState) probeWouldHelp(probe probe, node *tailcfg.DERPNode) bool 
 
 	// Otherwise not interesting.
 	return false
-}
-
-func (rs *reportState) startHairCheckLocked(dst netip.AddrPort) {
-	if rs.sentHairCheck || rs.incremental {
-		return
-	}
-	rs.sentHairCheck = true
-	rs.pc4Hair.WriteToUDPAddrPort(stun.Request(rs.hairTX), dst)
-	rs.c.vlogf("sent haircheck to %v", dst)
-	time.AfterFunc(hairpinCheckTimeout, func() { close(rs.hairTimeout) })
-}
-
-func (rs *reportState) waitHairCheck(ctx context.Context) {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-	ret := rs.report
-	if rs.incremental {
-		if rs.c.last != nil {
-			ret.HairPinning = rs.c.last.HairPinning
-		}
-		return
-	}
-	if !rs.sentHairCheck {
-		return
-	}
-
-	// First, check whether we have a value before we check for timeouts.
-	select {
-	case <-rs.gotHairSTUN:
-		ret.HairPinning.Set(true)
-		return
-	default:
-	}
-
-	// Now, wait for a response or a timeout.
-	select {
-	case <-rs.gotHairSTUN:
-		ret.HairPinning.Set(true)
-	case <-rs.hairTimeout:
-		rs.c.vlogf("hairCheck timeout")
-		ret.HairPinning.Set(false)
-	case <-ctx.Done():
-		rs.c.vlogf("hairCheck context timeout")
-	}
 }
 
 func (rs *reportState) stopTimers() {
@@ -767,7 +691,6 @@ func (rs *reportState) addNodeLatency(node *tailcfg.DERPNode, ipp netip.AddrPort
 		if rs.gotEP4 == "" {
 			rs.gotEP4 = ipPortStr
 			ret.GlobalV4 = ipPortStr
-			rs.startHairCheckLocked(ipp)
 		} else {
 			if rs.gotEP4 != ipPortStr {
 				ret.MappingVariesByDestIP.Set(true)
@@ -860,9 +783,6 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap) (_ *Report,
 		c:           c,
 		report:      newReport(),
 		inFlight:    map[stun.TxID]func(netip.AddrPort){},
-		hairTX:      stun.NewTxID(), // random payload
-		gotHairSTUN: make(chan netip.AddrPort, 1),
-		hairTimeout: make(chan struct{}),
 		stopProbeCh: make(chan struct{}, 1),
 	}
 	c.curState = rs
@@ -933,33 +853,10 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap) (_ *Report,
 		v6udp.Close()
 	}
 
-	// Create a UDP4 socket used for sending to our discovered IPv4 address.
-	rs.pc4Hair, err = nettype.MakePacketListenerWithNetIP(netns.Listener(c.logf, c.NetMon)).ListenPacket(ctx, "udp4", ":0")
-	if err != nil {
-		c.logf("udp4: %v", err)
-		return nil, err
-	}
-	defer rs.pc4Hair.Close()
-
 	if !c.SkipExternalNetwork && c.PortMapper != nil {
 		rs.waitPortMap.Add(1)
 		go rs.probePortMapServices()
 	}
-
-	// At least the Apple Airport Extreme doesn't allow hairpin
-	// sends from a private socket until it's seen traffic from
-	// that src IP:port to something else out on the internet.
-	//
-	// See https://github.com/tailscale/tailscale/issues/188#issuecomment-600728643
-	//
-	// And it seems that even sending to a likely-filtered RFC 5737
-	// documentation-only IPv4 range is enough to set up the mapping.
-	// So do that for now. In the future we might want to classify networks
-	// that do and don't require this separately. But for now help it.
-	const documentationIP = "203.0.113.1"
-	rs.pc4Hair.WriteToUDPAddrPort(
-		[]byte("tailscale netcheck; see https://github.com/tailscale/tailscale/issues/188"),
-		netip.AddrPortFrom(netip.MustParseAddr(documentationIP), 12345))
 
 	if f := c.GetSTUNConn4; f != nil {
 		rs.pc4 = f()
@@ -1089,8 +986,6 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap) (_ *Report,
 		captivePortalStop()
 	}
 
-	rs.waitHairCheck(ctx)
-	c.vlogf("hairCheck done")
 	if !c.SkipExternalNetwork && c.PortMapper != nil {
 		rs.waitPortMap.Wait()
 		c.vlogf("portMap done")
@@ -1519,7 +1414,6 @@ func (c *Client) logConciseReport(r *Report, dm *tailcfg.DERPMap) {
 			fmt.Fprintf(w, " v6os=%v", r.OSHasIPv6)
 		}
 		fmt.Fprintf(w, " mapvarydest=%v", r.MappingVariesByDestIP)
-		fmt.Fprintf(w, " hair=%v", r.HairPinning)
 		if r.AnyPortMappingChecked() {
 			fmt.Fprintf(w, " portmap=%v%v%v", conciseOptBool(r.UPnP, "U"), conciseOptBool(r.PMP, "M"), conciseOptBool(r.PCP, "C"))
 		} else {
