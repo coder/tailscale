@@ -12,6 +12,7 @@ import (
 	"net/http"
 
 	"github.com/coder/websocket"
+	"tailscale.com/net/tshttpproxy"
 )
 
 func init() {
@@ -25,6 +26,7 @@ func dialWebsocket(ctx context.Context, urlStr string, tlsConfig *tls.Config, ht
 		HTTPClient: &http.Client{
 			Transport: &http.Transport{
 				TLSClientConfig: tlsConfig,
+				Proxy:           tshttpproxy.ProxyFromEnvironment,
 			},
 		},
 	})
