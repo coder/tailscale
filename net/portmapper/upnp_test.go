@@ -148,6 +148,7 @@ func TestUPnPMappingLifecycle(t *testing.T) {
 		name           string
 		extIP          string // GetExternalIPAddress result; "" returns HTTP 500
 		closeDuringAdd bool
+		hangDelete     bool
 		wantOK         bool
 		want           []string
 	}{
@@ -155,6 +156,7 @@ func TestUPnPMappingLifecycle(t *testing.T) {
 		{name: "CloseDuringAdd", extIP: "123.123.123.123", closeDuringAdd: true, want: all},
 		{name: "ExternalIPError", want: all[:2]},
 		{name: "InvalidExternalIP", extIP: "invalid", want: all[:2]},
+		{name: "DeleteHangs", extIP: "123.123.123.123", hangDelete: true, wantOK: true, want: all},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -172,21 +174,28 @@ func TestUPnPMappingLifecycle(t *testing.T) {
 				switch action {
 				case "":
 					io.WriteString(w, pfSenseRootDescXML)
+					return
 				case "GetExternalIPAddress":
 					if tt.extIP == "" {
 						w.WriteHeader(http.StatusInternalServerError)
 						return
 					}
 					io.WriteString(w, soap(action, "<NewExternalIPAddress>"+tt.extIP+"</NewExternalIPAddress>"))
+					return
 				case "AddPortMapping":
 					if tt.closeDuringAdd {
 						close(addEntered)
 						<-addRelease
 					}
-					fallthrough
-				default:
-					io.WriteString(w, soap(action, ""))
+				case "DeletePortMapping":
+					if tt.hangDelete {
+						// The server only notices the client hanging up once the body is consumed.
+						io.Copy(io.Discard, r.Body)
+						<-r.Context().Done()
+						return
+					}
 				}
+				io.WriteString(w, soap(action, ""))
 			}))
 			var open atomic.Int32
 			ts.Config.ConnState = func(_ net.Conn, s http.ConnState) {
@@ -237,7 +246,17 @@ func TestUPnPMappingLifecycle(t *testing.T) {
 				t.Fatalf("createOrGetMapping error = %v; want success %v", err, tt.wantOK)
 			}
 
-			c.Close()
+			closed := make(chan struct{})
+			go func() {
+				c.Close()
+				close(closed)
+			}()
+			select {
+			case <-closed:
+			case <-ctx.Done():
+				ts.CloseClientConnections() // unblock Close so cleanup can finish
+				t.Fatal("Close did not return")
+			}
 			if c.mapping != nil {
 				t.Errorf("mapping %v retained after Close", c.mapping.External())
 			}

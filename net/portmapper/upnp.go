@@ -57,7 +57,14 @@ const upnpProtocolUDP = "UDP"
 func (u *upnpMapping) GoodUntil() time.Time     { return u.goodUntil }
 func (u *upnpMapping) RenewAfter() time.Time    { return u.renewAfter }
 func (u *upnpMapping) External() netip.AddrPort { return u.external }
+
+// upnpReleaseTimeout bounds DeletePortMapping, which callers run while
+// holding Client.mu.
+const upnpReleaseTimeout = time.Second
+
 func (u *upnpMapping) Release(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, upnpReleaseTimeout)
+	defer cancel()
 	u.client.DeletePortMapping(ctx, "", u.external.Port(), upnpProtocolUDP)
 }
 
