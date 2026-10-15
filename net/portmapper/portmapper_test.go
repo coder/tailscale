@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -120,5 +121,38 @@ func TestPCPIntegration(t *testing.T) {
 	}
 	if c.mapping == nil {
 		t.Errorf("got nil mapping after successful createOrGetMapping")
+	}
+}
+
+type fakeMapping struct {
+	mapping
+	released atomic.Bool
+}
+
+func (m *fakeMapping) Release(context.Context) { m.released.Store(true) }
+
+func TestSetMappingLockedReleasesAfterClose(t *testing.T) {
+	t.Parallel()
+	c := NewClient(t.Logf, nil, nil, nil)
+	c.Close()
+	m := new(fakeMapping)
+	c.mu.Lock()
+	installed := c.setMappingLocked(m)
+	c.mu.Unlock()
+	if installed || c.mapping != nil || !m.released.Load() {
+		t.Errorf("setMappingLocked after Close: installed=%v, mapping=%v, released=%v; want false, nil, true",
+			installed, c.mapping, m.released.Load())
+	}
+}
+
+func TestNoMappingAttemptAfterClose(t *testing.T) {
+	t.Parallel()
+	c := NewClient(t.Logf, nil, nil, nil)
+	c.Close()
+	c.GetCachedMappingOrStartCreatingOne(context.Background())
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.runningCreate {
+		t.Error("mapping attempt started after Close")
 	}
 }
