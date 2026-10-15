@@ -33,6 +33,7 @@ type testAttempt struct {
 	outcome       string // "pass", "fail", "skip"
 	logs          bytes.Buffer
 	isMarkedFlaky bool // set if the test is marked as flaky
+	ended         bool // set after the test's "--- PASS" or "--- SKIP" line
 
 	pkgFinished bool
 }
@@ -61,11 +62,9 @@ type goTestOutput struct {
 
 var debug = os.Getenv("TS_TESTWRAPPER_DEBUG") != ""
 
-// runTests runs the tests in pt and sends the results on ch. It sends a
-// testAttempt for each test and a final testAttempt per pkg with pkgFinished
-// set to true.
-// It calls close(ch) when it's done.
-func runTests(ctx context.Context, attempt int, pt *packageTests, otherArgs []string, ch chan<- *testAttempt) {
+// runTests sends per-test and package outcomes to ch, then closes ch.
+// It returns startup errors or the go test subprocess's exit error.
+func runTests(ctx context.Context, attempt int, pt *packageTests, otherArgs []string, ch chan<- *testAttempt) error {
 	defer close(ch)
 	args := []string{"test", "-json", pt.pattern}
 	args = append(args, otherArgs...)
@@ -79,7 +78,7 @@ func runTests(ctx context.Context, attempt int, pt *packageTests, otherArgs []st
 	cmd := exec.CommandContext(ctx, "go", args...)
 	r, err := cmd.StdoutPipe()
 	if err != nil {
-		log.Printf("error creating stdout pipe: %v", err)
+		return fmt.Errorf("creating stdout pipe: %w", err)
 	}
 	defer r.Close()
 	cmd.Stderr = os.Stderr
@@ -88,14 +87,8 @@ func runTests(ctx context.Context, attempt int, pt *packageTests, otherArgs []st
 	cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%d", flakytest.FlakeAttemptEnv, attempt))
 
 	if err := cmd.Start(); err != nil {
-		log.Printf("error starting test: %v", err)
-		os.Exit(1)
+		return fmt.Errorf("starting test: %w", err)
 	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		cmd.Wait()
-	}()
 
 	jd := json.NewDecoder(r)
 	resultMap := make(map[testName]*testAttempt)
@@ -118,7 +111,22 @@ func runTests(ctx context.Context, attempt int, pt *packageTests, otherArgs []st
 		}
 		if goOutput.Test == "" {
 			switch goOutput.Action {
+			case "output":
+				if !isPkgSummary(goOutput.Output, goOutput.Package) {
+					fmt.Print(goOutput.Output)
+				}
+			case "build-output":
+				fmt.Print(goOutput.Output)
 			case "fail", "pass", "skip":
+				if goOutput.Action == "fail" {
+					// Timeouts omit the final per-test event; report those tests as failed.
+					for name, test := range resultMap {
+						if name.pkg == goOutput.Package && test.outcome == "" {
+							test.outcome = "fail"
+							ch <- test
+						}
+					}
+				}
 				ch <- &testAttempt{
 					name: testName{
 						pkg: goOutput.Package,
@@ -151,14 +159,32 @@ func runTests(ctx context.Context, attempt int, pt *packageTests, otherArgs []st
 			resultMap[name].outcome = goOutput.Action
 			ch <- resultMap[name]
 		case "output":
-			if strings.TrimSpace(goOutput.Output) == flakytest.FlakyTestLogMessage {
-				resultMap[name].isMarkedFlaky = true
-			} else {
-				resultMap[name].logs.WriteString(goOutput.Output)
+			test := resultMap[name]
+			switch {
+			case test.ended:
+				// go test attributes a timeout panic to the last resumed
+				// test, even if it already passed. Print it so it isn't lost.
+				fmt.Print(goOutput.Output)
+			case strings.TrimSpace(goOutput.Output) == flakytest.FlakyTestLogMessage:
+				test.isMarkedFlaky = true
+			default:
+				test.logs.WriteString(goOutput.Output)
+				test.ended = strings.HasPrefix(goOutput.Output, "--- PASS: "+name.name+" ") ||
+					strings.HasPrefix(goOutput.Output, "--- SKIP: "+name.name+" ")
 			}
 		}
 	}
-	<-done
+	return cmd.Wait()
+}
+
+// isPkgSummary reports whether line is a go test result line for pkg, such as
+// "ok  \tpkg\t0.1s". main prints its own summary with the attempt number.
+func isPkgSummary(line, pkg string) bool {
+	if line == "PASS\n" || line == "FAIL\n" {
+		return true
+	}
+	f := strings.Fields(line)
+	return len(f) >= 2 && f[1] == pkg && (f[0] == "ok" || f[0] == "FAIL" || f[0] == "?")
 }
 
 func main() {
@@ -244,9 +270,16 @@ func main() {
 		toRetry := make(map[string][]string) // pkg -> tests to retry
 		for _, pt := range thisRun.tests {
 			ch := make(chan *testAttempt)
-			go runTests(ctx, thisRun.attempt, pt, otherArgs, ch)
+			runErr := make(chan error, 1)
+			go func() {
+				runErr <- runTests(ctx, thisRun.attempt, pt, otherArgs, ch)
+			}()
+			retryable := false
 			for tr := range ch {
 				if tr.pkgFinished {
+					if tr.outcome == "fail" && len(toRetry[tr.name.pkg]) == 0 {
+						failed = true
+					}
 					printPkgOutcome(tr.name.pkg, tr.outcome, thisRun.attempt)
 					continue
 				}
@@ -257,10 +290,15 @@ func main() {
 					continue
 				}
 				if tr.isMarkedFlaky {
+					retryable = true
 					toRetry[tr.name.pkg] = append(toRetry[tr.name.pkg], tr.name.name)
 				} else {
 					failed = true
 				}
+			}
+			if err := <-runErr; err != nil && !retryable {
+				log.Printf("go test: %v", err)
+				failed = true
 			}
 		}
 		if failed {

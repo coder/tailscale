@@ -87,6 +87,11 @@ func TestConcurrent(t *testing.T) {
 	const maxConns = 10
 	virtualAggregate := make(map[netlogtype.Connection]netlogtype.Counts)
 	stats := NewStatistics(maxPeriod, maxConns, func(start, end time.Time, virtual, physical map[netlogtype.Connection]netlogtype.Counts) {
+		// Empty intervals have no timestamps.
+		if len(virtual)+len(physical) == 0 {
+			c.Assert(start.IsZero() && end.IsZero(), qt.IsTrue)
+			return
+		}
 		c.Assert(start.IsZero(), qt.IsFalse)
 		c.Assert(end.IsZero(), qt.IsFalse)
 		c.Assert(end.Before(start), qt.IsFalse)

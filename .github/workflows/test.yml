@@ -2,19 +2,7 @@
 # both PRs and merged commits, and for the latter reports failures to slack.
 name: CI
 
-env:
-  # Our fuzz job, powered by OSS-Fuzz, fails periodically because we upgrade to
-  # new Go versions very eagerly. OSS-Fuzz is a little more conservative, and
-  # ends up being unable to compile our code.
-  #
-  # When this happens, we want to disable the fuzz target until OSS-Fuzz catches
-  # up. However, we also don't want to forget to turn it back on when OSS-Fuzz
-  # can once again build our code.
-  #
-  # This variable toggles the fuzz job between two modes:
-  #  - false: we expect fuzzing to be happy, and should report failure if it's not.
-  #  - true: we expect fuzzing is broken, and should report failure if it start working.
-  TS_FUZZ_CURRENTLY_BROKEN: false
+permissions: {}
 
 on:
   push:
@@ -40,6 +28,8 @@ concurrency:
 
 jobs:
   test:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false # don't abort the entire matrix if one element fails
       matrix:
@@ -116,6 +106,8 @@ jobs:
           fi
 
   windows:
+    permissions:
+      contents: read
     runs-on: windows-2022
     steps:
       - name: checkout
@@ -148,9 +140,12 @@ jobs:
         # Don't use -bench=. -benchtime=1x.
         # Somewhere in the layers (powershell?)
         # the equals signs cause great confusion.
-        run: go test -bench . -benchtime 1x ./...
+        # testwrapper retries tests marked with flakytest.Mark.
+        run: go run ./cmd/testwrapper ./... -bench . -benchtime 1x
 
   vm:
+    permissions:
+      contents: read
     runs-on: ["self-hosted", "linux", "vm"]
     # VM tests run with some privileges, don't let them run on 3p PRs.
     if: github.repository == 'tailscale/tailscale'
@@ -171,6 +166,8 @@ jobs:
           XDB_CACHE_HOME: "/var/lib/ghrunner/cache"
 
   cross: # cross-compile checks, build only.
+    permissions:
+      contents: read
     strategy:
       fail-fast: false # don't abort the entire matrix if one element fails
       matrix:
@@ -248,6 +245,8 @@ jobs:
 
   ios: # similar to cross above, but iOS can't build most of the repo. So, just
     #make it build a few smoke packages.
+    permissions:
+      contents: read
     runs-on: ubuntu-22.04
     steps:
       - name: checkout
@@ -259,6 +258,8 @@ jobs:
           GOARCH: arm64
 
   android:
+    permissions:
+      contents: read
     # similar to cross above, but android fails to build a few pieces of the
     # repo. We should fix those pieces, they're small, but as a stepping stone,
     # only test the subset of android that our past smoke test checked.
@@ -281,65 +282,33 @@ jobs:
           GOARCH: arm64
 
   fuzz:
-    # This target periodically breaks (see TS_FUZZ_CURRENTLY_BROKEN at the top
-    # of the file), so it's more complex than usual: the 'build fuzzers' step
-    # might fail, and depending on the value of 'TS_FUZZ_CURRENTLY_BROKEN', that
-    # might or might not be fine. The steps after the build figure out whether
-    # the success/failure is expected, and appropriately pass/fail the job
-    # overall accordingly.
-    #
-    # Practically, this means that all steps after 'build fuzzers' must have an
-    # explicit 'if' condition, because the default condition for steps is
-    # 'success()', meaning "only run this if no previous steps failed".
+    permissions:
+      contents: read
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-22.04
     steps:
       - name: build fuzzers
-        id: build
-        uses: google/oss-fuzz/infra/cifuzz/actions/build_fuzzers@master
-        # continue-on-error makes steps.build.conclusion be 'success' even if
-        # steps.build.outcome is 'failure'. This means this step does not
-        # contribute to the job's overall pass/fail evaluation.
-        continue-on-error: true
+        uses: google/clusterfuzzlite/actions/build_fuzzers@v1
         with:
-          oss-fuzz-project-name: "tailscale"
-          dry-run: false
           language: go
-      - name: report unexpectedly broken fuzz build
-        if: steps.build.outcome == 'failure' && env.TS_FUZZ_CURRENTLY_BROKEN != 'true'
-        run: |
-          echo "fuzzer build failed, see above for why"
-          echo "if the failure is due to OSS-Fuzz not being on the latest Go yet,"
-          echo "set TS_FUZZ_CURRENTLY_BROKEN=true in .github/workflows/test.yml"
-          echo "to temporarily disable fuzzing until OSS-Fuzz works again."
-          exit 1
-      - name: report unexpectedly working fuzz build
-        if: steps.build.outcome == 'success' && env.TS_FUZZ_CURRENTLY_BROKEN == 'true'
-        run: |
-          echo "fuzzer build succeeded, but we expect it to be broken"
-          echo "please set TS_FUZZ_CURRENTLY_BROKEN=false in .github/workflows/test.yml"
-          echo "to reenable fuzz testing"
-          exit 1
+          keep-unaffected-fuzz-targets: true
       - name: run fuzzers
         id: run
-        # Run the fuzzers whenever they're able to build, even if we're going to
-        # report a failure because TS_FUZZ_CURRENTLY_BROKEN is set to the wrong
-        # value.
-        if: steps.build.outcome == 'success'
-        uses: google/oss-fuzz/infra/cifuzz/actions/run_fuzzers@master
+        uses: google/clusterfuzzlite/actions/run_fuzzers@v1
         with:
-          oss-fuzz-project-name: "tailscale"
           fuzz-seconds: 300
-          dry-run: false
           language: go
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: upload crash
-        uses: actions/upload-artifact@v3
-        if: steps.run.outcome != 'success' && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        if: failure() && steps.run.outcome == 'failure'
         with:
           name: artifacts
           path: ./out/artifacts
 
   depaware:
+    permissions:
+      contents: read
     runs-on: ubuntu-22.04
     steps:
       - name: checkout
@@ -354,6 +323,8 @@ jobs:
           find . -name 'depaware.txt' | xargs -n1 dirname | xargs ./tool/go run github.com/tailscale/depaware --check
 
   go_generate:
+    permissions:
+      contents: read
     runs-on: ubuntu-22.04
     steps:
       - name: checkout
@@ -371,6 +342,8 @@ jobs:
           git diff --name-only --exit-code || (echo "The files above need updating. Please run 'go generate'."; exit 1)
 
   go_mod_tidy:
+    permissions:
+      contents: read
     runs-on: ubuntu-22.04
     steps:
       - name: checkout
@@ -387,6 +360,8 @@ jobs:
           git diff --name-only --exit-code || (echo "Please run 'go mod tidy'."; exit 1)
 
   licenses:
+    permissions:
+      contents: read
     runs-on: ubuntu-22.04
     steps:
       - name: checkout
@@ -395,6 +370,8 @@ jobs:
         run: ./scripts/check_license_headers.sh .
 
   staticcheck:
+    permissions:
+      contents: read
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false # don't abort the entire matrix if one element fails
@@ -483,4 +460,5 @@ jobs:
         if: github.event_name != 'push'
         uses: re-actors/alls-green@release/v1
         with:
+          allowed-skips: ${{ github.repository != 'tailscale/tailscale' && 'vm' || '' }}
           jobs: ${{ toJSON(needs) }}
