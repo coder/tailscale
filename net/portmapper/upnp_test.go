@@ -4,6 +4,7 @@
 package portmapper
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -13,7 +14,12 @@ import (
 	"net/netip"
 	"reflect"
 	"regexp"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"tailscale.com/tstest"
 )
@@ -125,6 +131,127 @@ func TestGetUPnPClient(t *testing.T) {
 			gotLog := regexp.MustCompile(`127\.0\.0\.1:\d+`).ReplaceAllString(logBuf.String(), "127.0.0.1:NNN")
 			if gotLog != tt.wantLog {
 				t.Errorf("logged %q; want %q", gotLog, tt.wantLog)
+			}
+		})
+	}
+}
+
+func TestUPnPMappingLifecycle(t *testing.T) {
+	t.Parallel()
+	soap := func(action, args string) string {
+		return `<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:` + action +
+			`Response xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:1">` + args + `</u:` + action + `Response></s:Body></s:Envelope>`
+	}
+	all := []string{"/rootDesc.xml", "GetExternalIPAddress", "AddPortMapping", "DeletePortMapping"}
+
+	for _, tt := range []struct {
+		name           string
+		extIP          string // GetExternalIPAddress result; "" returns HTTP 500
+		closeDuringAdd bool
+		wantOK         bool
+		want           []string
+	}{
+		{name: "Close", extIP: "123.123.123.123", wantOK: true, want: all},
+		{name: "CloseDuringAdd", extIP: "123.123.123.123", closeDuringAdd: true, want: all},
+		{name: "ExternalIPError", want: all[:2]},
+		{name: "InvalidExternalIP", extIP: "invalid", want: all[:2]},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			var mu sync.Mutex
+			var got []string
+			addEntered, addRelease := make(chan struct{}), make(chan struct{})
+			ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, action, _ := strings.Cut(strings.Trim(r.Header.Get("SOAPACTION"), `"`), "#")
+				mu.Lock()
+				got = append(got, cmp.Or(action, r.URL.Path))
+				mu.Unlock()
+				switch action {
+				case "":
+					io.WriteString(w, pfSenseRootDescXML)
+				case "GetExternalIPAddress":
+					if tt.extIP == "" {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					io.WriteString(w, soap(action, "<NewExternalIPAddress>"+tt.extIP+"</NewExternalIPAddress>"))
+				case "AddPortMapping":
+					if tt.closeDuringAdd {
+						close(addEntered)
+						<-addRelease
+					}
+					fallthrough
+				default:
+					io.WriteString(w, soap(action, ""))
+				}
+			}))
+			var open atomic.Int32
+			ts.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+				switch s {
+				case http.StateNew:
+					open.Add(1)
+				case http.StateClosed, http.StateHijacked:
+					open.Add(-1)
+				}
+			}
+			ts.Start()
+			t.Cleanup(ts.Close)
+
+			lo := netip.MustParseAddr("127.0.0.1")
+			c := NewClient(tstest.WhileTestRunningLogger(t), nil, &DebugKnobs{DisablePMP: true, DisablePCP: true}, nil)
+			c.SetGatewayLookupFunc(func() (gw, myIP netip.Addr, ok bool) { return lo, lo, true })
+			c.SetLocalPort(41641)
+			// Without an idle timeout, connections only close if Close
+			// closes them.
+			c.uPnPHTTPClient = &http.Client{Transport: &http.Transport{}}
+			c.gatewayAndSelfIP() // record the gateway so later lookups keep uPnPMeta
+			c.mu.Lock()
+			c.uPnPMeta = uPnPDiscoResponse{Location: ts.URL + "/rootDesc.xml"}
+			c.mu.Unlock()
+			t.Cleanup(func() { c.Close() })
+
+			done := make(chan error, 1)
+			go func() {
+				_, err := c.createOrGetMapping(ctx)
+				done <- err
+			}()
+			if tt.closeDuringAdd {
+				select {
+				case <-addEntered:
+				case <-ctx.Done():
+					t.Fatal("AddPortMapping not received")
+				}
+				c.Close()
+				close(addRelease)
+			}
+			var err error
+			select {
+			case err = <-done:
+			case <-ctx.Done():
+				t.Fatal("createOrGetMapping did not return")
+			}
+			if (err == nil) != tt.wantOK {
+				t.Fatalf("createOrGetMapping error = %v; want success %v", err, tt.wantOK)
+			}
+
+			c.Close()
+			if c.mapping != nil {
+				t.Errorf("mapping %v retained after Close", c.mapping.External())
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("requests = %v; want %v", got, tt.want)
+			}
+			for open.Load() > 0 {
+				select {
+				case <-time.After(10 * time.Millisecond):
+				case <-ctx.Done():
+					t.Fatalf("%d UPnP connections open after Close", open.Load())
+				}
 			}
 		})
 	}

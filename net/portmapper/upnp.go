@@ -271,6 +271,16 @@ func (c *Client) getUPnPPortMapping(
 	meta := c.uPnPMeta
 	httpClient := c.upnpHTTPClientLocked()
 	c.mu.Unlock()
+
+	// Requests still in flight when Close runs return their connections to
+	// the pool afterwards, so close them once this attempt is done.
+	defer func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.closed {
+			httpClient.CloseIdleConnections()
+		}
+	}()
 	if ok && oldMapping != nil {
 		client = oldMapping.client
 	} else {
@@ -326,7 +336,9 @@ func (c *Client) getUPnPPortMapping(
 	upnp.client = client
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.mapping = upnp
+	if !c.setMappingLocked(upnp) {
+		return netip.AddrPort{}, false
+	}
 	c.localPort = newPort
 	return upnp.external, true
 }
