@@ -287,6 +287,22 @@ func (c *Client) getUPnPPortMapping(
 		return netip.AddrPort{}, false
 	}
 
+	// Obtain and validate the external IP before creating the mapping. In
+	// particular, MikroTik only supports permanent leases, so forgetting a
+	// successfully-created mapping after a later request fails leaks the rule
+	// forever and each retry creates another one.
+	extIP, err := client.GetExternalIPAddress(ctx)
+	if c.debug.VerboseLogs {
+		c.logf("client.GetExternalIPAddress: %v, %v", extIP, err)
+	}
+	if err != nil {
+		return netip.AddrPort{}, false
+	}
+	externalIP, err := netip.ParseAddr(extIP)
+	if err != nil {
+		return netip.AddrPort{}, false
+	}
+
 	var newPort uint16
 	newPort, err = addAnyPortMapping(
 		ctx,
@@ -299,19 +315,6 @@ func (c *Client) getUPnPPortMapping(
 	if c.debug.VerboseLogs {
 		c.logf("addAnyPortMapping: %v, err=%q", newPort, err)
 	}
-	if err != nil {
-		return netip.AddrPort{}, false
-	}
-	// TODO cache this ip somewhere?
-	extIP, err := client.GetExternalIPAddress(ctx)
-	if c.debug.VerboseLogs {
-		c.logf("client.GetExternalIPAddress: %v, %v", extIP, err)
-	}
-	if err != nil {
-		// TODO this doesn't seem right
-		return netip.AddrPort{}, false
-	}
-	externalIP, err := netip.ParseAddr(extIP)
 	if err != nil {
 		return netip.AddrPort{}, false
 	}
