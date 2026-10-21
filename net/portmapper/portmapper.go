@@ -202,6 +202,9 @@ func (c *Client) Close() error {
 	}
 	c.closed = true
 	c.invalidateMappingsLocked(true)
+	if c.uPnPHTTPClient != nil {
+		c.uPnPHTTPClient.CloseIdleConnections()
+	}
 	// TODO: close some future ever-listening UDP socket(s),
 	// waiting for multicast announcements from router.
 	return nil
@@ -298,6 +301,16 @@ func (c *Client) invalidateMappingsLocked(releaseOld bool) {
 	c.uPnPMeta = uPnPDiscoResponse{}
 }
 
+// setMappingLocked stores m or releases it if closed. c.mu must be held.
+func (c *Client) setMappingLocked(m mapping) bool {
+	if c.closed {
+		m.Release(context.Background())
+		return false
+	}
+	c.mapping = m
+	return true
+}
+
 func (c *Client) sawPMPRecently() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -391,7 +404,7 @@ func (c *Client) GetCachedMappingOrStartCreatingOne(ctx context.Context) (extern
 //
 // c.mu must be held.
 func (c *Client) maybeStartMappingLocked(ctx context.Context) {
-	if !c.runningCreate {
+	if !c.closed && !c.runningCreate {
 		c.runningCreate = true
 		go c.createMapping(ctx)
 	}
@@ -587,7 +600,9 @@ func (c *Client) createOrGetMapping(ctx context.Context) (external netip.AddrPor
 				pcpMapping.gw = netip.AddrPortFrom(gw, c.pxpPort())
 				c.mu.Lock()
 				defer c.mu.Unlock()
-				c.mapping = pcpMapping
+				if !c.setMappingLocked(pcpMapping) {
+					return netip.AddrPort{}, NoMappingError{net.ErrClosed}
+				}
 				return pcpMapping.external, nil
 			default:
 				c.logf("unknown PMP/PCP version number: %d %v", version, res[:n])
@@ -598,7 +613,9 @@ func (c *Client) createOrGetMapping(ctx context.Context) (external netip.AddrPor
 		if m.externalValid() {
 			c.mu.Lock()
 			defer c.mu.Unlock()
-			c.mapping = m
+			if !c.setMappingLocked(m) {
+				return netip.AddrPort{}, NoMappingError{net.ErrClosed}
+			}
 			return m.external, nil
 		}
 	}

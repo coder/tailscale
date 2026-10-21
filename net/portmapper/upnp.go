@@ -57,7 +57,14 @@ const upnpProtocolUDP = "UDP"
 func (u *upnpMapping) GoodUntil() time.Time     { return u.goodUntil }
 func (u *upnpMapping) RenewAfter() time.Time    { return u.renewAfter }
 func (u *upnpMapping) External() netip.AddrPort { return u.external }
+
+// upnpReleaseTimeout bounds DeletePortMapping, which callers run while
+// holding Client.mu.
+const upnpReleaseTimeout = time.Second
+
 func (u *upnpMapping) Release(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, upnpReleaseTimeout)
+	defer cancel()
 	u.client.DeletePortMapping(ctx, "", u.external.Port(), upnpProtocolUDP)
 }
 
@@ -271,6 +278,16 @@ func (c *Client) getUPnPPortMapping(
 	meta := c.uPnPMeta
 	httpClient := c.upnpHTTPClientLocked()
 	c.mu.Unlock()
+
+	// Requests still in flight when Close runs return their connections to
+	// the pool afterwards, so close them once this attempt is done.
+	defer func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.closed {
+			httpClient.CloseIdleConnections()
+		}
+	}()
 	if ok && oldMapping != nil {
 		client = oldMapping.client
 	} else {
@@ -284,6 +301,22 @@ func (c *Client) getUPnPPortMapping(
 		}
 	}
 	if client == nil {
+		return netip.AddrPort{}, false
+	}
+
+	// Obtain and validate the external IP before creating the mapping. In
+	// particular, MikroTik only supports permanent leases, so forgetting a
+	// successfully-created mapping after a later request fails leaks the rule
+	// forever and each retry creates another one.
+	extIP, err := client.GetExternalIPAddress(ctx)
+	if c.debug.VerboseLogs {
+		c.logf("client.GetExternalIPAddress: %v, %v", extIP, err)
+	}
+	if err != nil {
+		return netip.AddrPort{}, false
+	}
+	externalIP, err := netip.ParseAddr(extIP)
+	if err != nil {
 		return netip.AddrPort{}, false
 	}
 
@@ -302,19 +335,6 @@ func (c *Client) getUPnPPortMapping(
 	if err != nil {
 		return netip.AddrPort{}, false
 	}
-	// TODO cache this ip somewhere?
-	extIP, err := client.GetExternalIPAddress(ctx)
-	if c.debug.VerboseLogs {
-		c.logf("client.GetExternalIPAddress: %v, %v", extIP, err)
-	}
-	if err != nil {
-		// TODO this doesn't seem right
-		return netip.AddrPort{}, false
-	}
-	externalIP, err := netip.ParseAddr(extIP)
-	if err != nil {
-		return netip.AddrPort{}, false
-	}
 
 	upnp.external = netip.AddrPortFrom(externalIP, newPort)
 	d := time.Duration(pmpMapLifetimeSec) * time.Second
@@ -323,7 +343,9 @@ func (c *Client) getUPnPPortMapping(
 	upnp.client = client
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.mapping = upnp
+	if !c.setMappingLocked(upnp) {
+		return netip.AddrPort{}, false
+	}
 	c.localPort = newPort
 	return upnp.external, true
 }
