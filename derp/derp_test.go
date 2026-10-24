@@ -1285,6 +1285,104 @@ func TestServerDupClients(t *testing.T) {
 	})
 }
 
+// TestServerDupClientSendHistoryBounded verifies that a dup client set's
+// sendHistory does not grow without bound when two connections sharing a
+// key take turns sending frames. See the sendHistory field comment.
+func TestServerDupClientSendHistoryBounded(t *testing.T) {
+	clientPub := key.NewNode().Public()
+
+	newClient := func(t *testing.T, name string) *sclient {
+		return &sclient{key: clientPub, logf: logger.WithPrefix(t.Logf, name+": ")}
+	}
+	wantDupSet := func(t *testing.T, s *Server) *dupClientSet {
+		t.Helper()
+		dup, ok := s.clients[clientPub].(*dupClientSet)
+		if !ok {
+			t.Fatalf("wanted dup set; got %T", s.clients[clientPub])
+		}
+		return dup
+	}
+
+	t.Run("last_writer_active", func(t *testing.T) {
+		s := NewServer(key.NewNode(), t.Logf)
+		s.dupPolicy = lastWriterIsActive
+		c1, c2 := newClient(t, "c1"), newClient(t, "c2")
+		s.registerClient(c1)
+		s.registerClient(c2)
+
+		dup := wantDupSet(t, s)
+		for range 5000 {
+			s.noteClientActivity(c1)
+			s.noteClientActivity(c2)
+		}
+		if got := len(dup.sendHistory); got > len(dup.set) {
+			t.Fatalf("sendHistory len = %d; want <= %d (set size)", got, len(dup.set))
+		}
+		// The clients must remain active and undisabled, and the last
+		// one to send is the active one.
+		if c1.isDisabled.Load() || c2.isDisabled.Load() {
+			t.Fatal("client disabled under lastWriterIsActive; want none disabled")
+		}
+		if got := dup.ActiveClient(); got != c2 {
+			t.Fatalf("active client = %p; want c2 %p", got, c2)
+		}
+
+		// When the active connection drops, the surviving one must
+		// still be picked up.
+		s.unregisterClient(c2)
+		if got := s.clients[clientPub].ActiveClient(); got != c1 {
+			t.Fatalf("after dropping c2, active = %p; want c1 %p", got, c1)
+		}
+	})
+
+	t.Run("history_order_survives_removal", func(t *testing.T) {
+		s := NewServer(key.NewNode(), t.Logf)
+		s.dupPolicy = lastWriterIsActive
+		c1, c2, c3 := newClient(t, "c1"), newClient(t, "c2"), newClient(t, "c3")
+		s.registerClient(c1)
+		s.registerClient(c2)
+		s.registerClient(c3)
+
+		dup := wantDupSet(t, s)
+		for range 5000 {
+			s.noteClientActivity(c1)
+			s.noteClientActivity(c2)
+			s.noteClientActivity(c3)
+		}
+		s.noteClientActivity(c2)
+		if got := len(dup.sendHistory); got > len(dup.set) {
+			t.Fatalf("sendHistory len = %d; want <= %d (set size)", got, len(dup.set))
+		}
+
+		// c2 spoke last, then c3. Dropping c2 must make c3 active.
+		s.unregisterClient(c2)
+		if got := s.clients[clientPub].ActiveClient(); got != c3 {
+			t.Fatalf("after dropping c2, active = %p; want c3 %p", got, c3)
+		}
+	})
+
+	t.Run("disable_fighters", func(t *testing.T) {
+		s := NewServer(key.NewNode(), t.Logf)
+		s.dupPolicy = disableFighters
+		c1, c2 := newClient(t, "c1"), newClient(t, "c2")
+		s.registerClient(c1)
+		s.registerClient(c2)
+
+		dup := wantDupSet(t, s)
+		for range 5000 {
+			s.noteClientActivity(c1)
+			s.noteClientActivity(c2)
+		}
+		if got := len(dup.sendHistory); got > len(dup.set) {
+			t.Fatalf("sendHistory len = %d; want <= %d (set size)", got, len(dup.set))
+		}
+		// Fighting connections must be disabled.
+		if !c1.isDisabled.Load() || !c2.isDisabled.Load() {
+			t.Fatal("fighting clients not disabled; want both disabled")
+		}
+	})
+}
+
 func TestLimiter(t *testing.T) {
 	rl := rate.NewLimiter(rate.Every(time.Minute), 100)
 	for i := 0; i < 200; i++ {
